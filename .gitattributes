@@ -1,0 +1,6 @@
+# Was eingecheckt ist, wird auch ausgeliefert. Keine Umschreibung.
+#
+# "-text" heisst: git rechnet an keiner Datei herum, weder beim Einchecken
+# noch beim Auschecken noch beim Erzeugen des Tag-Archivs. Alle Textdateien
+# dieser Linie fuehren LF (Hausbrauch seit 13.09.2026, Regeln/01).
+*	-text

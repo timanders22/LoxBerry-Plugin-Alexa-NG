@@ -1,0 +1,12 @@
+# These packages will be installed by apt-get -y install PACKAGENAME
+# One line per package, use exact packagename as you would do for apt-get.
+#
+# mosquitto-clients liefert mosquitto_pub / mosquitto_sub. Damit sendet das
+# Plugin seine MQTT-Themen, raeumt sie bei der Deinstallation ab und liest
+# den Befehlseingang. Fehlt das Paket, meldet der Reiter Test das.
+#
+# Die PHP-Erweiterung curl wird NICHT hier eingetragen: das Metapaket
+# php-curl zeigt auf die Vorgabefassung der Paketquelle, LoxBerry faehrt
+# aber PHP 7.4 (Regeln/06). Ob php7.4-curl und php8.4-curl am Geraet liegen,
+# ist vor der ersten Installation zu messen; der Reiter Test zeigt es.
+mosquitto-clients

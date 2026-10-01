@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="512" height="512" viewBox="0 0 512 512" version="1.1" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="bg-grad" cx="50%" cy="50%" r="50%" fx="35%" fy="35%">
+      <stop offset="0%" stop-color="#7dc424" />
+      <stop offset="65%" stop-color="#6dac20" />
+      <stop offset="100%" stop-color="#568819" />
+    </radialGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#000000" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- Outer Badge Ring -->
+  <circle cx="256" cy="256" r="246" fill="url(#bg-grad)" />
+  <circle cx="256" cy="256" r="232" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="3" />
+
+  <g filter="url(#shadow)" fill="#ffffff">
+    <!-- Main Center Motif: Iconic Amazon Echo Dot (Round Puck/Disc Speaker) -->
+    <g transform="translate(256, 185)">
+      <!-- Echo Dot Slanted Cylinder Body (Puck) -->
+      <path d="M -75 20 C -75 42 75 42 75 20 L 68 -20 C 68 -38 -68 -38 -68 -20 Z" fill="#ffffff" />
+
+      <!-- Top Disc Surface Cutout -->
+      <ellipse cx="0" cy="-20" rx="68" ry="24" fill="#6dac20" />
+
+      <!-- Iconic Alexa Light Ring Edge (Glowing Ring) -->
+      <ellipse cx="0" cy="-20" rx="64" ry="22" fill="none" stroke="#ffffff" stroke-width="7" />
+
+      <!-- Top Center Panel with Action Buttons Cutouts -->
+      <ellipse cx="0" cy="-20" rx="52" ry="17" fill="#6dac20" />
+      <!-- Action Button (+) -->
+      <line x1="-24" y1="-20" x2="-14" y2="-20" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" />
+      <line x1="-19" y1="-24" x2="-19" y2="-16" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" />
+      <!-- Action Button (-) -->
+      <line x1="14" y1="-20" x2="24" y2="-20" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" />
+      <!-- Mute Mic Circle Button Center -->
+      <circle cx="0" cy="-20" r="5" fill="#ffffff" />
+      <line x1="-3.5" y1="-20.5" x2="3.5" y2="-19.5" stroke="#6dac20" stroke-width="2.5" />
+      <!-- Action Dot -->
+      <circle cx="0" cy="-29" r="3" fill="#ffffff" />
+    </g>
+
+    <!-- Outgoing Speech Soundwaves (Sprachausgabe / Voice Output) -->
+    <!-- Left Waves -->
+    <path d="M 165 140 A 55 55 0 0 0 165 210" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" />
+    <path d="M 145 122 A 80 80 0 0 0 145 228" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" opacity="0.8" />
+    <path d="M 125 104 A 105 105 0 0 0 125 246" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" opacity="0.5" />
+
+    <!-- Right Waves -->
+    <path d="M 347 140 A 55 55 0 0 1 347 210" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" />
+    <path d="M 367 122 A 80 80 0 0 1 367 228" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" opacity="0.8" />
+    <path d="M 387 104 A 105 105 0 0 1 387 246" fill="none" stroke="#ffffff" stroke-width="7" stroke-linecap="round" opacity="0.5" />
+
+    <!-- Dashed Line -->
+    <path d="M 150 345 L 362 345" stroke="#ffffff" stroke-width="4" stroke-dasharray="6 8" opacity="0.8" />
+  </g>
+
+  <!-- Typography -->
+  <text x="256" y="388" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="900" font-size="29" letter-spacing="0.5">Amazon Alexa</text>
+  <text x="256" y="424" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-weight="bold" font-size="20" letter-spacing="3">LOXBERRY</text>
+</svg>

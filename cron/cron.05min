@@ -1,0 +1,24 @@
+#!/bin/sh
+# Alexa NG - Takt alle fuenf Minuten: Konfiguration vervollstaendigen,
+# Anmeldung bei Amazon alle 30 Minuten pruefen, Geraeteliste alle 6 Stunden,
+# Lebenszeichen ueber MQTT, Waechter des Befehlsabos. Ob der Takt Amazon
+# fragt, entscheidet das Skript selbst.
+#
+# Den bin-Ordner und den Log-Ordner des Plugins setzt der Installer in den
+# Befehlszeilen ein. Der Cron laeuft als loxberry (/etc/cron.d/lbdefaults) mit
+# "> /dev/null 2>&1" - die Fehlerausgabe geht deshalb nach cron.err; touch
+# frischt die Aenderungszeit auf (ein Anhaengen ohne Inhalt tut das nicht,
+# Regeln/06). Ueber 256 kB bleiben die letzten 300 Zeilen.
+LOGV="REPLACELBPLOGDIR"
+ERR="$LOGV/cron.err"
+mkdir -p "$LOGV" 2>/dev/null
+touch "$ERR" 2>/dev/null
+if [ -f "$ERR" ] && [ "$(stat -c %s "$ERR" 2>/dev/null || echo 0)" -gt 262144 ]; then
+  tail -n 300 "$ERR" > "$ERR.neu" 2>/dev/null && mv -f "$ERR.neu" "$ERR"
+fi
+if [ ! -f "REPLACELBPBINDIR/ax_takt.php" ]; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] cron.05min: ax_takt.php fehlt - Plugin neu installieren." >> "$ERR"
+  exit 1
+fi
+/usr/bin/php "REPLACELBPBINDIR/ax_takt.php" >/dev/null 2>>"$ERR"
+exit 0

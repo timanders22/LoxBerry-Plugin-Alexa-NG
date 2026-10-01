@@ -1,0 +1,119 @@
+#!/bin/bash
+# Alexa NG - Deinstallation
+# Aufruf durch plugininstall.pl von data/system/uninstall/<name> aus, mit
+#   <TEMPFILE> <NAME> <FOLDER> <VERSION> <BASEFOLDER> <TEMPFOLDER>
+# Ordnername und Wurzel kommen aus $3 und $5; der Ablageort ist nur Rueckfall
+# (Regeln/06: installiert liegt dieses Skript unter data/system/uninstall).
+#
+# Fail closed: sieht die Lage nicht wie ein LoxBerry aus, wird nichts
+# geloescht. Jeder Schritt mit timeout; gemeldet wird, was nachgesehen wurde.
+#   1. Befehlsabo anhalten (dienst.sh status, dann stop; PID-Datei ist kein Beleg)
+#   2. Bei Amazon abmelden (/auth/deregister, 15 s) [ungemessen]; scheitert
+#      es: WARNING, das Geraet im Amazon-Konto von Hand entfernen
+#   3. Eigene retained Themen unter dem eingestellten Praefix abraeumen
+#      (-r -n direkt am Broker) und zuruecklesen (Entscheidung 3)
+#   4. Zweitschriften, .alt, .kaputt, Marke, Bestand, Namenszuordnung
+#      ueberschreiben und loeschen; nachzaehlen. config/ und data/ des
+#      Plugins raeumt LoxBerry selbst.
+
+PFOLDER="${3:-alexang}"
+case "$PFOLDER" in
+    ''|.|..|*/*|system) echo "<WARNING> Unbrauchbarer Ordnername '$PFOLDER' - nichts geloescht."; exit 0 ;;
+esac
+ax_ist_wurzel() {
+    [ -n "$1" ] && [ -d "$1/config/plugins" ] && [ -d "$1/data/plugins" ] && [ -f "$1/config/system/general.json" ]
+}
+lb_wurzel_suchen() {
+    v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd)
+    i=0
+    while [ -n "$v" ] && [ "$v" != "/" ] && [ $i -lt 8 ]; do
+        if ax_ist_wurzel "$v"; then echo "$v"; return 0; fi
+        v=$(dirname "$v"); i=$((i + 1))
+    done
+    return 1
+}
+BASE=""
+for AX_K in "$5" "$LBHOMEDIR"; do
+    if ax_ist_wurzel "$AX_K"; then BASE="$AX_K"; break; fi
+done
+[ -n "$BASE" ] || BASE=$(lb_wurzel_suchen)
+if [ -z "$BASE" ]; then
+    echo "<WARNING> Kein LoxBerry-Wurzelverzeichnis erkannt - nichts geloescht. Von Hand nachsehen unter"
+    echo "<WARNING> <LoxBerry>/config/plugins/$PFOLDER.backup*.json und <LoxBerry>/data/plugins/$PFOLDER.*"
+    exit 0
+fi
+
+BIN="$BASE/bin/plugins/$PFOLDER"
+PHP=$(command -v php 2>/dev/null)
+
+# 1. Befehlsabo
+if [ -f "$BIN/dienst.sh" ]; then
+    if timeout 15 /bin/sh "$BIN/dienst.sh" status >/dev/null 2>&1; then
+        timeout 30 /bin/sh "$BIN/dienst.sh" stop >/dev/null 2>&1
+        if timeout 15 /bin/sh "$BIN/dienst.sh" status >/dev/null 2>&1; then
+            echo "<WARNING> Das Befehlsabo laeuft noch - bitte den LoxBerry neu starten."
+        else
+            echo "<OK> Befehlsabo angehalten (nachgesehen)."
+        fi
+    else
+        echo "<INFO> Das Befehlsabo lief nicht."
+    fi
+fi
+
+# 2. Amazon-Abmeldung
+if [ -n "$PHP" ] && [ -f "$BIN/ax_takt.php" ] && [ -f "$BASE/config/plugins/$PFOLDER/amazon.json" ]; then
+    AX_AUS=$(LBHOMEDIR="$BASE" LBPPLUGINDIR="$PFOLDER" timeout 15 "$PHP" "$BIN/ax_takt.php" --abmelden 2>/dev/null)
+    AX_RC=$?
+    case "$AX_AUS" in
+        ABGEMELDET*) echo "<OK> Bei Amazon abgemeldet." ;;
+        KEINE_ANMELDUNG*) echo "<INFO> Keine brauchbare Amazon-Anmeldung hinterlegt." ;;
+        *)
+            [ "$AX_RC" = 124 ] && AX_AUS="keine Antwort nach 15 s"
+            echo "<WARNING> Abmeldung bei Amazon nicht gelungen (${AX_AUS:-rc $AX_RC})."
+            echo "<WARNING> Bitte im Amazon-Konto unter Geraete das Geraet 'LoxBerry Alexa-NG' (oder den Namen Ihres Token-Werkzeugs) von Hand entfernen." ;;
+    esac
+else
+    echo "<INFO> Keine Amazon-Anmeldung hinterlegt - nichts abzumelden."
+fi
+
+# 3. Retained Themen
+if [ -n "$PHP" ] && [ -f "$BIN/ax_takt.php" ]; then
+    AX_AUS=$(LBHOMEDIR="$BASE" LBPPLUGINDIR="$PFOLDER" timeout 25 "$PHP" "$BIN/ax_takt.php" --mqtt-raeumen 2>/dev/null)
+    case "$AX_AUS" in
+        *GEFUNDEN=-1*) echo "<WARNING> Zurueckbehaltene MQTT-Themen nicht abgeraeumt: mosquitto-clients fehlt ($AX_AUS)." ;;
+        *UEBRIG=0*) echo "<OK> Zurueckbehaltene MQTT-Themen abgeraeumt und zurueckgelesen ($AX_AUS)." ;;
+        *) echo "<WARNING> Zurueckbehaltene MQTT-Themen nicht vollstaendig abgeraeumt (${AX_AUS:-keine Antwort})." ;;
+    esac
+fi
+
+# 4. Nachbarn neben den Ordnern
+C="$BASE/config/plugins/$PFOLDER"
+D="$BASE/data/plugins/$PFOLDER"
+AX_WEG=0
+AX_REST=""
+for AX_F in "$C.backup.json" "$C.backup.json.kaputt" "$C.backup.amazon.json" "$C.backup.amazon.json.kaputt" \
+            "$C.backup.json.alt" "$C.backup.json.kaputt.alt" "$C.backup.amazon.json.alt" "$C.backup.amazon.json.kaputt.alt" \
+            "$D.upgrade_laeuft" "$D.namen.json" "$D.namen.json.alt"; do
+    [ -e "$AX_F" ] || continue
+    if [ -f "$AX_F" ] && [ ! -L "$AX_F" ]; then
+        AX_N=$(stat -c %s "$AX_F" 2>/dev/null || echo 0)
+        [ "$AX_N" -gt 0 ] 2>/dev/null && dd if=/dev/zero of="$AX_F" bs=1 count="$AX_N" conv=notrunc >/dev/null 2>&1
+    fi
+    rm -f "$AX_F" 2>/dev/null
+    if [ -e "$AX_F" ]; then AX_REST="$AX_REST $AX_F"; else AX_WEG=$((AX_WEG + 1)); fi
+done
+for AX_V in "$D.upgrade_bestand" "$D.upgrade_bestand.alt"; do
+    case "$AX_V" in
+        "$BASE"/data/plugins/"$PFOLDER".upgrade_bestand*) ;;
+        *) continue ;;
+    esac
+    [ -e "$AX_V" ] || continue
+    rm -rf "${AX_V:?}" 2>/dev/null
+    if [ -e "$AX_V" ]; then AX_REST="$AX_REST $AX_V"; else AX_WEG=$((AX_WEG + 1)); fi
+done
+if [ -n "$AX_REST" ]; then
+    echo "<WARNING> Nicht entfernt:$AX_REST"
+else
+    echo "<OK> $AX_WEG Zweitschriften und Merker neben den Ordnern entfernt (ueberschrieben, dann geloescht - auf Flash kein sicheres Loeschen)."
+fi
+exit 0

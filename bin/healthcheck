@@ -1,0 +1,38 @@
+#!/usr/bin/env php
+<?php
+/**
+ * Alexa NG - Anschluss an den LoxBerry-Healthcheck (Regeln/03)
+ *
+ * sbin/healthcheck.pl ruft bin/healthcheck mit "title" und mit "check".
+ * Antwort JSON: desc, status (3 Fehler, 4 Warnung, 5 in Ordnung, 6 Hinweis),
+ * result, logfile. Die Befunde kommen aus ax_befund() - derselben Funktion,
+ * die der Reiter Test zeigt. Kein Netz, nichts wird geschrieben.
+ */
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
+ini_set('display_errors', '0');
+
+$ax_was = isset($argv[1]) ? strtolower((string) $argv[1]) : 'check';
+if ($ax_was === 'title') { echo "Alexa NG\n"; exit(0); }
+
+if (basename(dirname(__DIR__)) === 'plugins') {
+    $ax_lib = dirname(dirname(dirname(__DIR__))) . '/webfrontend/html/plugins/' . basename(__DIR__) . '/ax_lib.php';
+} else {
+    $ax_lib = dirname(__DIR__) . '/webfrontend/html/ax_lib.php';
+}
+if (!is_file($ax_lib)) {
+    echo json_encode(array('desc' => 'Alexa NG', 'status' => 3,
+        'result' => 'ax_lib.php nicht gefunden - das Plugin ist unvollstaendig installiert.')) . "\n";
+    exit(0);
+}
+require_once $ax_lib;
+ax_nur_lesen(true);
+$ax_p = ax_paths();
+if ($ax_p['lbhome'] === '') {
+    echo json_encode(array('desc' => 'Alexa NG', 'status' => 3,
+        'result' => 'Kein LoxBerry-Wurzelverzeichnis gefunden - nichts geprueft.')) . "\n";
+    exit(0);
+}
+list($ax_status, $ax_text) = ax_befund_gesamt(ax_befund());
+echo json_encode(array('desc' => 'Alexa NG', 'status' => (int) $ax_status, 'result' => (string) $ax_text,
+    'logfile' => $ax_p['log']), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n";
+exit(0);
