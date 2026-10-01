@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 0.9.1
+Version 0.9.2
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -14,6 +14,30 @@ mit der curl-Erweiterung). Kein Node, kein Python, kein Docker.
 > (Weg b) hat am echten Amazon-Konto funktioniert: Token, Cookies und
 > Geräteliste kamen, und eine Testansage an einen Echo kam an. Die übrigen
 > Punkte unter „Noch am Gerät zu messen“ stehen noch aus.
+
+## Fassung 0.9.2
+
+Gemessen mit der Amazon-Attrappe unter PHP 7.4, 8.3 (WSL) und 8.5; am Gerät noch nicht.
+
+* **Sperre aus Loxone** (ab Werk aus): `aktion=sperre&wert=1|0` mit dem Aktionstoken oder MQTT
+  `alexang/befehl/sperre`. Gesperrt werden Ansagen und Ankündigungen übersprungen (`GRUND=GESPERRT`),
+  `dringend=1` geht durch, Lautstärke, Routinen und Musik-Probe gelten weiter. Nach einem Update gilt „offen“,
+  bis Loxone sie neu setzt; der Reiter Test zeigt den Zustand.
+* **Hinweisbalken** über allen Reitern, wenn die Amazon-Anmeldung abgelaufen ist oder der Takt steht.
+* **Wer hat etwas ausgelöst?** Reiter Test: je Weg, Adresse und Absender nur Zähler (heute, gesamt,
+  gesendet, übrige nach Grund); Plugins nennen sich mit `absender=<name>`.
+* **Verschwundene Echos** bleiben im Reiter Geräte sichtbar („verschwunden seit …“), mit dem Hinweis, wo der
+  Name noch steht (Standardgerät, Gruppen, Ausgabeart „Alexa-NG“ der fünf Plugins).
+* **Sprachsichere Namen:** Hilfe und README erklären, welche Namen sich eignen.
+* **Routinen:** eigenes Feld „Routinen, die Loxone starten darf (z. B. Radio an)“ unter der Überschrift
+  Routinen; „Routinen bei Amazon anzeigen“ im Reiter Geräte (nur Namen und Sprachauslöser);
+  „Freigegebene Routine jetzt starten“ im Reiter Test.
+* **Musik-Probe** (Stufe 3, ab Werk aus, nicht am Gerät erprobt): `aktion=musik_probe` mit `nr=` aus einer
+  Senderliste (Hauptweg) oder `sender=`, `aktion=musik_stopp`, beide nur mit dem Aktionstoken; eigene
+  Stundengrenze (ab Werk 30); Knöpfe im Reiter Test. Inoffizielle Schnittstelle, kein beliebiger Stream,
+  keine eigene MP3.
+* „Einstellungen sichern“ warnt, wenn ein gespeicherter Wert beim Lesen abgewiesen wurde (Feld `_warnung`
+  und gelber Kasten am Knopf).
 
 ## Fassung 0.9.1
 
@@ -108,9 +132,32 @@ Anmeldung, holt alle 6 Stunden die Geräteliste und sendet das Lebenszeichen.
    Sprechtoken bereits.
 7. Im Reiter **Test** nachsehen: jede Zeile ist eine Frage; ein Haken nur für
    Gemessenes, ein Strich heißt „nicht feststellbar“, ein grauer Punkt
-   „ausgeschaltet“. Ab Werk ist das Befehlsabo (Befehle über MQTT)
-   ausgeschaltet; die Zusammenfassung zählt es als „1 ausgeschaltet“, das ist
-   kein Fehler.
+   „ausgeschaltet“. Ab Werk sind das Befehlsabo (Befehle über MQTT) und die
+   Sperre aus Loxone ausgeschaltet; die Zusammenfassung zählt sie als
+   „2 ausgeschaltet“, das ist kein Fehler.
+
+Ist die Amazon-Anmeldung abgelaufen oder steht der Takt länger als
+15 Minuten, steht über **jedem** Reiter ein roter Hinweisbalken mit dem Weg zur
+Behebung.
+
+### Sprachsichere Namen
+
+* Für Ansagen aus Loxone und den Plugins zählt der **Normalname**, nicht die
+  Aussprache. Gut sind kurze, eindeutige Namen, die nur ein Gerät meinen
+  (`kueche`, `flur_oben`).
+* Endet ein Normalname auf `_2`, heißen bei Amazon zwei Geräte gleich: dort
+  eines umbenennen und die Geräteliste neu holen. Ein vergebener Normalname
+  bleibt dabei stehen; `alle` und `gruppe` sind vergeben.
+* Meldet Amazon ein Gerät nicht mehr (getauscht, entfernt), bleibt es im
+  Reiter **Geräte** als „verschwunden seit …“ stehen. Darunter steht, wo sein
+  Name noch eingetragen ist: Standardgerät, eigene Gruppen und die
+  Ausgabeart „Alexa-NG“ der Plugins Sprachsteuerung lokal, Octopus Dynamic,
+  Abfuhrkalender, Abfahrts-Assistent und Ferien und Feiertage (soweit ihre
+  Konfiguration lesbar ist; gelesen wird nur das Gerätefeld).
+* Für den Start einer Routine aus Loxone zählt nur der Name in der Freigabe.
+  Spricht man eine Routine auch selbst, Sprachauslöser **ohne** Musik-,
+  Sender- oder Genrewörter wählen (nicht „Radio an“, sondern z. B.
+  „Loxone Abendlicht“) – sonst fängt Alexa sie als Musikwunsch ab.
 
 ### Amazon-Anmeldung Schritt für Schritt
 
@@ -184,6 +231,10 @@ Mit Token (`T` = Sprech- **oder** Aktionstoken, `A` = nur Aktionstoken):
 | `?aktion=lautstaerke&token=T&geraet=…&wert=0-100` | T | Lautstärke setzen |
 | `?aktion=routine&token=A&name=…[&geraet=…]` | A | freigegebene Routine; mit Sprechtoken 403 |
 | `?aktion=geraete&json=1&token=A` | A | Geräteliste als JSON mit Seriennummer und Typ (Fehlersuche) |
+| `?aktion=sperre&token=A&wert=1` bzw. `wert=0` | A | Sperre aus Loxone setzen bzw. aufheben; `SPERRE;OK=1;GESPERRT=1;UNVERAENDERT=0`; ab Werk 409 `GRUND=SPERRE_AUS` |
+| `?aktion=musik_probe&token=A&geraet=…&nr=1-50` | A | Musik-Probe mit dem Sender Nummer `nr` aus der Senderliste; `MUSIK;OK=1;GERAET=kueche;ANBIETER=tunein;NR=1;SUCHE=EIGEN;UNVERAENDERT=0`; ab Werk 409 `GRUND=MUSIK_AUS` |
+| `?aktion=musik_probe&token=A&geraet=…&sender=…[&anbieter=tunein\|amazon]` | A | dasselbe mit einem Sendernamen (Zusatz), Anbieter ab Werk `tunein` |
+| `?aktion=musik_stopp&token=A&geraet=…` | A | Musik anhalten; `MUSIK;OK=1;GERAET=kueche;STOPP=1` |
 
 **`geraet`** ist eine Kommaliste aus Normalnamen, `gruppe:<name>` oder `alle`;
 der Amazon-Anzeigename wird ebenfalls angenommen. Ohne `geraet` gilt das
@@ -204,6 +255,64 @@ fehlt oder abgelaufen, Amazon gestört (`AMAZON`, `AMAZON_RATE`, `NETZ`,
 
 Nach 20 Fehlversuchen mit dem Token je Absender und Stunde ist der Absender
 eine Stunde gesperrt.
+
+**`absender=<name>`** (freiwillig, `a–z`, `0–9`, `_`, `-`, höchstens 32
+Zeichen) nennt das aufrufende Plugin. Der Reiter **Test** zählt je Weg
+(HTTP, MQTT, Oberfläche), Adresse und Absender: ersten und letzten Aufruf,
+heute, gesamt, davon gesendet, die übrigen nach Grund — nur Zähler, nie ein
+Text oder Token. Ein ungültiger Name ergibt 400 `GRUND=ABSENDER`.
+
+### Sperre aus Loxone
+
+Ab Werk aus (Reiter **Einstellungen**, Haken „Sperre aus Loxone annehmen“).
+Loxone setzt sie etwa bei Abwesend, Gäste oder Schlafen:
+`?aktion=sperre&token=<Aktionstoken>&wert=1`, aufheben mit `wert=0`, oder über
+MQTT `alexang/befehl/sperre` mit `1`/`0` (Befehlseingang nötig). Gesperrt
+antworten `sprechen` und `ankuendigen` mit `200 UEBERSPRUNGEN=1;GRUND=GESPERRT`;
+`dringend=1` geht durch. Lautstärke, Routinen und die Musik-Probe gelten
+weiter. Der letzte Wert bleibt erhalten; nach einem Update ist er weg (er liegt
+im Datenordner), dann gilt „offen“, bis Loxone ihn neu setzt — der Reiter
+**Test** zeigt das als gelbe Zeile. Die vollständigen Adressen stehen im Reiter
+**Einbindung in Loxone**.
+
+### Routinen
+
+Das Feld **„Routinen, die Loxone starten darf (z. B. Radio an)“** steht im
+Reiter **Einstellungen** unter der eigenen Überschrift **Routinen**; je Zeile
+ein Name oder Sprachauslöser, genau wie in der Alexa-App. Die Namen zeigt der
+Reiter **Geräte** mit **„Routinen bei Amazon anzeigen“** — nur Name und
+Sprachauslöser, über dieselbe Abfrage wie der Start, ohne Inhalt und ohne
+Kennungen; die Spalte „freigegeben“ sagt, was schon eingetragen ist. Im Reiter
+**Test** startet **„Freigegebene Routine jetzt starten“** eine Routine aus der
+Liste auf einem gewählten Gerät; die Antwortzeile steht in der Meldung, ein
+Neuladen der Seite löst nichts aus.
+
+### Musik-Probe (Stufe 3, nicht am Gerät erprobt)
+
+Ab Werk aus (Reiter **Einstellungen**, Haken „Musik-Probe erlauben (nicht am
+Gerät erprobt)“). Sie spielt einen Sender über die Suche des Echos
+(`Alexa.Music.PlaySearchPhrase`) — eine **inoffizielle** Schnittstelle, an
+keinem Echo gemessen. Gespielt wird nur, was Amazon selbst bei TuneIn oder
+Amazon Music findet: **kein beliebiger Stream, keine Adresse, keine eigene
+MP3**.
+
+* **Senderliste** (Reiter Einstellungen): je Zeile `Nummer = Sendername |
+  anbieter`, Nummer 1–50, `anbieter` `tunein` oder `amazon` (ohne Angabe
+  `tunein`). Hauptweg ist `nr=<Nummer>` — passend zu den Radiotasten 1–16 in
+  Loxone; `sender=<Name>` ist der Zusatz. Eine unbekannte Nummer ergibt 404
+  `GRUND=SENDER_UNBEKANNT`, `nr` und `sender` zugleich 400.
+* **Ziel:** genau ein Gerät oder eine **Amazon-Gruppe** (Mehrraum-Musikgruppe
+  der Alexa-App; sie wird als Ganzes angesprochen). Eine Kommaliste, `alle`
+  und eigene Gruppen werden abgewiesen (`GRUND=EIN_ZIEL`).
+* **Bremse:** eigene Stundengrenze (ab Werk 30, 10–240, getrennt von den
+  Ansagen, darüber 429 `GRUND=MUSIK_STUNDENGRENZE`), derselbe Sender am
+  selben Gerät innerhalb der Wiederholbremse ergibt `UNVERAENDERT`, eine
+  besetzte Sperre 503 `BESCHAEFTIGT`.
+* Vor dem Abspielen lässt das Plugin die Suchphrase von Amazon prüfen;
+  `SUCHE=AMAZON` heißt, Amazon hat sie bereinigt, `SUCHE=EIGEN`, es galt die
+  eigene Bereinigung.
+* Im Reiter **Test**: Knöpfe **„Musik-Probe“** und **„Musik stoppen“** mit
+  Auswahl aus der Senderliste und des Geräts.
 
 ### Aus anderen Plugins
 
@@ -268,7 +377,8 @@ Broker aus der LoxBerry-Konfiguration, nicht über den UDP-Eingang.
 | `alexang/letzte/grund` | Grund, `-` ohne Grund | ja |
 
 Kein Thema geht leer hinaus. Ein Gerät, das aus der Amazon-Liste
-verschwindet, bekommt einmal `-1`. Der **Ansagetext geht nie** über MQTT.
+verschwindet, bekommt einmal `-1` und bleibt im Reiter **Geräte** als
+„verschwunden“ sichtbar. Der **Ansagetext geht nie** über MQTT.
 
 **Gateway Fassung 1:** Das Abo `alexang/#` steht in `mqtt_subscriptions.cfg`.
 **Gateway Fassung 2:** nichts eintragen, Datenpunkte anhaken. Der Reiter MQTT
@@ -283,6 +393,7 @@ sagt, welche Fassung läuft.
 | `alexang/befehl/<name>/lautstaerke` | 0–100 |
 | `alexang/befehl/gruppe/<g>/sprechen` | Text |
 | `alexang/befehl/routine` | Name (nur mit eigenem Haken und Freigabe) |
+| `alexang/befehl/sperre` | `1` sperren, `0` öffnen (nur mit Haken „Sperre aus Loxone annehmen“) |
 
 Zurückbehaltene (retained) Befehle werden **verworfen**, nicht ausgeführt.
 Es gelten dieselbe Prüfung und Bremse wie am Endpunkt; das Ergebnis steht in
@@ -300,7 +411,10 @@ Es gelten dieselbe Prüfung und Bremse wie am Endpunkt; das Ergebnis steht in
   Heimnetz ausgelöst werden darf.
 * **Nur amazon.de.**
 * **Höchstens 60 Befehle je Stunde** ab Werk (10–240), Wiederholbremse 30 s,
-  mindestens 1 s zwischen zwei Aufrufen an Amazon.
+  mindestens 1 s zwischen zwei Aufrufen an Amazon. Die Musik-Probe zählt
+  getrennt (ab Werk 30 je Stunde).
+* **Sperre aus Loxone, Musik-Probe** und `sperre`/`musik_*` am Endpunkt nur
+  mit dem **Aktionstoken**; beide ab Werk aus.
 * **Ansagetexte stehen nicht im Protokoll**, nur ihre Länge. Ein Haken für
   die Fehlersuche schreibt sie gekürzt auf 60 Zeichen. Nie im Protokoll:
   Token, Cookies, csrf, Kundennummer, Seriennummern, Autorisierungscode.
@@ -349,6 +463,13 @@ zurückbehaltenen MQTT-Themen ab und löscht die Zweitschriften.
    ungültig?
 9. Loxone: Text über `<v>` am virtuellen Ausgang, Kodierung, Antwortzeit.
 10. MQTT-Gateway: kommen die Themen am Miniserver an?
+11. Musik-Probe: spielt ein Sender nach Nummer (TuneIn, Amazon Music) auf
+    einem Echo und auf einer Amazon-Gruppe, hält „Musik stoppen“ an, wie
+    genau muss der Name sein, nimmt Amazon die Prüfung der Suchphrase an
+    (`SUCHE=AMAZON`)?
+12. Sperre aus Loxone: setzt Loxone sie zuverlässig (HTTP und MQTT)?
+13. Verschwundene Geräte: Hinweis nach einem Echo-Tausch; sind die
+    Konfigurationen der fünf Plugins am Gerät lesbar?
 
 ## Voraussetzungen
 

@@ -46,6 +46,8 @@ define('AX_DOMAIN', 'amazon.de');    // Entscheidung 18: nur amazon.de
 /* Geraetetyp der Alexa-App fuer iOS, wie ihn alexa-cookie2/alexapy fuer die
  * Anmeldung benutzen [ungemessen]. */
 define('AX_APP_TYP', 'A2IVLV5VM2W81');
+define('AX_MUSIK_NR_MAX', 50);       // Senderliste: Nummern 1..50 (Entscheidung 29)
+define('AX_SENDER_MAX', 100);        // Zeichen je Sendername (Bauliste B1)
 
 /* ==================================================================
  * Pfade
@@ -260,6 +262,15 @@ function ax_vorgaben()
         'routinen_frei' => array(),
         // Ansagetexte protokollieren (gekuerzt), ab Werk aus (E8).
         'texte_protokollieren' => 0,
+        // Sperre aus Loxone (K1, Entscheidung 29): Loxone setzt sie per HTTP
+        // (Aktionstoken) oder MQTT; gesperrt werden nur Ansagen und
+        // Ankuendigungen, dringend=1 geht durch. Ab Werk aus.
+        'sperre_ein' => 0,
+        // Musik-Probe (Stufe 3, Messplan Teil B): nicht am Geraet erprobt,
+        // ab Werk aus; eigene Stundengrenze; Senderliste nach Nummer.
+        'musik_ein' => 0,
+        'musik_stundengrenze' => 30,
+        'musik_sender' => array(),
         // MQTT ab Werk an (Hausstandard); der Befehlseingang ab Werk aus.
         'mqtt_ein' => 1,
         'mqtt_praefix' => 'alexang',
@@ -360,10 +371,13 @@ function ax_wert_pruefen($schluessel, $wert, &$grund = '')
         case 'mqtt_ein':
         case 'befehle_mqtt_ein':
         case 'befehle_routine_ein':
+        case 'sperre_ein':
+        case 'musik_ein':
             return $schalter($wert);
         case 'bremse_fenster_s': return $zahl($wert, 0, 3600);
         case 'mindestabstand_s': return $zahl($wert, 0, 600);
         case 'stundengrenze':    return $zahl($wert, 10, 240);
+        case 'musik_stundengrenze': return $zahl($wert, 10, 240);
         case 'ruhe_von':
         case 'ruhe_bis':         return $zeit($wert);
         case 'standardgeraet':
@@ -412,6 +426,26 @@ function ax_wert_pruefen($schluessel, $wert, &$grund = '')
                     $grund = 'ROUTINENNAME'; return null;
                 }
                 $aus[] = $r;
+            }
+            return $aus;
+        case 'musik_sender':
+            /* Senderliste (Entscheidung 29: Nummer als Hauptweg). Je Eintrag
+             * genau nr (ganze Zahl 1..50, eindeutig), name, anbieter. */
+            if (!is_array($wert)) { $grund = 'KEINE_LISTE'; return null; }
+            if (count($wert) > AX_MUSIK_NR_MAX) { $grund = 'MEHR_ZEILEN|' . AX_MUSIK_NR_MAX; return null; }
+            $aus = array();
+            $nrn = array();
+            foreach (array_values($wert) as $i => $z) {
+                if (!is_array($z) || count($z) !== 3 || !isset($z['nr'], $z['name'], $z['anbieter'])) {
+                    $grund = 'SENDERZEILE|' . ($i + 1); return null;
+                }
+                if (!is_int($z['nr']) || $z['nr'] < 1 || $z['nr'] > AX_MUSIK_NR_MAX) { $grund = 'SENDERNUMMER|' . ($i + 1); return null; }
+                if (isset($nrn[$z['nr']])) { $grund = 'SENDER_DOPPELT|' . $z['nr']; return null; }
+                $nrn[$z['nr']] = 1;
+                if (ax_sender_grund($z['name']) !== '') { $grund = 'SENDERNAME|' . $z['nr']; return null; }
+                $anb = ax_musik_anbieter();
+                if (!is_string($z['anbieter']) || !isset($anb[$z['anbieter']])) { $grund = 'ANBIETER_ZEILE|' . $z['nr']; return null; }
+                $aus[] = array('nr' => $z['nr'], 'name' => $z['name'], 'anbieter' => $z['anbieter']);
             }
             return $aus;
     }
@@ -1238,6 +1272,8 @@ function ax_geraete_holen()
         }
     }
     $namen = ax_namen_lesen();
+    $namen_vorher = $namen;
+    $alt_st = ax_geraete();
     $vergeben = array_flip(array_values($namen));
     $gesamt = 0;
     $liste = array();
@@ -1285,8 +1321,34 @@ function ax_geraete_holen()
         if (ax_name_normal($g['anzeige']) !== $g['normal']) { $doppel[] = $g['normal']; }
         $liste[] = $g;
     }
+    // K4: Geraete mit vergebenem Normalnamen, die Amazon nicht mehr meldet,
+    // bleiben als "verschwunden" sichtbar - seit dem ersten Fehlen. Grundlage
+    // ist die Namenszuordnung neben dem Datenordner; sie uebersteht ein Update.
+    $jetzt_ser = array();
+    foreach ($liste as $g) { $jetzt_ser[$g['serial']] = 1; }
+    $alt_ger = array();
+    $alt_weg = array();
+    if ($alt_st) {
+        foreach ($alt_st['liste'] as $g) { if (is_array($g) && isset($g['serial'])) { $alt_ger[$g['serial']] = $g; } }
+        foreach ($alt_st['verschwunden'] as $g) { $alt_weg[$g['serial']] = $g; }
+    }
+    $verschwunden = array();
+    foreach ($namen_vorher as $ser => $nn) {
+        if (isset($jetzt_ser[$ser])) { continue; }
+        if (isset($alt_weg[$ser])) {
+            $e = $alt_weg[$ser];
+        } else {
+            $e = array('anzeige' => isset($alt_ger[$ser]['anzeige']) ? (string) $alt_ger[$ser]['anzeige'] : '',
+                       'familie' => isset($alt_ger[$ser]['familie']) ? (string) $alt_ger[$ser]['familie'] : '',
+                       'seit' => time());
+            ax_log('WARN', 'Geraete: ' . $nn . ' meldet Amazon nicht mehr - im Reiter Geraete als verschwunden gefuehrt.');
+        }
+        $e['serial'] = (string) $ser;
+        $e['normal'] = $nn;
+        $verschwunden[] = $e;
+    }
     ax_write_json($p['namen'], $namen, 0644);
-    $st = array('stand' => time(), 'konto_gesamt' => $gesamt, 'liste' => $liste);
+    $st = array('stand' => time(), 'konto_gesamt' => $gesamt, 'liste' => $liste, 'verschwunden' => $verschwunden);
     ax_write_json($p['datadir'] . '/geraete.json', $st, 0644);
     ax_log_wenn_neu('geraete_' . md5(json_encode(array_map(function ($g) { return $g['normal']; }, $liste))),
         'INFO', 'Geraete: ' . $gesamt . ' im Konto, ' . count($liste) . ' sprechfaehig.', 86400);
@@ -1299,8 +1361,83 @@ function ax_geraete()
     $p = ax_paths();
     $d = ax_json_lesen($p['datadir'] . '/geraete.json');
     if (!is_array($d) || !isset($d['liste']) || !is_array($d['liste'])) { return null; }
-    $d += array('stand' => 0, 'konto_gesamt' => 0);
+    $d += array('stand' => 0, 'konto_gesamt' => 0, 'verschwunden' => array());
+    $weg = array();
+    if (is_array($d['verschwunden'])) {
+        foreach ($d['verschwunden'] as $g) {
+            if (is_array($g) && isset($g['serial'], $g['normal']) && is_string($g['serial']) && is_string($g['normal'])
+                && preg_match('/^[a-z0-9_]{1,40}\z/', $g['normal'])) {
+                $weg[] = array('serial' => $g['serial'], 'normal' => $g['normal'],
+                    'anzeige' => (isset($g['anzeige']) && is_string($g['anzeige'])) ? $g['anzeige'] : '',
+                    'familie' => (isset($g['familie']) && is_string($g['familie'])) ? $g['familie'] : '',
+                    'seit' => isset($g['seit']) ? (int) $g['seit'] : 0);
+            }
+        }
+    }
+    $d['verschwunden'] = $weg;
     return $d;
+}
+
+/** Plugins mit der Ausgabeart "Alexa-NG": Ordner => (Titel, Konfigurationsdatei). */
+function ax_bekannte_plugins()
+{
+    return array(
+        'sprachsteuerung'   => array('Sprachsteuerung lokal', 'sprachsteuerung.json'),
+        'octopus'           => array('Octopus Dynamic', 'octopus.json'),
+        'awmabfuhr'         => array('Abfuhrkalender (AWM & iCal)', 'awm.json'),
+        'abfahrtsassistent' => array('Abfahrts-Assistent', 'abfahrt.json'),
+        'ferien'            => array('Ferien und Feiertage', 'ferien.json'),
+    );
+}
+
+/**
+ * Wo steht ein Normalname noch (K4)? Standardgeraet, eigene Gruppen und die
+ * Ausgabeart "Alexa-NG" der bekannten Plugins, soweit ihre Konfiguration
+ * lesbar ist. Gelesen werden dort nur tts.mode und tts.alexa_geraet; nichts
+ * davon geht in eine Ausgabe ausser dem Titel des Plugins.
+ * Rueckgabe array(orte, nicht_lesbar) - je eine Liste von Texten.
+ */
+function ax_name_verwendung($normal, array $cfg)
+{
+    $orte = array();
+    $nicht = array();
+    $ist_std = ($cfg['standardgeraet'] !== '' && $cfg['standardgeraet'] === $normal);
+    if ($ist_std) { $orte[] = ax_t('GER.ORT_STANDARD'); }
+    foreach ($cfg['gruppen'] as $z) {
+        if (in_array($normal, explode(',', $z['geraete']), true)) { $orte[] = sprintf(ax_t('GER.ORT_GRUPPE'), $z['name']); }
+    }
+    $p = ax_paths();
+    if ($p['lbhome'] === '') { return array($orte, $nicht); }
+    foreach (ax_bekannte_plugins() as $ordner => $d) {
+        $datei = $p['lbhome'] . '/config/plugins/' . $ordner . '/' . $d[1];
+        if (!is_file($datei)) { continue; }
+        $roh = is_readable($datei) ? @file_get_contents($datei) : false;
+        $j = ($roh !== false) ? json_decode((string) $roh, true) : null;
+        if (!is_array($j)) { $nicht[] = $d[0]; continue; }
+        $t = (isset($j['tts']) && is_array($j['tts'])) ? $j['tts'] : array();
+        if (!isset($t['mode']) || $t['mode'] !== 'alexang') { continue; }
+        $ger = (isset($t['alexa_geraet']) && is_string($t['alexa_geraet'])) ? trim($t['alexa_geraet']) : '';
+        if ($ger === '') {
+            if ($ist_std) { $orte[] = sprintf(ax_t('GER.ORT_PLUGIN_STD'), $d[0]); }
+            continue;
+        }
+        foreach (explode(',', $ger) as $teil) {
+            $teil = trim($teil);
+            if ($teil === '' || strtolower($teil) === 'alle' || stripos($teil, 'gruppe:') === 0) { continue; }
+            if (ax_name_normal($teil) === $normal) { $orte[] = sprintf(ax_t('GER.ORT_PLUGIN'), $d[0]); break; }
+        }
+    }
+    return array($orte, $nicht);
+}
+
+/** Ein Text von Amazon fuer die Anzeige: UTF-8, ohne Steuerzeichen, hoechstens 120 Zeichen. */
+function ax_anzeige_text($s)
+{
+    $s = is_string($s) ? $s : '';
+    if (preg_match('//u', $s) !== 1) { return ''; }
+    $s = trim((string) preg_replace('/[\x00-\x1F\x7F]+/', ' ', $s));
+    preg_match('/^.{0,120}/su', $s, $m);
+    return $m[0];
 }
 
 /**
@@ -1562,12 +1699,15 @@ function ax_bremse_lesen()
     $p = ax_paths();
     $b = ax_json_lesen($p['datadir'] . '/bremse.json');
     if (!is_array($b)) { $b = array(); }
-    foreach (array('fenster', 'abstand', 'stunde') as $k) {
+    foreach (array('fenster', 'abstand', 'stunde', 'musik_stunde') as $k) {
         if (!isset($b[$k]) || !is_array($b[$k])) { $b[$k] = array(); }
     }
     if (!isset($b['letzter_preview'])) { $b['letzter_preview'] = 0; }
     $jetzt = time();
     $b['stunde'] = array_values(array_filter($b['stunde'], function ($t) use ($jetzt) {
+        return is_numeric($t) && $jetzt - (int) $t < 3600 && (int) $t <= $jetzt;
+    }));
+    $b['musik_stunde'] = array_values(array_filter($b['musik_stunde'], function ($t) use ($jetzt) {
         return is_numeric($t) && $jetzt - (int) $t < 3600 && (int) $t <= $jetzt;
     }));
     return $b;
@@ -1631,14 +1771,354 @@ function ax_ruhezeit(array $cfg, $jetzt = null)
 }
 
 /* ==================================================================
+ * Sperre aus Loxone (K1, Entscheidung 29; ab Werk aus)
+ * ================================================================== */
+
+/**
+ * Der zuletzt gesetzte Zustand (data/loxsperre.json). Er liegt im
+ * Datenordner und ist nach einem Update weg; dann gilt "offen" (Frage 24),
+ * und der Reiter Test zeigt es an. Rueckgabe: bekannt, gesperrt (0/1),
+ * seit (letzter Wechsel), zuletzt (letztes Setzen), quelle.
+ */
+function ax_loxsperre_lesen()
+{
+    $p = ax_paths();
+    $d = ax_json_lesen($p['datadir'] . '/loxsperre.json');
+    $aus = array('bekannt' => false, 'gesperrt' => 0, 'seit' => 0, 'zuletzt' => 0, 'quelle' => '');
+    if (is_array($d) && isset($d['gesperrt']) && ($d['gesperrt'] === 0 || $d['gesperrt'] === 1)) {
+        $aus['bekannt'] = true;
+        $aus['gesperrt'] = $d['gesperrt'];
+        $aus['seit'] = isset($d['seit']) ? (int) $d['seit'] : 0;
+        $aus['zuletzt'] = isset($d['zuletzt']) ? (int) $d['zuletzt'] : 0;
+        $aus['quelle'] = (isset($d['quelle']) && is_string($d['quelle'])) ? (string) preg_replace('/[^A-Za-z0-9_.:\-]/', '', substr($d['quelle'], 0, 60)) : '';
+    }
+    return $aus;
+}
+
+/** Wirkt die Sperre jetzt? Nur mit Haken und einem gesetzten Wert 1. */
+function ax_loxsperre_wirkt(array $cfg)
+{
+    if (empty($cfg['sperre_ein'])) { return false; }
+    $l = ax_loxsperre_lesen();
+    return $l['bekannt'] && $l['gesperrt'] === 1;
+}
+
+/**
+ * Die Sperre setzen (Endpunkt mit Aktionstoken, MQTT-Befehl). $wert '0' oder
+ * '1' - alles andere wird abgewiesen, nie umgedeutet. Kein Kontakt zu
+ * Amazon. Rueckgabe array(http, felder).
+ */
+function ax_loxsperre_setzen($wert, $quelle, $absender = '')
+{
+    $cfg = ax_config();
+    $f = array('OK' => 0);
+    $ergebnis = function ($http, array $felder) use ($quelle, $absender) {
+        ax_absender_merken('sperre', $quelle, $absender, $felder);
+        return array($http, $felder);
+    };
+    if ($absender !== '' && !ax_absender_ok($absender)) { $f['GRUND'] = 'ABSENDER'; return $ergebnis(400, $f); }
+    if (empty($cfg['aktiv'])) { $f['GRUND'] = 'PLUGIN_AUS'; return $ergebnis(409, $f); }
+    if (empty($cfg['sperre_ein'])) { $f['GRUND'] = 'SPERRE_AUS'; return $ergebnis(409, $f); }
+    if (!is_string($wert) || ($wert !== '0' && $wert !== '1')) { $f['GRUND'] = 'WERT_SPERRE'; return $ergebnis(400, $f); }
+    $p = ax_paths();
+    $alt = ax_loxsperre_lesen();
+    $neu = (int) $wert;
+    $gleich = $alt['bekannt'] && $alt['gesperrt'] === $neu;
+    $wer = ($quelle === 'http' && isset($_SERVER['REMOTE_ADDR']))
+         ? 'http:' . preg_replace('/[^0-9a-fA-F:.]/', '', (string) $_SERVER['REMOTE_ADDR']) : (string) $quelle;
+    $d = array('gesperrt' => $neu, 'seit' => $gleich ? $alt['seit'] : time(), 'zuletzt' => time(), 'quelle' => $wer);
+    if (!ax_write_json($p['datadir'] . '/loxsperre.json', $d, 0644)) { $f['GRUND'] = 'SPEICHERN'; return $ergebnis(503, $f); }
+    if (!$gleich) {
+        ax_log('INFO', 'Sperre aus Loxone: ' . ($neu ? 'gesperrt' : 'offen') . ' (von ' . $wer . ').');
+    }
+    return $ergebnis(200, array('OK' => 1, 'GESPERRT' => $neu, 'UNVERAENDERT' => $gleich ? 1 : 0));
+}
+
+/* ==================================================================
+ * Absenderuebersicht (K3): wer hat wie oft etwas ausgeloest - nur Zaehler
+ * ================================================================== */
+
+/** Der freiwillige Parameter absender (Name des aufrufenden Plugins). */
+function ax_absender_ok($s)
+{
+    return is_string($s) && preg_match('/^[a-z0-9_\-]{1,32}\z/', $s) === 1;
+}
+
+/**
+ * Einen Aufruf zaehlen: je Weg, Adresse und Absender erster und letzter
+ * Aufruf, heute, gesamt, gesendet und die uebrigen nach Grund. Nie ein Text,
+ * nie ein Token. Unter einer eigenen kurzen Sperre (2 s); gelingt sie nicht,
+ * bleibt dieser eine Aufruf ungezaehlt - die Uebersicht ist eine Hilfe, kein
+ * Beleg. Hoechstens 50 Zeilen; die aelteste faellt heraus.
+ */
+function ax_absender_merken($aktion, $quelle, $absender, array $felder)
+{
+    if (ax_nur_lesen()) { return false; }
+    $p = ax_paths();
+    if (!is_dir($p['datadir'])) { return false; }
+    $fh = @fopen($p['datadir'] . '/absender.lock', 'c');
+    if ($fh === false) { return false; }
+    $frist = microtime(true) + 2;
+    $gehalten = false;
+    do {
+        if (flock($fh, LOCK_EX | LOCK_NB)) { $gehalten = true; break; }
+        usleep(50000);
+    } while (microtime(true) < $frist);
+    if (!$gehalten) { fclose($fh); return false; }
+    $datei = $p['datadir'] . '/absender.json';
+    $d = ax_json_lesen($datei);
+    if (!is_array($d)) { $d = array(); }
+    $weg = in_array($quelle, array('http', 'mqtt', 'oberflaeche'), true) ? $quelle : 'andere';
+    $adr = ($weg === 'http' && isset($_SERVER['REMOTE_ADDR'])) ? (string) preg_replace('/[^0-9a-fA-F:.]/', '', (string) $_SERVER['REMOTE_ADDR']) : '-';
+    $abs = ax_absender_ok($absender) ? $absender : '-';
+    $k = $weg . '|' . $adr . '|' . $abs;
+    $jetzt = time();
+    $heute = date('Y-m-d', $jetzt);
+    $e = (isset($d[$k]) && is_array($d[$k])) ? $d[$k] : array();
+    $e += array('weg' => $weg, 'adresse' => $adr, 'absender' => $abs, 'erste' => $jetzt, 'letzte' => $jetzt,
+                'gesamt' => 0, 'tag' => $heute, 'heute' => 0, 'gesendet' => 0, 'aktionen' => array(), 'gruende' => array());
+    if (!is_array($e['aktionen'])) { $e['aktionen'] = array(); }
+    if (!is_array($e['gruende'])) { $e['gruende'] = array(); }
+    if ($e['tag'] !== $heute) { $e['tag'] = $heute; $e['heute'] = 0; }
+    $e['letzte'] = $jetzt;
+    $e['gesamt'] = (int) $e['gesamt'] + 1;
+    $e['heute'] = (int) $e['heute'] + 1;
+    $a = (string) preg_replace('/[^a-z_]/', '', (string) $aktion);
+    $e['aktionen'][$a] = (isset($e['aktionen'][$a]) ? (int) $e['aktionen'][$a] : 0) + 1;
+    $gesendet = !empty($felder['OK']) && empty($felder['UEBERSPRUNGEN'])
+        && !(isset($felder['GRUND']) && $felder['GRUND'] === 'UNVERAENDERT');
+    if ($gesendet) {
+        $e['gesendet'] = (int) $e['gesendet'] + 1;
+    } else {
+        $g = isset($felder['GRUND']) ? (string) preg_replace('/[^A-Z0-9_]/', '', (string) $felder['GRUND']) : '';
+        if ($g === '') { $g = 'OHNE_GRUND'; }
+        $e['gruende'][$g] = (isset($e['gruende'][$g]) ? (int) $e['gruende'][$g] : 0) + 1;
+    }
+    $d[$k] = $e;
+    if (count($d) > 50) {
+        uasort($d, function ($x, $y) {
+            return (int) (is_array($y) && isset($y['letzte']) ? $y['letzte'] : 0) - (int) (is_array($x) && isset($x['letzte']) ? $x['letzte'] : 0);
+        });
+        $d = array_slice($d, 0, 50, true);
+    }
+    $ok = ax_write_json($datei, $d, 0600);
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $ok;
+}
+
+/** Die Uebersicht fuer den Reiter Test, neueste zuerst; nur Zaehler und Namen. */
+function ax_absender_lesen()
+{
+    $p = ax_paths();
+    $d = ax_json_lesen($p['datadir'] . '/absender.json');
+    $aus = array();
+    if (!is_array($d)) { return $aus; }
+    foreach ($d as $e) {
+        if (!is_array($e) || !isset($e['weg'], $e['adresse'], $e['absender'], $e['letzte'])) { continue; }
+        $z = array('weg' => (string) preg_replace('/[^a-z]/', '', (string) $e['weg']),
+                   'adresse' => (string) preg_replace('/[^0-9a-fA-F:.\-]/', '', (string) $e['adresse']),
+                   'absender' => (string) preg_replace('/[^a-z0-9_\-]/', '', (string) $e['absender']),
+                   'erste' => isset($e['erste']) ? (int) $e['erste'] : 0, 'letzte' => (int) $e['letzte'],
+                   'heute' => (isset($e['tag']) && $e['tag'] === date('Y-m-d')) ? (int) $e['heute'] : 0,
+                   'gesamt' => isset($e['gesamt']) ? (int) $e['gesamt'] : 0,
+                   'gesendet' => isset($e['gesendet']) ? (int) $e['gesendet'] : 0,
+                   'aktionen' => array(), 'gruende' => array());
+        foreach (array('aktionen', 'gruende') as $feld) {
+            if (isset($e[$feld]) && is_array($e[$feld])) {
+                foreach ($e[$feld] as $k => $n) {
+                    if (preg_match('/^[A-Za-z0-9_]{1,40}\z/', (string) $k)) { $z[$feld][(string) $k] = (int) $n; }
+                }
+            }
+        }
+        $aus[] = $z;
+    }
+    usort($aus, function ($x, $y) { return $y['letzte'] - $x['letzte']; });
+    return $aus;
+}
+
+/* ==================================================================
+ * Routinen bei Amazon - eine Abfrage fuer Start (aktion=routine) und
+ * Anzeige (R3, Reiter Geraete)
+ * ================================================================== */
+
+/**
+ * Die Routinen des Kontos (/api/behaviors/v2/automations?limit=200). Laeuft
+ * innerhalb der Amazon-Sperre. Rueckgabe array(ok, grund, liste) - je
+ * Routine id, name, ausloeser (Sprachausloeser) und sequence. Nach aussen
+ * (Reiter Geraete) gehen nur Name und Ausloeser.
+ */
+function ax_amazon_routinen()
+{
+    list($ok, $g, $r) = ax_alexa('GET', '/api/behaviors/v2/automations?limit=200');
+    if (!$ok) { return array(false, $g, null); }
+    $liste = json_decode($r['rumpf'], true);
+    if (!is_array($liste)) { return array(false, 'AMAZON_UNERWARTET', null); }
+    $aus = array();
+    foreach ($liste as $auto) {
+        if (!is_array($auto) || !isset($auto['automationId'], $auto['sequence']) || !is_string($auto['automationId'])) { continue; }
+        $sprach = array();
+        if (isset($auto['triggers']) && is_array($auto['triggers'])) {
+            foreach ($auto['triggers'] as $tr) {
+                if (is_array($tr) && isset($tr['payload']['utterance']) && is_string($tr['payload']['utterance'])) {
+                    $sprach[] = $tr['payload']['utterance'];
+                }
+            }
+        }
+        $aus[] = array('id' => $auto['automationId'], 'name' => (isset($auto['name']) && is_string($auto['name'])) ? $auto['name'] : '',
+                       'ausloeser' => $sprach, 'sequence' => $auto['sequence']);
+    }
+    return array(true, '', $aus);
+}
+
+/* ==================================================================
+ * Musik-Probe (Stufe 3, Messplan Teil B) - [ungemessen], ab Werk aus
+ * ================================================================== */
+
+/** Anbieter => musicProviderId, wie die Alexa-App sie schickt [ungemessen]. */
+function ax_musik_anbieter()
+{
+    return array('tunein' => 'TUNEIN', 'amazon' => 'AMAZON_MUSIC');
+}
+
+/**
+ * Ein Sendername (Senderliste und Parameter sender): 1 bis 100 Zeichen
+ * UTF-8, ohne Steuerzeichen, ohne | (Trenner der Senderliste), ohne
+ * Leerraum am Rand. Rueckgabe '' = in Ordnung, sonst die Kennung.
+ */
+function ax_sender_grund($s)
+{
+    if (!is_string($s) || $s === '' || preg_match('//u', $s) !== 1 || preg_match('/[\x00-\x1F\x7F|]/', $s)
+        || trim($s) !== $s || ax_zeichen($s) > AX_SENDER_MAX) {
+        return 'SENDER';
+    }
+    return '';
+}
+
+/**
+ * Den Sender fuer musik_probe waehlen: Hauptweg nr=<1..50> aus der
+ * Senderliste (Entscheidung 29), Zusatz sender=<Name> mit anbieter (ab Werk
+ * tunein). Beides zugleich oder keines wird abgewiesen; ein anbieter neben
+ * nr darf der Liste nicht widersprechen.
+ * Rueckgabe array(http, grund, name, anbieter, nr).
+ */
+function ax_musik_sender_waehlen(array $par, array $cfg)
+{
+    $hat_nr = isset($par['nr']) && $par['nr'] !== '';
+    $hat_name = isset($par['sender']) && $par['sender'] !== '';
+    if ($hat_nr && $hat_name) { return array(400, 'NR_UND_SENDER', '', '', ''); }
+    if (!$hat_nr && !$hat_name) { return array(400, 'SENDER_FEHLT', '', '', ''); }
+    $anb = isset($par['anbieter']) ? $par['anbieter'] : '';
+    $liste = ax_musik_anbieter();
+    if ($anb !== '' && !isset($liste[$anb])) { return array(400, 'ANBIETER', '', '', ''); }
+    if ($hat_nr) {
+        if (!preg_match('/^[1-9][0-9]?\z/', $par['nr']) || (int) $par['nr'] > AX_MUSIK_NR_MAX) { return array(400, 'NR', '', '', ''); }
+        foreach ($cfg['musik_sender'] as $z) {
+            if ($z['nr'] === (int) $par['nr']) {
+                if ($anb !== '' && $anb !== $z['anbieter']) { return array(400, 'ANBIETER', '', '', (string) $z['nr']); }
+                return array(200, '', $z['name'], $z['anbieter'], (string) $z['nr']);
+            }
+        }
+        return array(404, 'SENDER_UNBEKANNT', '', '', (string) (int) $par['nr']);
+    }
+    $s = trim($par['sender']);
+    if (ax_sender_grund($s) !== '') { return array(400, 'SENDER', '', '', ''); }
+    return array(200, '', $s, $anb !== '' ? $anb : 'tunein', '');
+}
+
+/**
+ * Das Ziel der Musik: genau ein Geraet oder eine Amazon-Gruppe (Familie WHA,
+ * Mehrraum-Musikgruppe der Alexa-App). Die Gruppe wird NICHT in Mitglieder
+ * aufgeloest, damit alle synchron spielen [ungemessen]. Keine Kommaliste,
+ * nicht "alle", keine eigene Gruppe (sie waere nicht synchron).
+ * Rueckgabe array(http, grund, ziel, name).
+ */
+function ax_musik_ziel($param, array $cfg, array $st)
+{
+    $roh = trim((string) $param);
+    if ($roh === '') { return array(400, 'GERAET', null, ''); }
+    if (strpos($roh, ',') !== false || strtolower($roh) === 'alle') { return array(400, 'EIN_ZIEL', null, ''); }
+    $nach_normal = array();
+    foreach ($st['liste'] as $g) { $nach_normal[$g['normal']] = $g; }
+    if (stripos($roh, 'gruppe:') === 0) {
+        $n = ax_name_normal(substr($roh, 7));
+        foreach ($cfg['gruppen'] as $z) {
+            if ($z['name'] === $n) { return array(400, 'EIN_ZIEL', null, 'gruppe:' . $n); }
+        }
+        if (!isset($nach_normal[$n]) || $nach_normal[$n]['familie'] !== 'WHA') { return array(404, 'GRUPPE_UNBEKANNT', null, $n); }
+    } else {
+        $n = ax_name_normal($roh);
+        if (!isset($nach_normal[$n])) { return array(404, 'GERAET_UNBEKANNT', null, $n); }
+    }
+    $g = $nach_normal[$n];
+    if (empty($g['online'])) { return array(503, 'GERAETE_OFFLINE', null, $n); }
+    return array(200, '', $g, $n);
+}
+
+/** Musik abspielen [ungemessen]: ein Knoten Alexa.Music.PlaySearchPhrase. */
+function ax_sequenz_musik(array $ziel, $phrase, $bereinigt, $anbieter_id, $kunde)
+{
+    return ax_sequenz(ax_knoten('Alexa.Music.PlaySearchPhrase', $ziel, $kunde, array(
+        'searchPhrase' => $phrase, 'sanitizedSearchPhrase' => $bereinigt, 'musicProviderId' => $anbieter_id)));
+}
+
+/** Musik anhalten [ungemessen]: ein Knoten Alexa.DeviceControls.Stop fuer das Ziel. */
+function ax_sequenz_musik_stopp(array $ziel, $kunde)
+{
+    return ax_sequenz(array(
+        '@type' => 'com.amazon.alexa.behaviors.model.OpaquePayloadOperationNode',
+        'type' => 'Alexa.DeviceControls.Stop',
+        'operationPayload' => array('customerId' => $kunde, 'locale' => AX_LOCALE, 'isAssociatedDevice' => false,
+            'devices' => array(array('deviceSerialNumber' => $ziel['serial'], 'deviceType' => $ziel['typ']))),
+    ));
+}
+
+/** Eigene Bereinigung der Suchphrase, wenn Amazons Pruefung keine liefert. */
+function ax_suchphrase_eigen($s)
+{
+    $t = function_exists('mb_strtolower') ? mb_strtolower((string) $s, 'UTF-8') : strtolower((string) $s);
+    $t = preg_replace('/[^\p{L}\p{N} ]+/u', ' ', (string) $t);
+    return trim((string) preg_replace('/\s+/u', ' ', (string) $t));
+}
+
+/**
+ * Die Suchphrase von Amazon pruefen lassen (/api/behaviors/operation/validate,
+ * wie die Alexa-App) [ungemessen]. Liefert Amazon keine bereinigte Phrase,
+ * gilt die eigene Bereinigung - die Antwort sagt mit SUCHE=AMAZON|EIGEN,
+ * welche galt. Rueckgabe array(bereinigt, herkunft).
+ */
+function ax_suchphrase_pruefen(array $ziel, $phrase, $anbieter_id, $kunde)
+{
+    $op = array('type' => 'Alexa.Music.PlaySearchPhrase', 'operationPayload' => json_encode(array(
+        'deviceType' => $ziel['typ'], 'deviceSerialNumber' => $ziel['serial'], 'customerId' => $kunde, 'locale' => AX_LOCALE,
+        'musicProviderId' => $anbieter_id, 'searchPhrase' => $phrase), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+    $rumpf = json_encode($op, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($rumpf !== false && $op['operationPayload'] !== false) {
+        list($ok, , $r) = ax_alexa('POST', '/api/behaviors/operation/validate', $rumpf);
+        if ($ok) {
+            $j = json_decode($r['rumpf'], true);
+            $pl = (is_array($j) && isset($j['operationPayload'])) ? $j['operationPayload'] : null;
+            if (is_string($pl)) { $pl = json_decode($pl, true); }
+            if (is_array($pl) && isset($pl['sanitizedSearchPhrase']) && is_string($pl['sanitizedSearchPhrase'])
+                && trim($pl['sanitizedSearchPhrase']) !== '' && strlen($pl['sanitizedSearchPhrase']) <= 400
+                && preg_match('//u', $pl['sanitizedSearchPhrase']) === 1) {
+                return array($pl['sanitizedSearchPhrase'], 'AMAZON');
+            }
+        }
+    }
+    return array(ax_suchphrase_eigen($phrase), 'EIGEN');
+}
+
+/* ==================================================================
  * Die Befehle - eine Funktion fuer Endpunkt, MQTT-Befehlseingang und
  * Testknoepfe (Regeln/03: Trockenlauf und Ernstfall in derselben Funktion)
  * ================================================================== */
 
 /**
  * Einen Befehl ausfuehren. $aktion: sprechen | ankuendigen | lautstaerke |
- * routine. $par: geraet, text, laut, ssml, titel, wert, name, dringend (alle
- * als Zeichenketten, bereits auf is_string geprueft). $quelle: http | mqtt |
+ * routine | musik_probe | musik_stopp. $par: geraet, text, laut, ssml, titel,
+ * wert, name, dringend, nr, sender, anbieter, absender (alle als
+ * Zeichenketten, bereits auf is_string geprueft). $quelle: http | mqtt |
  * oberflaeche. Die Tokenpruefung macht der Aufrufer.
  * Rueckgabe: array(http, felder) - felder beginnt mit OK.
  */
@@ -1669,21 +2149,28 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
             ax_write_json($p['datadir'] . '/letzte.json', $letzte, 0644);
             ax_mqtt_letzte($letzte, $cfg);
         }
+        ax_absender_merken($aktion, $quelle, isset($par['absender']) ? (string) $par['absender'] : '', $felder);
         return array($http, $felder);
     };
 
-    if (!in_array($aktion, array('sprechen', 'ankuendigen', 'lautstaerke', 'routine'), true)) {
+    if (!in_array($aktion, array('sprechen', 'ankuendigen', 'lautstaerke', 'routine', 'musik_probe', 'musik_stopp'), true)) {
         $f['GRUND'] = 'AKTION';
         return $ende(400, $f);
     }
+    if (isset($par['absender']) && !ax_absender_ok($par['absender'])) { $f['GRUND'] = 'ABSENDER'; return $ende(400, $f); }
     if (empty($cfg['aktiv'])) { $f['GRUND'] = 'PLUGIN_AUS'; return $ende(409, $f); }
     if ($aktion === 'ankuendigen' && empty($cfg['ankuendigen_ein'])) { $f['GRUND'] = 'ANKUENDIGEN_AUS'; return $ende(409, $f); }
+    $musik = ($aktion === 'musik_probe' || $aktion === 'musik_stopp');
+    if ($musik && empty($cfg['musik_ein'])) { $f['GRUND'] = 'MUSIK_AUS'; return $ende(409, $f); }
 
     // ---- Parameter pruefen: abweisen, nie zurechtbiegen ----
     $text = '';
     $teile = array();
     $laut = null;
     $laenge = 0;
+    $sender = '';
+    $anbieter = '';
+    $nr = '';
     if ($aktion === 'sprechen' || $aktion === 'ankuendigen') {
         if (!isset($par['text'])) { $f['GRUND'] = 'TEXT_FEHLT'; return $ende(400, $f); }
         $ssml = isset($par['ssml']) && $par['ssml'] === '1';
@@ -1701,6 +2188,10 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
             $laut = (int) $par['laut'];
         }
         if (isset($par['dringend']) && !in_array($par['dringend'], array('0', '1'), true)) { $f['GRUND'] = 'DRINGEND'; return $ende(400, $f); }
+        // K1: die Sperre aus Loxone haelt Ansagen und Ankuendigungen an; dringend=1 geht durch.
+        if (ax_loxsperre_wirkt($cfg) && !(isset($par['dringend']) && $par['dringend'] === '1')) {
+            return $ende(200, array('OK' => 1, 'UEBERSPRUNGEN' => 1, 'GRUND' => 'GESPERRT'));
+        }
         if (ax_ruhezeit($cfg) && !(isset($par['dringend']) && $par['dringend'] === '1')) {
             return $ende(200, array('OK' => 1, 'UEBERSPRUNGEN' => 1, 'GRUND' => 'RUHEZEIT'));
         }
@@ -1713,6 +2204,15 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
             $f['GRUND'] = 'WERT'; return $ende(400, $f);
         }
         $laut = (int) $par['wert'];
+    } elseif ($musik) {
+        if ($aktion === 'musik_probe') {
+            list($mh, $mg, $sender, $anbieter, $nr) = ax_musik_sender_waehlen($par, $cfg);
+            if ($mh !== 200) {
+                $f['GRUND'] = $mg;
+                if ($nr !== '') { $f['NR'] = $nr; }
+                return $ende($mh, $f);
+            }
+        }
     } else {
         if (!isset($par['name']) || !is_string($par['name']) || trim($par['name']) === '' || strlen($par['name']) > 80
             || preg_match('/[\x00-\x1F\x7F]/', $par['name']) || preg_match('//u', $par['name']) !== 1) {
@@ -1744,7 +2244,13 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
         list($ok, $g, $st) = ax_geraete_holen();
         if (!$ok) { ax_sperre_frei($sp); $f['GRUND'] = $g; return $ende(503, $f); }
     }
-    list($h, $g, $ziele, $offline, , $unbek) = ax_geraete_aufloesen($geraet_param, $cfg, $st);
+    if ($musik) {
+        list($h, $g, $mziel, $unbek) = ax_musik_ziel($geraet_param, $cfg, $st);
+        $ziele = $mziel ? array($mziel) : array();
+        $offline = ($h === 503) ? 1 : 0;
+    } else {
+        list($h, $g, $ziele, $offline, , $unbek) = ax_geraete_aufloesen($geraet_param, $cfg, $st);
+    }
     if ($h !== 200) {
         ax_sperre_frei($sp);
         $f['GRUND'] = $g;
@@ -1761,17 +2267,26 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
     // ---- Bremse (Entscheidung 14 sinngemaess, Bauplan 2.6) ----
     $b = ax_bremse_lesen();
     $jetzt = time();
-    if (count($b['stunde']) >= (int) $cfg['stundengrenze']) {
+    if (!$musik && count($b['stunde']) >= (int) $cfg['stundengrenze']) {
         ax_sperre_frei($sp);
         $f['GRUND'] = 'STUNDENGRENZE';
         return $ende(429, $f);
     }
-    $hash = hash('sha256', $aktion . '|' . $text . '|' . ($laut === null ? '' : $laut) . '|' . (isset($par['name']) ? $par['name'] : ''));
+    // B3: Musik zaehlt getrennt von den Ansagen, mit eigener Grenze.
+    if ($musik && count($b['musik_stunde']) >= (int) $cfg['musik_stundengrenze']) {
+        ax_sperre_frei($sp);
+        $f['GRUND'] = 'MUSIK_STUNDENGRENZE';
+        return $ende(429, $f);
+    }
+    $hash = hash('sha256', $aktion . '|' . $text . '|' . ($laut === null ? '' : $laut) . '|' . (isset($par['name']) ? $par['name'] : '')
+                 . ($musik ? '|' . $sender . '|' . $anbieter : ''));
     $unveraendert = 0;
     if ((int) $cfg['bremse_fenster_s'] > 0) {
         $rest = array();
         foreach ($ziele as $z) {
-            $k = $aktion . '|' . $z['serial'];
+            // Musik: EIN Merker je Geraet fuer Start und Stopp - Start, Stopp,
+            // Start desselben Senders wird so nicht verschluckt.
+            $k = ($musik ? 'musik' : $aktion) . '|' . $z['serial'];
             $e = isset($b['fenster'][$k]) ? $b['fenster'][$k] : null;
             if (is_array($e) && isset($e['h'], $e['t']) && $e['h'] === $hash && $jetzt - (int) $e['t'] < (int) $cfg['bremse_fenster_s']) {
                 $unveraendert++;
@@ -1835,26 +2350,29 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
     } elseif ($aktion === 'lautstaerke') {
         $seq = ax_sequenz_lautstaerke($ziele, $laut, $s['kunde']);
         $zusatz['WERT'] = $laut;
+    } elseif ($aktion === 'musik_probe') {
+        $ids = ax_musik_anbieter();
+        list($bereinigt, $suche) = ax_suchphrase_pruefen($ziele[0], $sender, $ids[$anbieter], $s['kunde']);
+        $seq = ax_sequenz_musik($ziele[0], $sender, $bereinigt, $ids[$anbieter], $s['kunde']);
+        $zusatz = array('GERAET' => $ziele[0]['normal'], 'ANBIETER' => $anbieter) + ($nr !== '' ? array('NR' => $nr) : array())
+                + array('SUCHE' => $suche);
+    } elseif ($aktion === 'musik_stopp') {
+        $seq = ax_sequenz_musik_stopp($ziele[0], $s['kunde']);
+        $zusatz = array('GERAET' => $ziele[0]['normal'], 'STOPP' => 1);
     } else {
-        list($oka, $ga, $ra) = ax_alexa('GET', '/api/behaviors/v2/automations?limit=200');
+        // Dieselbe Abfrage wie "Routinen bei Amazon anzeigen" (R3).
+        list($oka, $ga, $liste) = ax_amazon_routinen();
         if (!$oka) { ax_sperre_frei($sp); $f['GRUND'] = $ga; return $ende(503, $f, true, $ziele); }
-        $liste = json_decode($ra['rumpf'], true);
-        if (!is_array($liste)) { ax_sperre_frei($sp); $f['GRUND'] = 'AMAZON_UNERWARTET'; return $ende(503, $f, true, $ziele); }
         $treffer = null;
         $gesucht = strtolower(trim($par['name']));
         foreach ($liste as $auto) {
-            if (!is_array($auto) || !isset($auto['automationId'], $auto['sequence']) || !is_string($auto['automationId'])) { continue; }
-            $name = (isset($auto['name']) && is_string($auto['name'])) ? strtolower(trim($auto['name'])) : '';
             $sprach = false;
-            if (isset($auto['triggers']) && is_array($auto['triggers'])) {
-                foreach ($auto['triggers'] as $tr) {
-                    if (is_array($tr) && isset($tr['payload']['utterance']) && is_string($tr['payload']['utterance'])
-                        && strtolower(trim($tr['payload']['utterance'])) === $gesucht) { $sprach = true; }
-                }
+            foreach ($auto['ausloeser'] as $u) {
+                if (strtolower(trim($u)) === $gesucht) { $sprach = true; }
             }
-            if ($sprach || $name === $gesucht) { $treffer = $auto; break; }
+            if ($sprach || strtolower(trim($auto['name'])) === $gesucht) { $treffer = $auto; break; }
         }
-        if (!$treffer || !preg_match('/^[A-Za-z0-9._:\-]{1,200}\z/', $treffer['automationId'])) {
+        if (!$treffer || !preg_match('/^[A-Za-z0-9._:\-]{1,200}\z/', $treffer['id'])) {
             ax_sperre_frei($sp);
             $f['GRUND'] = 'ROUTINE_UNBEKANNT';
             return $ende(404, $f, true, $ziele);
@@ -1864,7 +2382,7 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
             : json_encode($treffer['sequence'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         $sj = str_replace(array('ALEXA_CURRENT_DEVICE_TYPE', 'ALEXA_CURRENT_DSN', 'ALEXA_CUSTOMER_ID'),
                           array($z['typ'], $z['serial'], $s['kunde']), (string) $sj);
-        $behavior = $treffer['automationId'];
+        $behavior = $treffer['id'];
     }
     if ($aktion !== 'routine') {
         $sj = json_encode($seq, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
@@ -1878,19 +2396,21 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
     $seit = ax_mono() - (float) $b['letzter_preview'];
     if ($seit >= 0 && $seit < AX_PREVIEW_ABSTAND_S) { usleep((int) ((AX_PREVIEW_ABSTAND_S - $seit) * 1000000)); }
     $b['letzter_preview'] = ax_mono();
-    $b['stunde'][] = time();
+    if ($musik) { $b['musik_stunde'][] = time(); } else { $b['stunde'][] = time(); }
     list($ok, $g, $r) = ax_alexa('POST', '/api/behaviors/preview', ax_preview_rumpf($behavior, $sj));
     $b['letzter_preview'] = ax_mono();
     if ($ok) {
         foreach ($ziele as $z) {
-            $b['fenster'][$aktion . '|' . $z['serial']] = array('h' => $hash, 't' => time());
+            $b['fenster'][($musik ? 'musik' : $aktion) . '|' . $z['serial']] = array('h' => $hash, 't' => time());
             if ($aktion === 'sprechen' || $aktion === 'ankuendigen') { $b['abstand'][$z['serial']] = array('t' => time()); }
         }
     }
     ax_bremse_schreiben($b);
     ax_sperre_frei($sp);
     if (!$ok) { $f['GRUND'] = $g; return $ende(503, $f, true, $ziele, $laenge); }
-    $aus = array('OK' => 1, 'GERAETE' => count($ziele)) + $zusatz
+    // Musik: MUSIK;OK=1;GERAET=...;ANBIETER=... (Bauliste B1)
+    $aus = $musik ? array('OK' => 1) + $zusatz + array('UNVERAENDERT' => $unveraendert)
+         : array('OK' => 1, 'GERAETE' => count($ziele)) + $zusatz
          + array('UNVERAENDERT' => $unveraendert, 'OFFLINE' => $offline);
     return $ende(200, $aus, true, $ziele, $laenge);
 }
@@ -2571,6 +3091,13 @@ function ax_sicherung_bauen(array $cfg, $mit_amazon)
         '_hinweis' => 'Enthaelt Sprech- und Aktionstoken' . ($mit_amazon ? ' UND die Amazon-Anmeldung' : '')
                     . '. Wie ein Passwort behandeln.',
     );
+    // X-3: Was ax_config() beim Lesen abwies, steht in der Datei als Vorgabe -
+    // die Datei sagt es (dieselbe Pruefung wie beim Zurueckspielen).
+    $lage = ax_config_lage();
+    if ($lage['abgewiesen']) {
+        $kopf['_warnung'] = 'Gespeicherte Werte abgewiesen, in dieser Datei steht dafuer die Vorgabe: '
+            . implode(', ', array_keys($lage['abgewiesen']));
+    }
     $d = array();
     foreach (array_keys(ax_vorgaben()) as $k) { $d[$k] = $cfg[$k]; }
     if ($mit_amazon) {

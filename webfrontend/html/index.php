@@ -10,6 +10,11 @@
  *   ?aktion=ankuendigen&token=T&geraet=..&text=..[&titel=..]   (ab Werk aus)
  *   ?aktion=lautstaerke&token=T&geraet=..&wert=0-100
  *   ?aktion=routine&token=A&name=..[&geraet=..]               nur Aktionstoken
+ *   ?aktion=sperre&token=A&wert=0|1                           nur Aktionstoken, ab Werk aus (K1)
+ *   ?aktion=musik_probe&token=A&geraet=..&nr=1-50             nur Aktionstoken, ab Werk aus (Stufe 3)
+ *   ?aktion=musik_probe&token=A&geraet=..&sender=..[&anbieter=tunein|amazon]
+ *   ?aktion=musik_stopp&token=A&geraet=..
+ *   [&absender=<plugin>] bei jeder ausloesenden Aktion: Name fuer die Absenderuebersicht
  *
  * T = Sprech- oder Aktionstoken, A = nur Aktionstoken (E4). GET und POST,
  * nie $_REQUEST (Cookies!). Jede Antwort nennt GRUND; jeder Weg schreibt
@@ -45,7 +50,7 @@ try {
     $ax_par = array();
     $ax_falsch = array();
     foreach (array('aktion', 'token', 'geraet', 'text', 'laut', 'ssml', 'titel', 'wert', 'name', 'dringend',
-                   'json', 'selftest') as $ax_k) {
+                   'json', 'selftest', 'nr', 'sender', 'anbieter', 'absender') as $ax_k) {
         $ax_w = null;
         if (isset($_POST[$ax_k])) { $ax_w = $_POST[$ax_k]; } elseif (isset($_GET[$ax_k])) { $ax_w = $_GET[$ax_k]; }
         if ($ax_w === null) { continue; }
@@ -55,7 +60,8 @@ try {
     $ax_wer = isset($_SERVER['REMOTE_ADDR']) ? preg_replace('/[^0-9a-fA-F:.]/', '', (string) $_SERVER['REMOTE_ADDR']) : '-';
     $ax_aktion = isset($ax_par['aktion']) ? $ax_par['aktion'] : (isset($ax_par['selftest']) ? 'selftest' : 'status');
     $ax_kopf = array('status' => 'ALEXANG', 'geraete' => 'GERAET', 'selftest' => 'SELFTEST', 'sprechen' => 'SPRECHEN',
-                     'ankuendigen' => 'ANKUENDIGEN', 'lautstaerke' => 'LAUTSTAERKE', 'routine' => 'ROUTINE');
+                     'ankuendigen' => 'ANKUENDIGEN', 'lautstaerke' => 'LAUTSTAERKE', 'routine' => 'ROUTINE',
+                     'sperre' => 'SPERRE', 'musik_probe' => 'MUSIK', 'musik_stopp' => 'MUSIK');
     if (!isset($ax_kopf[$ax_aktion])) {
         ax_log('WARN', 'Endpunkt: unbekannte Aktion (Laenge ' . strlen($ax_aktion) . ') von ' . $ax_wer);
         ax_ende_roh(400, 'ALEXANG;OK=0;GRUND=AKTION');
@@ -135,6 +141,15 @@ try {
     if ($ax_aktion === 'routine' && !$ax_ist_akt) {
         ax_log('WARN', 'Endpunkt: routine von ' . $ax_wer . ' mit dem Sprechtoken abgewiesen.');
         ax_ende_roh(403, 'ROUTINE;OK=0;ERR=TOKEN;GRUND=SPRECHTOKEN_STARTET_KEINE_ROUTINE');
+    }
+    if (in_array($ax_aktion, array('sperre', 'musik_probe', 'musik_stopp'), true) && !$ax_ist_akt) {
+        ax_log('WARN', 'Endpunkt: ' . $ax_aktion . ' von ' . $ax_wer . ' mit dem Sprechtoken abgewiesen.');
+        ax_ende_roh(403, ax_zeile($K, array('OK' => 0, 'ERR' => 'TOKEN', 'GRUND' => 'NUR_AKTIONSTOKEN')));
+    }
+    if ($ax_aktion === 'sperre') {
+        list($ax_h, $ax_f) = ax_loxsperre_setzen(isset($ax_par['wert']) ? $ax_par['wert'] : null, 'http',
+                                                 isset($ax_par['absender']) ? $ax_par['absender'] : '');
+        ax_ende_roh($ax_h, ax_zeile($K, $ax_f));
     }
     list($ax_h, $ax_f) = ax_befehl_ausfuehren($ax_aktion, $ax_par, 'http');
     ax_ende_roh($ax_h, ax_zeile($K, $ax_f));

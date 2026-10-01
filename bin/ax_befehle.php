@@ -12,6 +12,7 @@
  *   <p>/befehl/<name>/lautstaerke   Nutzlast: 0-100
  *   <p>/befehl/gruppe/<g>/sprechen  Nutzlast: Text
  *   <p>/befehl/routine              Nutzlast: Name (nur mit eigenem Haken)
+ *   <p>/befehl/sperre               Nutzlast: 1 sperren, 0 oeffnen (nur mit Haken "Sperre aus Loxone")
  *
  * Zurueckbehaltene Nachrichten werden VERWORFEN, nie ausgefuehrt: sonst
  * spraeche jeder Neustart die letzte Ansage erneut (Bauplan 2.7). Doppelt
@@ -54,6 +55,7 @@ function ax_befehl_thema($thema, $praefix)
     if (strpos($thema, $vor) !== 0) { return null; }
     $rest = substr($thema, strlen($vor));
     if ($rest === 'routine') { return array('routine', ''); }
+    if ($rest === 'sperre') { return array('sperre', ''); }
     if (preg_match('#^gruppe/([a-z0-9_]{1,40})/sprechen\z#', $rest, $m)) { return array('sprechen', 'gruppe:' . $m[1]); }
     if (preg_match('#^([a-z0-9_]{1,40})/(sprechen|ankuendigen|lautstaerke)\z#', $rest, $m)) {
         if ($m[1] === 'gruppe') { return null; }
@@ -127,6 +129,12 @@ while (true) {
                 continue;
             }
             list($ax_akt, $ax_ger) = $ax_ziel;
+            if ($ax_akt === 'sperre') {
+                // K1: dieselbe Funktion wie der Endpunkt; prueft Haken und Wert selbst.
+                ax_loxsperre_setzen(trim($ax_nutz), 'mqtt');
+                $ax_zaehler['ausgefuehrt']++;
+                continue;
+            }
             $ax_par = array('geraet' => $ax_ger);
             if ($ax_akt === 'lautstaerke') { $ax_par['wert'] = trim($ax_nutz); }
             elseif ($ax_akt === 'routine') {

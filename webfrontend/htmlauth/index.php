@@ -65,7 +65,7 @@ function ax_ui_felder($formular)
     if ($formular === 'settings') {
         return array('aktiv', 'standardgeraet', 'gruppe_name', 'gruppe_geraete', 'bremse_fenster_s', 'mindestabstand_s',
                      'stundengrenze', 'ruhe_ein', 'ruhe_von', 'ruhe_bis', 'ankuendigen_ein', 'routinen_frei',
-                     'texte_protokollieren');
+                     'texte_protokollieren', 'sperre_ein', 'musik_ein', 'musik_stundengrenze', 'musik_sender');
     }
     if ($formular === 'mqtt') { return array('mqtt_ein', 'mqtt_praefix', 'befehle_mqtt_ein', 'befehle_routine_ein'); }
     return array();
@@ -203,10 +203,11 @@ if ($ax_post && isset($_POST['save'])) {
         }
         $ax_neu[$k] = $gut;
     };
-    foreach (array('aktiv', 'ruhe_ein', 'ankuendigen_ein', 'texte_protokollieren') as $ax_k) {
+    foreach (array('aktiv', 'ruhe_ein', 'ankuendigen_ein', 'texte_protokollieren', 'sperre_ein', 'musik_ein') as $ax_k) {
         $ax_neu[$ax_k] = empty($_POST[$ax_k]) ? 0 : 1;
     }
-    foreach (array('standardgeraet', 'bremse_fenster_s', 'mindestabstand_s', 'stundengrenze', 'ruhe_von', 'ruhe_bis') as $ax_k) {
+    foreach (array('standardgeraet', 'bremse_fenster_s', 'mindestabstand_s', 'stundengrenze', 'ruhe_von', 'ruhe_bis',
+                   'musik_stundengrenze') as $ax_k) {
         $ax_feld($ax_k, ax_ui_post($ax_k));
     }
     $ax_gn = isset($_POST['gruppe_name']) && is_array($_POST['gruppe_name']) ? $_POST['gruppe_name'] : array();
@@ -235,6 +236,34 @@ if ($ax_post && isset($_POST['save'])) {
         if (trim($ax_r) !== '') { $ax_rl[] = trim($ax_r); }
     }
     $ax_feld('routinen_frei', $ax_rl);
+    // Senderliste der Musik-Probe: je Zeile "Nummer = Sendername | anbieter"
+    // (anbieter tunein oder amazon, ohne Angabe tunein). Eine unlesbare Zeile
+    // ist eine Beanstandung; gespeichert wird dann nichts (Nr. 16).
+    $ax_sl = array();
+    $ax_sl_fehl = false;
+    $ax_zn = 0;
+    foreach (preg_split('/\r?\n/', isset($_POST['musik_sender']) && is_string($_POST['musik_sender']) ? $_POST['musik_sender'] : '') as $ax_r) {
+        $ax_zn++;
+        $ax_r = trim($ax_r);
+        if ($ax_r === '') { continue; }
+        $ax_teil = explode('=', $ax_r, 2);
+        $ax_rest = isset($ax_teil[1]) ? $ax_teil[1] : '';
+        $ax_anb = 'tunein';
+        $ax_strich = strrpos($ax_rest, '|');
+        if ($ax_strich !== false) {
+            $ax_anb = trim(substr($ax_rest, $ax_strich + 1));
+            $ax_rest = substr($ax_rest, 0, $ax_strich);
+        }
+        $ax_snr = trim($ax_teil[0]);
+        $ax_sname = trim($ax_rest);
+        if (count($ax_teil) !== 2 || !preg_match('/^[1-9][0-9]?\z/', $ax_snr) || $ax_sname === '') {
+            $ax_hw[] = sprintf(ax_t('MELDUNG.SENDER_ZEILE'), $ax_zn);
+            $ax_sl_fehl = true;
+            continue;
+        }
+        $ax_sl[] = array('nr' => (int) $ax_snr, 'name' => $ax_sname, 'anbieter' => $ax_anb);
+    }
+    if ($ax_sl_fehl) { ax_ui_bean('musik_sender'); } else { $ax_feld('musik_sender', $ax_sl); }
     if ($ax_hw) {
         array_unshift($ax_hw, ax_t('MELDUNG.EINGABEN_ZURUECK'));
         ax_ui_umleiten($ax_datadir, 'tab-settings', array('hinweise' => $ax_hw, 'eingaben' => ax_ui_sammeln('settings')));
@@ -243,7 +272,9 @@ if ($ax_post && isset($_POST['save'])) {
         ax_ui_umleiten($ax_datadir, 'tab-settings', array('fehler' => sprintf(ax_t('MELDUNG.SPEICHERN_FEHL'), $ax_p['config'])));
     }
     ax_log('INFO', 'Einstellungen gespeichert (aktiv=' . $ax_neu['aktiv'] . ', Stundengrenze ' . $ax_neu['stundengrenze']
-        . ', Bremse ' . $ax_neu['bremse_fenster_s'] . ' s, Ankuendigen ' . $ax_neu['ankuendigen_ein'] . ').');
+        . ', Bremse ' . $ax_neu['bremse_fenster_s'] . ' s, Ankuendigen ' . $ax_neu['ankuendigen_ein']
+        . ', Sperre aus Loxone ' . $ax_neu['sperre_ein'] . ', Musik-Probe ' . $ax_neu['musik_ein']
+        . ' (' . count($ax_neu['musik_sender']) . ' Sender, ' . $ax_neu['musik_stundengrenze'] . '/h)).');
     ax_ui_umleiten($ax_datadir, 'tab-settings', array('gespeichert' => 1));
 }
 
@@ -453,6 +484,112 @@ if ($ax_post && isset($_POST['ax_zurueck'])) {
     ax_ui_umleiten($ax_datadir, 'tab-settings', $ax_erg);
 }
 
+/* ---------------- Reiter Geraete: Routinen bei Amazon anzeigen (R3, nur lesend) ---------------- */
+if ($ax_post && isset($_POST['routinen_anzeigen'])) {
+    if (!ax_amazon()) {
+        ax_ui_umleiten($ax_datadir, 'tab-geraete', array('fehler' => sprintf(ax_t('GER.ROUTINEN_FEHL'), ax_grund_text('ANMELDUNG'))));
+    }
+    if (!function_exists('curl_init')) {
+        ax_ui_umleiten($ax_datadir, 'tab-geraete', array('fehler' => sprintf(ax_t('GER.ROUTINEN_FEHL'), ax_grund_text('CURL_FEHLT'))));
+    }
+    $ax_sp = ax_sperre();
+    if (!$ax_sp) {
+        ax_ui_umleiten($ax_datadir, 'tab-geraete', array('fehler' => sprintf(ax_t('GER.ROUTINEN_FEHL'), ax_grund_text('BESCHAEFTIGT'))));
+    }
+    list($ax_ok, $ax_g, $ax_rl) = ax_amazon_routinen();
+    ax_sperre_frei($ax_sp);
+    if (!$ax_ok) {
+        ax_ui_umleiten($ax_datadir, 'tab-geraete', array('fehler' => sprintf(ax_t('GER.ROUTINEN_FEHL'), ax_grund_text($ax_g))));
+    }
+    // Nur Name und Sprachausloeser - kein Inhalt, keine Kennung (R3).
+    $ax_anz = array();
+    foreach ($ax_rl as $ax_r) {
+        $ax_anz[] = array('name' => ax_anzeige_text($ax_r['name']),
+                          'ausloeser' => array_values(array_filter(array_map('ax_anzeige_text', array_slice($ax_r['ausloeser'], 0, 5)), 'strlen')));
+        if (count($ax_anz) >= 200) { break; }
+    }
+    if (!ax_write_json($ax_datadir . '/routinen.json', array('stand' => time(), 'liste' => $ax_anz), 0600)) {
+        ax_ui_umleiten($ax_datadir, 'tab-geraete', array('fehler' => sprintf(ax_t('MELDUNG.SPEICHERN_FEHL'), $ax_datadir . '/routinen.json')));
+    }
+    ax_log('INFO', 'Routinen bei Amazon angezeigt: ' . count($ax_anz) . ' (nur Namen und Sprachausloeser).');
+    ax_ui_umleiten($ax_datadir, 'tab-geraete', array('meldung' => sprintf(ax_t('GER.ROUTINEN_GEHOLT'), count($ax_anz))));
+}
+
+/* ---------------- Reiter Test: freigegebene Routine starten (R2) ----------------
+ * Dieselbe Funktion wie aktion=routine; das Aktionstoken bleibt intern (es steht
+ * in keinem Formular). Nur Namen aus der Freigabeliste, nie ein stiller Rueckfall
+ * auf das Standardgeraet. PRG: das Ergebnis reist in der Einmalmeldung. */
+if ($ax_post && isset($_POST['routine_start'])) {
+    $ax_rn = (isset($_POST['test_routine']) && is_string($_POST['test_routine'])) ? $_POST['test_routine'] : null;
+    $ax_rg = (isset($_POST['test_routine_geraet']) && is_string($_POST['test_routine_geraet'])) ? trim($_POST['test_routine_geraet']) : null;
+    $ax_rueck = array();
+    $ax_rn_frei = ($ax_rn !== null && in_array($ax_rn, $ax_cfg['routinen_frei'], true));
+    if ($ax_rn_frei) { $ax_rueck['test_routine'] = $ax_rn; }
+    if ($ax_rg !== null && preg_match('/^[a-z0-9_]{1,40}\z/', $ax_rg)) { $ax_rueck['test_routine_geraet'] = $ax_rg; }
+    if (!$ax_rn_frei) {
+        ax_ui_umleiten($ax_datadir, 'tab-test', array('fehler' => ax_grund_text('ROUTINE_NICHT_FREIGEGEBEN'), 'test_routine_falsch' => 1) + $ax_rueck);
+    }
+    if ($ax_rg === null || $ax_rg === '') {
+        ax_ui_umleiten($ax_datadir, 'tab-test', array('fehler' => ax_grund_text('KEIN_GERAET'), 'test_routine_geraet_falsch' => 1) + $ax_rueck);
+    }
+    if (!isset($ax_rueck['test_routine_geraet'])) {
+        ax_ui_umleiten($ax_datadir, 'tab-test', array('fehler' => ax_grund_text('GERAET'), 'test_routine_geraet_falsch' => 1) + $ax_rueck);
+    }
+    list($ax_h, $ax_f) = ax_befehl_ausfuehren('routine', array('name' => $ax_rn, 'geraet' => $ax_rg), 'oberflaeche');
+    $ax_z = ax_zeile('ROUTINE', $ax_f);
+    $ax_grund = isset($ax_f['GRUND']) ? (string) $ax_f['GRUND'] : '-';
+    $ax_erg = !empty($ax_f['OK'])
+        ? array('meldung' => sprintf(ax_t('TEST.ROUTINE_OK'), $ax_rn, $ax_rg, $ax_z))
+        : array('fehler' => sprintf(ax_t('TEST.ROUTINE_FEHL'), $ax_rn, $ax_rg, $ax_h, ax_grund_text($ax_grund), $ax_z));
+    if (in_array($ax_grund, array('GERAET', 'GERAET_UNBEKANNT', 'GERAETE_OFFLINE'), true)) { $ax_erg['test_routine_geraet_falsch'] = 1; }
+    if (in_array($ax_grund, array('ROUTINE_NICHT_FREIGEGEBEN', 'ROUTINE_UNBEKANNT'), true)) { $ax_erg['test_routine_falsch'] = 1; }
+    ax_ui_umleiten($ax_datadir, 'tab-test', $ax_erg + $ax_rueck);
+}
+
+/* ---------------- Reiter Test: Musik-Probe (B4) ----------------
+ * Dieselbe Funktion wie aktion=musik_probe/musik_stopp. Mit Nummer aus der
+ * Senderliste gilt deren Anbieter; ein Name geht mit dem gewaehlten Anbieter.
+ * Beanstandete Felder kommen markiert zurueck (X-2). */
+if ($ax_post && (isset($_POST['musik_start']) || isset($_POST['musik_halt']))) {
+    $ax_start = isset($_POST['musik_start']);
+    $ax_mw = function ($k) { return (isset($_POST[$k]) && is_string($_POST[$k])) ? trim($_POST[$k]) : null; };
+    $ax_mg = $ax_mw('musik_geraet');
+    $ax_mn = $ax_mw('musik_nr');
+    $ax_ms = $ax_mw('musik_sender_name');
+    $ax_ma = $ax_mw('musik_anbieter');
+    $ax_ids = ax_musik_anbieter();
+    $ax_rueck = array();
+    if ($ax_mg !== null && preg_match('/^[a-z0-9_]{1,40}\z/', $ax_mg)) { $ax_rueck['musik_geraet'] = $ax_mg; }
+    if ($ax_mn !== null && preg_match('/^[1-9][0-9]?\z/', $ax_mn)) { $ax_rueck['musik_nr'] = $ax_mn; }
+    if ($ax_ms !== null && $ax_ms !== '' && ax_ui_tauglich($ax_ms) && strlen($ax_ms) <= 400) { $ax_rueck['musik_sender_name'] = $ax_ms; }
+    if ($ax_ma !== null && isset($ax_ids[$ax_ma])) { $ax_rueck['musik_anbieter'] = $ax_ma; }
+    if ($ax_mg === null || $ax_mg === '' || !isset($ax_rueck['musik_geraet'])) {
+        ax_ui_umleiten($ax_datadir, 'tab-test', array('fehler' => ax_grund_text($ax_mg === null || $ax_mg === '' ? 'KEIN_GERAET' : 'GERAET'),
+            'musik_falsch' => array('musik_geraet')) + $ax_rueck);
+    }
+    $ax_par = array('geraet' => $ax_mg);
+    if ($ax_start) {
+        if ($ax_mn !== null && $ax_mn !== '') { $ax_par['nr'] = $ax_mn; }
+        if ($ax_ms !== null && $ax_ms !== '') {
+            $ax_par['sender'] = $ax_ms;
+            $ax_par['anbieter'] = ($ax_ma !== null) ? $ax_ma : '';
+        }
+    }
+    list($ax_h, $ax_f) = ax_befehl_ausfuehren($ax_start ? 'musik_probe' : 'musik_stopp', $ax_par, 'oberflaeche');
+    $ax_z = ax_zeile('MUSIK', $ax_f);
+    $ax_grund = isset($ax_f['GRUND']) ? (string) $ax_f['GRUND'] : '-';
+    $ax_erg = !empty($ax_f['OK'])
+        ? array('meldung' => sprintf(ax_t('TEST.MUSIK_OK'), $ax_z))
+        : array('fehler' => sprintf(ax_t('TEST.MUSIK_FEHL'), $ax_h, ax_grund_text($ax_grund), $ax_z));
+    $ax_mf = array('NR_UND_SENDER' => array('musik_nr', 'musik_sender_name'), 'SENDER_FEHLT' => array('musik_nr', 'musik_sender_name'),
+                   'NR' => array('musik_nr'), 'SENDER_UNBEKANNT' => array('musik_nr'), 'SENDER' => array('musik_sender_name'),
+                   'ANBIETER' => array('musik_anbieter'), 'EIN_ZIEL' => array('musik_geraet'), 'GERAET' => array('musik_geraet'),
+                   'GERAET_UNBEKANNT' => array('musik_geraet'), 'GRUPPE_UNBEKANNT' => array('musik_geraet'),
+                   'GERAETE_OFFLINE' => array('musik_geraet'));
+    if (isset($ax_mf[$ax_grund])) { $ax_erg['musik_falsch'] = $ax_mf[$ax_grund]; }
+    ax_ui_umleiten($ax_datadir, 'tab-test', $ax_erg + $ax_rueck);
+}
+
 /* Ein POST, den kein Handler kannte: trotzdem umleiten. */
 if ($ax_post) {
     ax_ui_umleiten($ax_datadir, $ax_tab, array());
@@ -471,10 +608,25 @@ $ax_hinweise = isset($ax_flash['hinweise']) && is_array($ax_flash['hinweise']) ?
 $ax_testgeraet = (isset($ax_flash['testgeraet']) && is_string($ax_flash['testgeraet']) && preg_match('/^[a-z0-9_]{1,40}\z/', $ax_flash['testgeraet']))
     ? $ax_flash['testgeraet'] : '';
 $ax_testgeraet_falsch = !empty($ax_flash['testgeraet_falsch']);
+// Reiter Test: Routine starten (R2) und Musik-Probe (B4) - die zurueckgegebene Wahl.
+$ax_fl = function ($k, $muster) use ($ax_flash) {
+    return (isset($ax_flash[$k]) && is_string($ax_flash[$k]) && preg_match($muster, $ax_flash[$k])) ? $ax_flash[$k] : '';
+};
+$ax_tr = (isset($ax_flash['test_routine']) && is_string($ax_flash['test_routine'])) ? $ax_flash['test_routine'] : '';
+$ax_tr_falsch = !empty($ax_flash['test_routine_falsch']);
+$ax_trg = $ax_fl('test_routine_geraet', '/^[a-z0-9_]{1,40}\z/');
+$ax_trg_falsch = !empty($ax_flash['test_routine_geraet_falsch']);
+$ax_mz = array('musik_geraet' => $ax_fl('musik_geraet', '/^[a-z0-9_]{1,40}\z/'), 'musik_nr' => $ax_fl('musik_nr', '/^[1-9][0-9]?\z/'),
+               'musik_sender_name' => $ax_fl('musik_sender_name', '/^[^\x00-\x1F\x7F]{1,400}\z/u'),
+               'musik_anbieter' => $ax_fl('musik_anbieter', '/^(tunein|amazon)\z/'));
+$ax_mz_falsch = (isset($ax_flash['musik_falsch']) && is_array($ax_flash['musik_falsch']))
+    ? array_values(array_intersect($ax_flash['musik_falsch'], array_keys($ax_mz))) : array();
+$ax_mzm = function ($k) use ($ax_mz_falsch) { return in_array($k, $ax_mz_falsch, true) ? ' class="sm-beanstandet" aria-invalid="true"' : ''; };
 ax_ui_eingaben(isset($ax_flash['eingaben']) ? $ax_flash['eingaben'] : array());
 foreach ($ax_heil as $ax_m) { $ax_hinweise[] = $ax_m; }
 
 $ax_cfg = ax_config();
+$ax_lage = ax_config_lage();
 $ax_amz = ax_amazon_lage();
 $ax_bef = ax_anmeldung_befund();
 $ax_sitz = ax_sitzung_lesen();
@@ -489,6 +641,18 @@ $ax_sprech = (string) $ax_cfg['sprechtoken'];
 $ax_aktion = (string) $ax_cfg['aktionstoken'];
 $ax_std = $ax_cfg['standardgeraet'] !== '' ? $ax_cfg['standardgeraet'] : 'kueche';
 $ax_zeit = function ($ts) { return (int) $ts > 0 ? date('d.m.Y H:i:s', (int) $ts) : ax_t('ALLG.NIE'); };
+// K1: der Zustand der Sperre aus Loxone - eine Stelle fuer Einstellungen und Reiter Test.
+$ax_sperre_l = ax_loxsperre_lesen();
+$ax_sperre_zeile = function () use ($ax_cfg, $ax_sperre_l, $ax_zeit) {
+    if (empty($ax_cfg['sperre_ein'])) { return array(3, ax_t('TEST.A_SPERRE_AUS')); }
+    if (!$ax_sperre_l['bekannt']) { return array(2, ax_t('TEST.A_SPERRE_UNBEKANNT')); }
+    if ($ax_sperre_l['gesperrt'] === 1) {
+        return array(2, sprintf(ax_t('TEST.A_SPERRE_GESPERRT'), $ax_zeit($ax_sperre_l['seit']), $ax_sperre_l['quelle'] !== '' ? $ax_sperre_l['quelle'] : '-'));
+    }
+    return array(1, sprintf(ax_t('TEST.A_SPERRE_OFFEN'), $ax_zeit($ax_sperre_l['seit']), $ax_sperre_l['quelle'] !== '' ? $ax_sperre_l['quelle'] : '-'));
+};
+$ax_rt_anz = ax_json_lesen($ax_datadir . '/routinen.json');
+$ax_senderliste_text = implode("\n", array_map(function ($z) { return $z['nr'] . ' = ' . $z['name'] . ' | ' . $z['anbieter']; }, $ax_cfg['musik_sender']));
 
 if (class_exists('LBWeb', false)) {
     LBWeb::lbheader('Alexa NG', 'https://wiki.loxberry.de/', 'help.html');
@@ -611,6 +775,20 @@ if (class_exists('LBWeb', false)) {
 <?php if ($ax_fehler !== '') { ?><div class="sm-alert sm-err"><b><?= ax_e(ax_t('SEITE.FEHLER')) ?></b> <?= ax_e($ax_fehler) ?></div><?php } ?>
 <?php if ($ax_hinweise) { ?><div class="sm-alert sm-warn"><?php foreach ($ax_hinweise as $ax_h) { if (is_string($ax_h)) { echo ax_e($ax_h) . '<br>'; } } ?></div><?php } ?>
 <?php if (ax_attrappe_aktiv()) { ?><div class="sm-warnung"><?= ax_e(ax_t('SEITE.ATTRAPPE')) ?></div><?php } ?>
+<?php
+// K2: Hinweisbalken ueber allen Reitern - abgelaufene Anmeldung, stehender Takt.
+$ax_talter_b = ax_alter($ax_takt['ts']);
+$ax_cron_b = ($ax_p['lbhome'] !== '') ? (glob($ax_p['lbhome'] . '/system/cron/cron.*/' . $ax_p['plugin']) ?: array()) : array();
+$ax_balken = array();
+if ($ax_amz['form'] && $ax_bef['befund'] === 'ABGELAUFEN') {
+    $ax_balken[] = array(ax_t('BALKEN.ABGELAUFEN'), 'index.php?form=amazon', ax_t('BALKEN.ZU_AMAZON'));
+}
+if ($ax_p['lbhome'] !== '' && ($ax_talter_b > AX_OK_GRENZE_S || ($ax_talter_b < 0 && !$ax_cron_b))) {
+    $ax_balken[] = array($ax_talter_b < 0 ? ax_t('BALKEN.TAKT_NIE') : sprintf(ax_t('BALKEN.TAKT_STEHT'), ax_dauer_text($ax_talter_b)),
+                         'index.php?form=test', ax_t('BALKEN.ZU_TEST'));
+}
+foreach ($ax_balken as $ax_bk) { ?><div class="sm-alert sm-err ax-balken" role="alert"><b><?= ax_e($ax_bk[0]) ?></b> <a href="<?= ax_e($ax_bk[1]) ?>"><?= ax_e($ax_bk[2]) ?></a></div>
+<?php } ?>
 
 <div class="sm-tabs">
     <a class="sm-tab<?= $ax_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings" href="index.php?form=settings"><?= ax_e(ax_t('REITER.EINSTELLUNGEN')) ?></a>
@@ -703,11 +881,32 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
 <h2><?= ax_e(ax_t('EINST.H_FREIGABEN')) ?></h2>
 <label class="sm-haken"><input data-role="none" type="checkbox" name="ankuendigen_ein" value="1"<?= ax_ui_h('ankuendigen_ein', !empty($ax_cfg['ankuendigen_ein'])) ? ' checked' : '' ?><?= ax_ui_m('ankuendigen_ein') ?>> <?= ax_e(ax_t('EINST.L_ANKUENDIGEN')) ?></label>
 <div class="sm-warnung"><?= ax_e(ax_t('EINST.ANKUENDIGEN_HILFE')) ?></div>
-<label for="routinen_frei"><?= ax_e(ax_t('EINST.L_ROUTINEN')) ?></label>
-<textarea data-role="none" id="routinen_frei" name="routinen_frei" rows="4"<?= ax_ui_m('routinen_frei') ?>><?= ax_e(ax_ui_w('routinen_frei', implode("\n", $ax_cfg['routinen_frei']))) ?></textarea>
-<div class="sm-small"><?= ax_e(ax_t('EINST.ROUTINEN_HILFE')) ?></div>
 <label class="sm-haken"><input data-role="none" type="checkbox" name="texte_protokollieren" value="1"<?= ax_ui_h('texte_protokollieren', !empty($ax_cfg['texte_protokollieren'])) ? ' checked' : '' ?><?= ax_ui_m('texte_protokollieren') ?>> <?= ax_e(ax_t('EINST.L_TEXTE_LOG')) ?></label>
 <div class="sm-small"><?= ax_e(ax_t('EINST.TEXTE_LOG_HILFE')) ?></div>
+
+<h2 id="routinen"><?= ax_e(ax_t('EINST.H_ROUTINEN')) ?></h2>
+<label for="routinen_frei"><?= ax_e(ax_t('EINST.L_ROUTINEN')) ?></label>
+<textarea data-role="none" id="routinen_frei" name="routinen_frei" rows="4" placeholder="<?= ax_e(ax_t('EINST.P_ROUTINEN')) ?>"<?= ax_ui_m('routinen_frei') ?>><?= ax_e(ax_ui_w('routinen_frei', implode("\n", $ax_cfg['routinen_frei']))) ?></textarea>
+<div class="sm-small"><?= ax_e(ax_t('EINST.ROUTINEN_HILFE')) ?> <a href="index.php?form=geraete#routinen_amazon"><?= ax_e(ax_t('EINST.ZU_ROUTINEN_AMAZON')) ?></a></div>
+<div class="sm-hinweis"><?= ax_e(ax_t('EINST.NAMEN_HILFE')) ?></div>
+
+<h2 id="sperre"><?= ax_e(ax_t('EINST.H_SPERRE')) ?></h2>
+<label class="sm-haken"><input data-role="none" type="checkbox" name="sperre_ein" value="1"<?= ax_ui_h('sperre_ein', !empty($ax_cfg['sperre_ein'])) ? ' checked' : '' ?><?= ax_ui_m('sperre_ein') ?>> <?= ax_e(ax_t('EINST.L_SPERRE')) ?></label>
+<div class="sm-small"><?= ax_e(ax_t('EINST.SPERRE_HILFE')) ?></div>
+<?php list(, $ax_sperre_text) = $ax_sperre_zeile(); ?>
+<div class="sm-small"><?= ax_e(sprintf(ax_t('EINST.SPERRE_JETZT'), $ax_sperre_text)) ?></div>
+
+<h2 id="musik"><?= ax_e(ax_t('EINST.H_MUSIK')) ?></h2>
+<label class="sm-haken"><input data-role="none" type="checkbox" name="musik_ein" value="1"<?= ax_ui_h('musik_ein', !empty($ax_cfg['musik_ein'])) ? ' checked' : '' ?><?= ax_ui_m('musik_ein') ?>> <?= ax_e(ax_t('EINST.L_MUSIK')) ?></label>
+<div class="sm-warnung"><?= ax_e(ax_t('EINST.MUSIK_HILFE')) ?></div>
+<div class="sm-row">
+    <div><label for="musik_stundengrenze"><?= ax_e(ax_t('EINST.L_MUSIK_STUNDE')) ?></label>
+        <input data-role="none" type="number" id="musik_stundengrenze" name="musik_stundengrenze" min="10" max="240" value="<?= ax_e(ax_ui_w('musik_stundengrenze', $ax_cfg['musik_stundengrenze'])) ?>"<?= ax_ui_m('musik_stundengrenze') ?>>
+        <div class="sm-small"><?= ax_e(ax_t('EINST.MUSIK_STUNDE_HILFE')) ?></div></div>
+</div>
+<label for="musik_sender"><?= ax_e(ax_t('EINST.L_MUSIK_SENDER')) ?></label>
+<textarea data-role="none" id="musik_sender" name="musik_sender" rows="5" placeholder="<?= ax_e(ax_t('EINST.P_MUSIK_SENDER')) ?>"<?= ax_ui_m('musik_sender') ?>><?= ax_e(ax_ui_w('musik_sender', $ax_senderliste_text)) ?></textarea>
+<div class="sm-small"><?= ax_e(ax_t('EINST.MUSIK_SENDER_HILFE')) ?></div>
 <div class="sm-knopfreihe">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save" value="1"><?= ax_e(ax_t('SEITE.K_SPEICHERN')) ?></button>
 </div>
@@ -738,6 +937,7 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <input data-role="none" type="hidden" name="formtoken" value="<?= ax_e(ax_formtoken($ax_cfg)) ?>">
 <label class="sm-haken"><input data-role="none" type="checkbox" name="sich_amazon" value="1"> <?= ax_e(ax_t('SICH.L_AMAZON')) ?></label>
+<?php if ($ax_lage['abgewiesen']) { ?><div class="sm-alert sm-warn"><?= ax_e(sprintf(ax_t('SICH.X3_WARNUNG'), implode(', ', array_keys($ax_lage['abgewiesen'])))) ?></div><?php } ?>
 <div class="sm-knopfreihe">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="ax_sichern" value="1"><?= ax_e(ax_t('SICH.K_SICHERN')) ?></button>
 </div>
@@ -844,9 +1044,17 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
     <td><?= (int) $ax_g['laut'] >= 0 ? (int) $ax_g['laut'] . ' %' : '–' ?></td><td><?= ax_e($ax_in ? implode(', ', $ax_in) : '–') ?></td>
     <td><?php if ($ax_g['familie'] !== 'WHA') { ?><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="testansage" value="<?= ax_e($ax_g['normal']) ?>"><?= ax_e(ax_t('GER.K_TEST')) ?></button><?php } else { echo ax_e(ax_t('GER.WHA')); } ?></td></tr>
 <?php } ?>
+<?php foreach ($ax_st['verschwunden'] as $ax_g) { ?>
+<tr><td><?= ax_e($ax_g['anzeige'] !== '' ? $ax_g['anzeige'] : '–') ?></td><td><span class="sm-mono"><?= ax_e($ax_g['normal']) ?></span></td><td><?= ax_e($ax_g['familie'] !== '' ? $ax_g['familie'] : '–') ?></td>
+    <td><span class="sm-aus"><?= ax_e(sprintf(ax_t('GER.VERSCHWUNDEN_SEIT'), $ax_zeit($ax_g['seit']))) ?></span></td><td>–</td><td>–</td><td>–</td></tr>
+<?php } ?>
 </table>
 </div>
 </form>
+<?php foreach ($ax_st['verschwunden'] as $ax_g) { list($ax_orte, $ax_nicht) = ax_name_verwendung($ax_g['normal'], $ax_cfg); ?>
+<div class="sm-warnung"><?= ax_e(sprintf(ax_t('GER.VERSCHWUNDEN_HINWEIS'), $ax_g['normal'], $ax_zeit($ax_g['seit']),
+    $ax_orte ? implode(', ', $ax_orte) : ax_t('GER.ORT_KEINER')) . ($ax_nicht ? ' ' . sprintf(ax_t('GER.ORT_NICHT_LESBAR'), implode(', ', $ax_nicht)) : '')) ?></div>
+<?php } ?>
 <?php } else { ?>
 <div class="sm-hinweis"><?= ax_e(ax_t('GER.KEINE')) ?></div>
 <?php } ?>
@@ -858,6 +1066,37 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
 </div>
 </form>
 <div class="sm-small"><?= ax_e(ax_t('GER.HILFE')) ?></div>
+<div class="sm-hinweis"><?= ax_e(ax_t('EINST.NAMEN_HILFE')) ?></div>
+
+<h2 id="routinen_amazon"><?= ax_e(ax_t('GER.H_ROUTINEN')) ?></h2>
+<div class="sm-small"><?= ax_e(ax_t('GER.ROUTINEN_HILFE')) ?></div>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-geraete">
+<input data-role="none" type="hidden" name="formtoken" value="<?= ax_e(ax_formtoken($ax_cfg)) ?>">
+<div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="routinen_anzeigen" value="1"><?= ax_e(ax_t('GER.K_ROUTINEN')) ?></button>
+</div>
+</form>
+<?php if (is_array($ax_rt_anz) && isset($ax_rt_anz['liste']) && is_array($ax_rt_anz['liste'])) {
+    $ax_frei_klein = array_map(function ($r) { return strtolower(trim($r)); }, $ax_cfg['routinen_frei']); ?>
+<div class="sm-small"><?= ax_e(sprintf(ax_t('GER.ROUTINEN_STAND'), count($ax_rt_anz['liste']), $ax_zeit(isset($ax_rt_anz['stand']) ? $ax_rt_anz['stand'] : 0))) ?></div>
+<?php if ($ax_rt_anz['liste']) { ?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th style="width:40%"><?= ax_e(ax_t('GER.T_ROUTINE')) ?></th><th style="width:45%"><?= ax_e(ax_t('GER.T_AUSLOESER')) ?></th><th style="width:15%"><?= ax_e(ax_t('GER.T_FREI')) ?></th></tr>
+<?php foreach ($ax_rt_anz['liste'] as $ax_r) {
+    if (!is_array($ax_r) || !isset($ax_r['name']) || !is_string($ax_r['name'])) { continue; }
+    $ax_aus = (isset($ax_r['ausloeser']) && is_array($ax_r['ausloeser'])) ? array_filter($ax_r['ausloeser'], 'is_string') : array();
+    $ax_ist_frei = in_array(strtolower(trim($ax_r['name'])), $ax_frei_klein, true);
+    foreach ($ax_aus as $ax_u) { if (in_array(strtolower(trim($ax_u)), $ax_frei_klein, true)) { $ax_ist_frei = true; } } ?>
+<tr><td><?= ax_e($ax_r['name'] !== '' ? $ax_r['name'] : '–') ?></td><td><?= ax_e($ax_aus ? implode(' · ', $ax_aus) : '–') ?></td><td><?= $ax_ist_frei ? '<span class="sm-an">' . ax_e(ax_t('ALLG.JA')) . '</span>' : ax_e(ax_t('ALLG.NEIN')) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<?php } else { ?>
+<div class="sm-hinweis"><?= ax_e(ax_t('GER.ROUTINEN_KEINE')) ?></div>
+<?php } ?>
+<?php } ?>
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
@@ -907,6 +1146,7 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
 <tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/<name>/ankuendigen') ?></span></td><td><?= ax_e(ax_t('MQTT.N_TEXT')) ?></td></tr>
 <tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/gruppe/<gruppe>/sprechen') ?></span></td><td><?= ax_e(ax_t('MQTT.N_TEXT')) ?></td></tr>
 <tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/routine') ?></span></td><td><?= ax_e(ax_t('MQTT.N_ROUTINE')) ?></td></tr>
+<tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/sperre') ?></span></td><td><?= ax_e(ax_t('MQTT.N_SPERRE')) ?></td></tr>
 </table>
 <div class="sm-small"><?= ax_e(ax_t('MQTT.BEFEHLE_RETAIN')) ?></div>
 </div>
@@ -941,6 +1181,13 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
 </table>
 <div class="sm-small"><?= ax_e(ax_t('LOX.B_HINWEIS')) ?></div></div>
 <div class="sm-step"><b>7.</b> <?= ax_e(ax_t('LOX.S7')) ?></div>
+<div class="sm-step"><b>8.</b> <?= ax_e(ax_t('LOX.S8_SPERRE')) ?><br>
+<span class="sm-mono"><?= ax_e($ax_basis . '?aktion=sperre&token=' . $ax_aktion . '&wert=1') ?></span><br>
+<span class="sm-mono"><?= ax_e($ax_basis . '?aktion=sperre&token=' . $ax_aktion . '&wert=0') ?></span><br>
+<span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/sperre') ?></span> <?= ax_e(ax_t('MQTT.N_SPERRE')) ?></div>
+<div class="sm-step"><b>9.</b> <?= ax_e(ax_t('LOX.S9_MUSIK')) ?><br>
+<span class="sm-mono"><?= ax_e('/plugins/' . $ax_p['plugin'] . '/?token=' . $ax_aktion . '&aktion=musik_probe&geraet=' . $ax_std . '&nr=<v>') ?></span><br>
+<span class="sm-mono"><?= ax_e('/plugins/' . $ax_p['plugin'] . '/?token=' . $ax_aktion . '&aktion=musik_stopp&geraet=' . $ax_std) ?></span></div>
 <h2><?= ax_e(ax_t('LOX.H_VORLAGEN')) ?></h2>
 <div class="sm-small"><?= ax_e(ax_t('LOX.VORLAGEN_TEXT')) ?></div>
 <form action="index.php" method="post">
@@ -988,6 +1235,10 @@ else {
     foreach ($ax_cfg['gruppen'] as $ax_gr) { foreach (explode(',', $ax_gr['geraete']) as $ax_gn) { if (!in_array($ax_gn, $ax_normal, true)) { $ax_fehlt[] = $ax_gr['name'] . ':' . $ax_gn; } } }
     if ($ax_cfg['standardgeraet'] !== '' && !in_array($ax_cfg['standardgeraet'], $ax_normal, true)) { $ax_fehlt[] = ax_t('EINST.L_STANDARD') . ':' . $ax_cfg['standardgeraet']; }
     $ax_zeile($ax_fehlt ? 2 : 1, ax_t('TEST.F_GRUPPEN'), $ax_fehlt ? sprintf(ax_t('TEST.A_GRUPPEN_FEHLT'), implode(', ', $ax_fehlt)) : sprintf(ax_t('TEST.A_GRUPPEN_OK'), count($ax_cfg['gruppen'])));
+    // K4: Geraete, die Amazon nicht mehr meldet
+    $ax_vw = array();
+    foreach ($ax_st['verschwunden'] as $ax_g) { $ax_vw[] = $ax_g['normal'] . ' (' . $ax_zeit($ax_g['seit']) . ')'; }
+    $ax_zeile($ax_vw ? 2 : 1, ax_t('TEST.F_VERSCHWUNDEN'), $ax_vw ? sprintf(ax_t('TEST.A_VERSCHWUNDEN'), implode(', ', $ax_vw)) : ax_t('TEST.A_VERSCHWUNDEN_KEINE'));
 }
 $ax_zeile(is_array($ax_letzte) ? ((int) $ax_letzte['ergebnis'] ? 1 : 2) : -1, ax_t('TEST.F_LETZTE'), is_array($ax_letzte)
     ? sprintf(ax_t('TEST.A_LETZTE'), $ax_zeit($ax_letzte['zeit']), (string) $ax_letzte['aktion'], (string) $ax_letzte['geraet'], (int) $ax_letzte['ergebnis'], ax_grund_text((string) $ax_letzte['grund']))
@@ -1009,6 +1260,9 @@ else {
     $ax_ds = ax_dienst_status();
     $ax_zeile($ax_ds === null ? -1 : ($ax_ds ? 1 : 0), ax_t('TEST.F_BEFEHLE'), $ax_ds === null ? ax_t('TEST.A_BEFEHLE_NICHT') : ($ax_ds ? ax_t('TEST.A_BEFEHLE_LAEUFT') : ax_t('TEST.A_BEFEHLE_STEHT')));
 }
+// K1: Zustand der Sperre aus Loxone - auch "kein Wert nach dem Update" sichtbar.
+list($ax_s, $ax_a) = $ax_sperre_zeile();
+$ax_zeile($ax_s, ax_t('TEST.F_SPERRE'), $ax_a);
 $ax_eb = ax_config_erstbefund();
 $ax_heilzeile = in_array('kaputt', $ax_eb['schritte'], true) || in_array('kaputt_fest', $ax_eb['schritte'], true) ? 0
               : (in_array('aus_zweit', $ax_eb['schritte'], true) || in_array('token_aus_zweit', $ax_eb['schritte'], true) ? 2 : 1);
@@ -1095,6 +1349,123 @@ if ($ax_st) { foreach ($ax_st['liste'] as $ax_g) { if ($ax_g['familie'] !== 'WHA
 <div class="sm-small"><?= ax_e(ax_t('TEST.TESTANSAGE_GESPERRT')) ?> <a href="index.php?form=geraete"><?= ax_e(ax_t('TEST.ZU_GERAETE')) ?></a></div>
 <?php } ?>
 </form>
+
+<h3 id="routine_start"><?= ax_e(ax_t('TEST.H_ROUTINE')) ?></h3>
+<div class="sm-small"><?= ax_e(ax_t('TEST.ROUTINE_TEXT')) ?></div>
+<?php
+$ax_rt_wahl = $ax_tr !== '' ? $ax_tr : (count($ax_cfg['routinen_frei']) === 1 ? (string) $ax_cfg['routinen_frei'][0] : '');
+$ax_rg_wahl = $ax_trg !== '' ? $ax_trg : ($ax_cfg['standardgeraet'] !== '' ? $ax_cfg['standardgeraet']
+            : (count($ax_test_liste) === 1 ? (string) key($ax_test_liste) : ''));
+$ax_rt_frei = $ax_cfg['routinen_frei'] && $ax_test_liste;
+?>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-test">
+<input data-role="none" type="hidden" name="formtoken" value="<?= ax_e(ax_formtoken($ax_cfg)) ?>">
+<div class="sm-row">
+    <div><label for="test_routine"><?= ax_e(ax_t('TEST.L_ROUTINE')) ?></label>
+    <select data-role="none" name="test_routine" id="test_routine"<?= $ax_tr_falsch ? ' class="sm-beanstandet" aria-invalid="true"' : '' ?>>
+    <option value=""<?= $ax_rt_wahl === '' ? ' selected' : '' ?>><?= ax_e(ax_t('TEST.O_WAEHLEN')) ?></option>
+<?php foreach ($ax_cfg['routinen_frei'] as $ax_rn) { ?>
+    <option value="<?= ax_e($ax_rn) ?>"<?= $ax_rt_wahl === $ax_rn ? ' selected' : '' ?>><?= ax_e($ax_rn) ?></option>
+<?php } ?>
+    </select></div>
+    <div><label for="test_routine_geraet"><?= ax_e(ax_t('TEST.L_ROUTINE_GERAET')) ?></label>
+    <select data-role="none" name="test_routine_geraet" id="test_routine_geraet"<?= $ax_trg_falsch ? ' class="sm-beanstandet" aria-invalid="true"' : '' ?>>
+    <option value=""<?= $ax_rg_wahl === '' ? ' selected' : '' ?>><?= ax_e(ax_t('TEST.O_WAEHLEN')) ?></option>
+<?php foreach ($ax_test_liste as $ax_tn => $ax_ta) { ?>
+    <option value="<?= ax_e($ax_tn) ?>"<?= $ax_rg_wahl === (string) $ax_tn ? ' selected' : '' ?>><?= ax_e($ax_tn . ' (' . $ax_ta . ')') ?></option>
+<?php } ?>
+<?php if ($ax_rg_wahl !== '' && !isset($ax_test_liste[$ax_rg_wahl])) { ?>
+    <option value="<?= ax_e($ax_rg_wahl) ?>" selected><?= ax_e($ax_rg_wahl . ' – ' . ax_t('EINST.O_UNBEKANNT')) ?></option>
+<?php } ?>
+    </select></div>
+</div>
+<div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="routine_start" value="1"<?= $ax_rt_frei ? '' : ' disabled' ?>><?= ax_e(ax_t('TEST.K_ROUTINE')) ?></button>
+</div>
+<?php if (!$ax_cfg['routinen_frei']) { ?>
+<div class="sm-small"><?= ax_e(ax_t('TEST.ROUTINE_GESPERRT_LISTE')) ?> <a href="index.php?form=settings#routinen"><?= ax_e(ax_t('TEST.ZU_ROUTINEN')) ?></a></div>
+<?php } elseif (!$ax_test_liste) { ?>
+<div class="sm-small"><?= ax_e(ax_t('TEST.ROUTINE_GESPERRT_GERAETE')) ?> <a href="index.php?form=geraete"><?= ax_e(ax_t('TEST.ZU_GERAETE')) ?></a></div>
+<?php } ?>
+</form>
+
+<h3 id="musik_probe"><?= ax_e(ax_t('TEST.H_MUSIK')) ?></h3>
+<div class="sm-warnung"><?= ax_e(ax_t('TEST.MUSIK_HILFE')) ?></div>
+<?php
+// Ziele der Musik: sprechfaehige Geraete und Amazon-Gruppen (Mehrraum-Musikgruppen).
+$ax_musik_liste = array();
+if ($ax_st) {
+    foreach ($ax_st['liste'] as $ax_g) {
+        $ax_musik_liste[$ax_g['normal']] = $ax_g['anzeige'] . ($ax_g['familie'] === 'WHA' ? ' – ' . ax_t('GER.WHA') : '');
+    }
+}
+$ax_mg_wahl = $ax_mz['musik_geraet'] !== '' ? $ax_mz['musik_geraet'] : ($ax_cfg['standardgeraet'] !== '' ? $ax_cfg['standardgeraet']
+            : (count($ax_test_liste) === 1 ? (string) key($ax_test_liste) : ''));
+$ax_mn_wahl = $ax_mz['musik_nr'] !== '' ? $ax_mz['musik_nr'] : '';
+$ax_ma_wahl = $ax_mz['musik_anbieter'] !== '' ? $ax_mz['musik_anbieter'] : 'tunein';
+$ax_musik_frei = !empty($ax_cfg['musik_ein']) && $ax_musik_liste;
+?>
+<form action="index.php" method="post" autocomplete="off">
+<input data-role="none" type="hidden" name="activetab" value="tab-test">
+<input data-role="none" type="hidden" name="formtoken" value="<?= ax_e(ax_formtoken($ax_cfg)) ?>">
+<div class="sm-row">
+    <div><label for="musik_nr"><?= ax_e(ax_t('TEST.L_MUSIK_NR')) ?></label>
+    <select data-role="none" name="musik_nr" id="musik_nr"<?= $ax_mzm('musik_nr') ?>>
+    <option value=""<?= $ax_mn_wahl === '' ? ' selected' : '' ?>><?= ax_e(ax_t('TEST.O_EIGENER_NAME')) ?></option>
+<?php foreach ($ax_cfg['musik_sender'] as $ax_z) { ?>
+    <option value="<?= (int) $ax_z['nr'] ?>"<?= $ax_mn_wahl === (string) $ax_z['nr'] ? ' selected' : '' ?>><?= ax_e($ax_z['nr'] . ' – ' . $ax_z['name'] . ' (' . $ax_z['anbieter'] . ')') ?></option>
+<?php } ?>
+    </select></div>
+    <div><label for="musik_sender_name"><?= ax_e(ax_t('TEST.L_MUSIK_NAME')) ?></label>
+    <input data-role="none" type="text" id="musik_sender_name" name="musik_sender_name" maxlength="100" value="<?= ax_e($ax_mz['musik_sender_name']) ?>"<?= $ax_mzm('musik_sender_name') ?>></div>
+    <div><label for="musik_anbieter"><?= ax_e(ax_t('TEST.L_MUSIK_ANBIETER')) ?></label>
+    <select data-role="none" name="musik_anbieter" id="musik_anbieter"<?= $ax_mzm('musik_anbieter') ?>>
+    <option value="tunein"<?= $ax_ma_wahl === 'tunein' ? ' selected' : '' ?>>TuneIn</option>
+    <option value="amazon"<?= $ax_ma_wahl === 'amazon' ? ' selected' : '' ?>>Amazon Music</option>
+    </select></div>
+    <div><label for="musik_geraet"><?= ax_e(ax_t('TEST.L_MUSIK_GERAET')) ?></label>
+    <select data-role="none" name="musik_geraet" id="musik_geraet"<?= $ax_mzm('musik_geraet') ?>>
+    <option value=""<?= $ax_mg_wahl === '' ? ' selected' : '' ?>><?= ax_e(ax_t('TEST.O_WAEHLEN')) ?></option>
+<?php foreach ($ax_musik_liste as $ax_tn => $ax_ta) { ?>
+    <option value="<?= ax_e($ax_tn) ?>"<?= $ax_mg_wahl === (string) $ax_tn ? ' selected' : '' ?>><?= ax_e($ax_tn . ' (' . $ax_ta . ')') ?></option>
+<?php } ?>
+<?php if ($ax_mg_wahl !== '' && !isset($ax_musik_liste[$ax_mg_wahl])) { ?>
+    <option value="<?= ax_e($ax_mg_wahl) ?>" selected><?= ax_e($ax_mg_wahl . ' – ' . ax_t('EINST.O_UNBEKANNT')) ?></option>
+<?php } ?>
+    </select></div>
+</div>
+<div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="musik_start" value="1"<?= $ax_musik_frei ? '' : ' disabled' ?>><?= ax_e(ax_t('TEST.K_MUSIK_START')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="musik_halt" value="1"<?= $ax_musik_frei ? '' : ' disabled' ?>><?= ax_e(ax_t('TEST.K_MUSIK_STOPP')) ?></button>
+</div>
+<?php if (empty($ax_cfg['musik_ein'])) { ?>
+<div class="sm-small"><?= ax_e(ax_t('TEST.MUSIK_GESPERRT')) ?> <a href="index.php?form=settings#musik"><?= ax_e(ax_t('TEST.ZU_MUSIK')) ?></a></div>
+<?php } elseif (!$ax_musik_liste) { ?>
+<div class="sm-small"><?= ax_e(ax_t('TEST.ROUTINE_GESPERRT_GERAETE')) ?> <a href="index.php?form=geraete"><?= ax_e(ax_t('TEST.ZU_GERAETE')) ?></a></div>
+<?php } ?>
+</form>
+
+<h3 id="absender"><?= ax_e(ax_t('TEST.H_ABSENDER')) ?></h3>
+<div class="sm-small"><?= ax_e(ax_t('TEST.ABSENDER_TEXT')) ?></div>
+<?php $ax_abs = ax_absender_lesen(); if ($ax_abs) { ?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th><?= ax_e(ax_t('TEST.T_WEG')) ?></th><th><?= ax_e(ax_t('TEST.T_ADRESSE')) ?></th><th><?= ax_e(ax_t('TEST.T_ABSENDER')) ?></th><th><?= ax_e(ax_t('TEST.T_ERSTE')) ?></th><th><?= ax_e(ax_t('TEST.T_LETZTE')) ?></th><th><?= ax_e(ax_t('TEST.T_HEUTE')) ?></th><th><?= ax_e(ax_t('TEST.T_GESAMT')) ?></th><th><?= ax_e(ax_t('TEST.T_GESENDET')) ?></th><th><?= ax_e(ax_t('TEST.T_AKTIONEN')) ?></th><th><?= ax_e(ax_t('TEST.T_NICHT')) ?></th></tr>
+<?php foreach ($ax_abs as $ax_z) {
+    $ax_ak = array();
+    foreach ($ax_z['aktionen'] as $ax_k => $ax_n) { $ax_ak[] = $ax_k . ' ' . $ax_n; }
+    $ax_gr = array();
+    foreach ($ax_z['gruende'] as $ax_k => $ax_n) { $ax_gr[] = $ax_k . ' ' . $ax_n; } ?>
+<tr><td><?= ax_e($ax_z['weg'] === 'oberflaeche' ? ax_t('TEST.WEG_OBERFLAECHE') : strtoupper($ax_z['weg'])) ?></td><td><span class="sm-mono"><?= ax_e($ax_z['adresse']) ?></span></td><td><?= ax_e($ax_z['absender']) ?></td>
+    <td><?= ax_e($ax_zeit($ax_z['erste'])) ?></td><td><?= ax_e($ax_zeit($ax_z['letzte'])) ?></td><td><?= (int) $ax_z['heute'] ?></td><td><?= (int) $ax_z['gesamt'] ?></td><td><?= (int) $ax_z['gesendet'] ?></td>
+    <td><?= ax_e($ax_ak ? implode(', ', $ax_ak) : '–') ?></td><td><?= ax_e($ax_gr ? implode(', ', $ax_gr) : '–') ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<?php } else { ?>
+<div class="sm-hinweis"><?= ax_e(ax_t('TEST.ABSENDER_LEER')) ?></div>
+<?php } ?>
 </div>
 
 <!-- ================= Reiter: Logdateien ================= -->
