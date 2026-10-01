@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 0.9.0
+Version 0.9.1
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -14,6 +14,24 @@ mit der curl-Erweiterung). Kein Node, kein Python, kein Docker.
 > (Weg b) hat am echten Amazon-Konto funktioniert: Token, Cookies und
 > Geräteliste kamen, und eine Testansage an einen Echo kam an. Die übrigen
 > Punkte unter „Noch am Gerät zu messen“ stehen noch aus.
+
+## Fassung 0.9.1
+
+Vorabfassung. Nachbesserungen nach den ersten Messungen am echten Konto (01.10.2026).
+Gemessen mit einer Amazon-Attrappe unter PHP 7.4 und 8.5; Anmeldung und Ansage sind am echten Konto belegt (0.9.0).
+
+* **Aus anderen Plugins:** Die README beschreibt jetzt die Ausgabeart „Alexa-NG“
+  (POST `aktion=sprechen`, Sprechtoken wie ein Kennwort, nie in einer Adresse)
+  und nennt die Plugins, die sie schon haben: Sprachsteuerung lokal ab 0.11.12,
+  Spotpreis Octopus ab 1.1.18, Abfuhrkalender (AWM & iCal) ab 1.4.17,
+  Abfahrts-Assistent ab 1.6.19, FerienFeiertage ab 1.2.18. Die URL-Vorlage steht
+  nur noch als Rückfall für fremde Plugins da.
+* **Testansage ohne Standardgerät:** Im Reiter Test lässt sich das Gerät jetzt
+  auswählen (bei nur einem Gerät vorausgewählt). Ohne Geräteliste bleibt der
+  Knopf gesperrt und nennt den Grund.
+* Selbstprüfung: Die Zeile „Läuft das Befehlsabo?“ erklärt, dass der
+  MQTT-Befehlseingang ab Werk aus ist – der graue Punkt ist kein Fehler.
+* Neue Symbole (vom Hausherrn).
 
 ## Fassung 0.9.0 — Fassung 1 „Ansagen“
 
@@ -80,13 +98,19 @@ Anmeldung, holt alle 6 Stunden die Geräteliste und sendet das Lebenszeichen.
    nie umbenannt.
 4. Im Reiter **Einstellungen** ein **Standardgerät** wählen und bei Bedarf
    eigene Gruppen anlegen (`unten = kueche_echo,wohnzimmer`).
-5. Im Reiter **Geräte** eine **Testansage** schicken.
+5. Im Reiter **Geräte** eine **Testansage** schicken. Im Reiter **Test** geht
+   die Testansage an das Standardgerät; ist keines eingestellt, wählt man das
+   Gerät dort aus der Geräteliste (ohne Geräteliste bleibt der Knopf gesperrt
+   und die Seite sagt, warum).
 6. Im Reiter **Einbindung in Loxone** die Vorlagen herunterladen
    (`VI_alexang.xml` für die Statuszeile, `VQ_alexang.xml` für die Ansagen)
    und in Loxone Config importieren. Die dort gezeigten Adressen enthalten das
    Sprechtoken bereits.
 7. Im Reiter **Test** nachsehen: jede Zeile ist eine Frage; ein Haken nur für
-   Gemessenes, ein Strich heißt „nicht feststellbar“.
+   Gemessenes, ein Strich heißt „nicht feststellbar“, ein grauer Punkt
+   „ausgeschaltet“. Ab Werk ist das Befehlsabo (Befehle über MQTT)
+   ausgeschaltet; die Zusammenfassung zählt es als „1 ausgeschaltet“, das ist
+   kein Fehler.
 
 ### Amazon-Anmeldung Schritt für Schritt
 
@@ -181,17 +205,47 @@ fehlt oder abgelaufen, Amazon gestört (`AMAZON`, `AMAZON_RATE`, `NETZ`,
 Nach 20 Fehlversuchen mit dem Token je Absender und Stunde ist der Absender
 eine Stunde gesperrt.
 
-### Aus anderen Plugins (Sprachsteuerung, Abfahrts-Assistent)
+### Aus anderen Plugins
 
-Beide haben den Ansagemodus „eigene Vorlage“. Vorlage:
+Diese Plugins haben die Ausgabeart **„Alexa-NG“** (dort ab Werk nicht
+gewählt) und brauchen keine Vorlage:
+
+| Plugin | ab Fassung |
+|---|---|
+| [Sprachsteuerung lokal](https://github.com/timanders22/LoxBerry-Plugin-Sprachsteuerung) | 0.11.12 |
+| [Spotpreis Octopus](https://github.com/timanders22/LoxBerry-Plugin-Spotpreis-Octopus) | 1.1.18 |
+| [Abfuhrkalender (AWM & iCal)](https://github.com/timanders22/LoxBerry-Plugin-AWM-Abfuhr) | 1.4.17 |
+| [Abfahrts-Assistent](https://github.com/timanders22/LoxBerry-Plugin-Abfahrtsassistent) | 1.6.19 |
+| [FerienFeiertage](https://github.com/timanders22/LoxBerry-Plugin-FerienFeiertage) | 1.2.18 |
+
+Folgen sollen: Spotpreis aWATTar, Weissware, Robonect, Saugroboter-Valetudo.
+
+Dort trägt man ein:
+
+* **Gerät:** ein Normalname, eine Kommaliste, `gruppe:<name>` oder `alle`;
+  leer = das Standardgerät von Alexa-NG.
+* je nach Plugin eine **Lautstärke** (leer = bleibt).
+* das **Sprechtoken** aus dem Reiter *Einstellungen* von Alexa-NG.
+
+Das Plugin schickt die Ansage per **POST** an
+`http://127.0.0.1[:Port]/plugins/alexang/index.php` mit `aktion=sprechen`,
+`token`, `geraet` und `text`. Das Sprechtoken steht damit nur im Körper der
+Anfrage, nie in einer Adresse, und wird dort **wie ein Kennwort** behandelt.
+Als gesendet gilt nur `SPRECHEN;OK=1`; sonst nennen Protokoll und Reiter
+*Test* des aufrufenden Plugins HTTP-Code und `GRUND`.
+
+**Rückfall für fremde Plugins** mit einer URL-Vorlage (z. B. Ansagemodus
+„eigene Vorlage“):
 
 ```
 http://{ip}/plugins/alexang/?aktion=sprechen&token=<SPRECHTOKEN>&geraet={zones}&text={text}
 ```
 
+Hier steht das Sprechtoken in der Adresse und kann im Zugriffsprotokoll des
+Webservers landen — nur nehmen, wo es keine Ausgabeart „Alexa-NG“ gibt.
 IP `127.0.0.1`, Zonen = Normalnamen (kommagetrennt, ohne Leerzeichen, oder
-`gruppe:unten`). `{vol}` **nicht** verwenden — das Feld steht dort auf dem
-Maß des Music Servers (8 %); eine Lautstärke fest mit `&laut=35` anhängen.
+`gruppe:unten`). `{vol}` **nicht** verwenden — das Feld steht dort meist auf
+dem Maß des Music Servers (8 %); eine Lautstärke fest mit `&laut=35` anhängen.
 
 ## MQTT
 

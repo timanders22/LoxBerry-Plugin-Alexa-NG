@@ -349,11 +349,28 @@ if ($ax_post && isset($_POST['geraete_holen'])) {
 if ($ax_post && isset($_POST['testansage'])) {
     $ax_zu = is_string($_POST['testansage']) ? $_POST['testansage'] : '';
     $ax_zurueck = (isset($_POST['activetab']) && $_POST['activetab'] === 'tab-test') ? 'tab-test' : 'tab-geraete';
-    if (!preg_match('/^[a-z0-9_]{1,40}\z/', $ax_zu)) { ax_ui_umleiten($ax_datadir, $ax_zurueck, array('fehler' => ax_grund_text('GERAET'))); }
+    // Reiter Test ohne Standardgeraet: das Geraet kommt aus der Auswahl "testgeraet".
+    // Keine Wahl oder ein unbekanntes Geraet ist eine Beanstandung (Nr. 16/19): nichts
+    // gesendet, nie ein stiller Rueckfall auf das Standardgeraet; die Wahl kommt markiert zurueck.
+    $ax_wahl = null;
+    if ($ax_zu === '' && $ax_zurueck === 'tab-test' && array_key_exists('testgeraet', $_POST)) {
+        $ax_wahl = is_string($_POST['testgeraet']) ? trim($_POST['testgeraet']) : "\0";
+        $ax_zu = $ax_wahl;
+    }
+    $ax_rueck = ($ax_wahl !== null && preg_match('/^[a-z0-9_]{1,40}\z/', $ax_wahl)) ? array('testgeraet' => $ax_wahl) : array();
+    if ($ax_wahl === '') {
+        ax_ui_umleiten($ax_datadir, $ax_zurueck, array('fehler' => ax_grund_text('KEIN_GERAET'), 'testgeraet_falsch' => 1));
+    }
+    if (!preg_match('/^[a-z0-9_]{1,40}\z/', $ax_zu)) {
+        ax_ui_umleiten($ax_datadir, $ax_zurueck, array('fehler' => ax_grund_text('GERAET')) + ($ax_wahl !== null ? array('testgeraet_falsch' => 1) : array()));
+    }
     list($ax_h, $ax_f) = ax_befehl_ausfuehren('sprechen', array('geraet' => $ax_zu, 'text' => ax_t('GER.TESTSATZ')), 'oberflaeche');
-    ax_ui_umleiten($ax_datadir, $ax_zurueck, !empty($ax_f['OK']) && empty($ax_f['UEBERSPRUNGEN'])
+    $ax_grund = isset($ax_f['GRUND']) ? (string) $ax_f['GRUND'] : '-';
+    $ax_erg = !empty($ax_f['OK']) && empty($ax_f['UEBERSPRUNGEN'])
         ? array('meldung' => sprintf(ax_t('GER.TEST_OK'), $ax_zu, ax_zeile('SPRECHEN', $ax_f)))
-        : array('fehler' => sprintf(ax_t('GER.TEST_FEHL'), $ax_zu, $ax_h, ax_grund_text(isset($ax_f['GRUND']) ? $ax_f['GRUND'] : '-'))));
+        : array('fehler' => sprintf(ax_t('GER.TEST_FEHL'), $ax_zu, $ax_h, ax_grund_text($ax_grund)));
+    if ($ax_wahl !== null && in_array($ax_grund, array('GERAET', 'GERAET_UNBEKANNT'), true)) { $ax_erg['testgeraet_falsch'] = 1; }
+    ax_ui_umleiten($ax_datadir, $ax_zurueck, $ax_erg + $ax_rueck);
 }
 
 /* ---------------- MQTT speichern (eigenes Formular, eigener Handler) ---------------- */
@@ -450,6 +467,10 @@ $ax_gespeichert = !empty($ax_flash['gespeichert']);
 $ax_fehler = isset($ax_flash['fehler']) && is_string($ax_flash['fehler']) ? $ax_flash['fehler'] : '';
 $ax_meldung = isset($ax_flash['meldung']) && is_string($ax_flash['meldung']) ? $ax_flash['meldung'] : '';
 $ax_hinweise = isset($ax_flash['hinweise']) && is_array($ax_flash['hinweise']) ? $ax_flash['hinweise'] : array();
+// Reiter Test: die zuletzt gewaehlte Testansage-Auswahl (nur ein Normalname) und ob sie beanstandet war.
+$ax_testgeraet = (isset($ax_flash['testgeraet']) && is_string($ax_flash['testgeraet']) && preg_match('/^[a-z0-9_]{1,40}\z/', $ax_flash['testgeraet']))
+    ? $ax_flash['testgeraet'] : '';
+$ax_testgeraet_falsch = !empty($ax_flash['testgeraet_falsch']);
 ax_ui_eingaben(isset($ax_flash['eingaben']) ? $ax_flash['eingaben'] : array());
 foreach ($ax_heil as $ax_m) { $ax_hinweise[] = $ax_m; }
 
@@ -1041,12 +1062,38 @@ $ax_klasse = $ax_zahl[0] ? 'sm-alert sm-err' : (($ax_zahl[-1] || $ax_zahl[2]) ? 
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="tab-test">
 <input data-role="none" type="hidden" name="formtoken" value="<?= ax_e(ax_formtoken($ax_cfg)) ?>">
+<?php
+// Geraete, an die eine Testansage gehen kann (Amazon-Gruppen WHA nicht).
+$ax_test_liste = array();
+if ($ax_st) { foreach ($ax_st['liste'] as $ax_g) { if ($ax_g['familie'] !== 'WHA') { $ax_test_liste[$ax_g['normal']] = $ax_g['anzeige']; } } }
+?>
 <div class="sm-knopfreihe">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="testansage" value="<?= ax_e($ax_cfg['standardgeraet']) ?>"<?= $ax_cfg['standardgeraet'] === '' ? ' disabled' : '' ?>><?= ax_e(sprintf(ax_t('TEST.K_TESTANSAGE'), $ax_cfg['standardgeraet'] !== '' ? $ax_cfg['standardgeraet'] : '–')) ?></button>
-<?php if ($ax_cfg['standardgeraet'] === '') { ?>
-    <span class="sm-small"><?= ax_e(ax_t('TEST.TESTANSAGE_GESPERRT')) ?> <a href="index.php?form=settings#standardgeraet"><?= ax_e(ax_t('TEST.ZU_EINSTELLUNGEN')) ?></a></span>
+<?php if ($ax_cfg['standardgeraet'] !== '') { ?>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="testansage" value="<?= ax_e($ax_cfg['standardgeraet']) ?>"><?= ax_e(sprintf(ax_t('TEST.K_TESTANSAGE'), $ax_cfg['standardgeraet'])) ?></button>
+<?php } elseif ($ax_test_liste) {
+    // Kein Standardgeraet: Geraet hier waehlen. Genau eines: vorausgewaehlt; eine
+    // zurueckgegebene Wahl hat Vorrang (auch eine beanstandete).
+    $ax_tw = $ax_testgeraet !== '' ? $ax_testgeraet : (count($ax_test_liste) === 1 ? (string) key($ax_test_liste) : ''); ?>
+    <label for="testgeraet"><?= ax_e(ax_t('TEST.L_TESTGERAET')) ?></label>
+    <select data-role="none" name="testgeraet" id="testgeraet"<?= $ax_testgeraet_falsch ? ' class="sm-beanstandet" aria-invalid="true"' : '' ?>>
+    <option value=""<?= $ax_tw === '' ? ' selected' : '' ?>><?= ax_e(ax_t('TEST.O_WAEHLEN')) ?></option>
+<?php foreach ($ax_test_liste as $ax_tn => $ax_ta) { ?>
+    <option value="<?= ax_e($ax_tn) ?>"<?= $ax_tw === (string) $ax_tn ? ' selected' : '' ?>><?= ax_e($ax_tn . ' (' . $ax_ta . ')') ?></option>
+<?php } ?>
+<?php if ($ax_tw !== '' && !isset($ax_test_liste[$ax_tw])) { ?>
+    <option value="<?= ax_e($ax_tw) ?>" selected><?= ax_e($ax_tw . ' – ' . ax_t('EINST.O_UNBEKANNT')) ?></option>
+<?php } ?>
+    </select>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="testansage" value=""><?= ax_e(ax_t('TEST.K_TESTANSAGE_GEWAEHLT')) ?></button>
+<?php } else { ?>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="testansage" value="" disabled><?= ax_e(sprintf(ax_t('TEST.K_TESTANSAGE'), '–')) ?></button>
 <?php } ?>
 </div>
+<?php if ($ax_cfg['standardgeraet'] === '' && $ax_test_liste) { ?>
+<div class="sm-small"><?= ax_e(ax_t('TEST.TESTANSAGE_WAEHLEN')) ?> <a href="index.php?form=settings#standardgeraet"><?= ax_e(ax_t('TEST.ZU_EINSTELLUNGEN')) ?></a></div>
+<?php } elseif ($ax_cfg['standardgeraet'] === '') { ?>
+<div class="sm-small"><?= ax_e(ax_t('TEST.TESTANSAGE_GESPERRT')) ?> <a href="index.php?form=geraete"><?= ax_e(ax_t('TEST.ZU_GERAETE')) ?></a></div>
+<?php } ?>
 </form>
 </div>
 
