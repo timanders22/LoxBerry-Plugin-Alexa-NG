@@ -65,7 +65,8 @@ function ax_ui_felder($formular)
     if ($formular === 'settings') {
         return array('aktiv', 'standardgeraet', 'gruppe_name', 'gruppe_geraete', 'bremse_fenster_s', 'mindestabstand_s',
                      'stundengrenze', 'ruhe_ein', 'ruhe_von', 'ruhe_bis', 'ankuendigen_ein', 'routinen_frei',
-                     'texte_protokollieren', 'sperre_ein', 'musik_ein', 'musik_stundengrenze', 'musik_sender');
+                     'texte_protokollieren', 'sperre_ein', 'musik_ein', 'musik_stundengrenze', 'musik_sender',
+                     'radio_ein', 'radio_zonen');
     }
     if ($formular === 'mqtt') { return array('mqtt_ein', 'mqtt_praefix', 'befehle_mqtt_ein', 'befehle_routine_ein'); }
     return array();
@@ -168,7 +169,8 @@ if ($ax_post && !ax_formtoken_ok($ax_cfg)) {
 /* ---------------- Downloads (vor lbheader, ohne Umleitung) ---------------- */
 if ($ax_post && isset($_POST['download'])) {
     $ax_host = isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : '';
-    $ax_v = (is_string($_POST['download']) && $_POST['download'] === 'vo') ? ax_vorlage_aus($ax_host, $ax_cfg) : ax_vorlage_ein($ax_host);
+    $ax_dl = is_string($_POST['download']) ? $_POST['download'] : '';
+    $ax_v = ($ax_dl === 'vo') ? ax_vorlage_aus($ax_host, $ax_cfg) : (($ax_dl === 'vr') ? ax_vorlage_radio($ax_host, $ax_cfg) : ax_vorlage_ein($ax_host));
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $ax_v[0] . '"');
     header('Content-Length: ' . strlen($ax_v[1]));
@@ -203,7 +205,7 @@ if ($ax_post && isset($_POST['save'])) {
         }
         $ax_neu[$k] = $gut;
     };
-    foreach (array('aktiv', 'ruhe_ein', 'ankuendigen_ein', 'texte_protokollieren', 'sperre_ein', 'musik_ein') as $ax_k) {
+    foreach (array('aktiv', 'ruhe_ein', 'ankuendigen_ein', 'texte_protokollieren', 'sperre_ein', 'musik_ein', 'radio_ein') as $ax_k) {
         $ax_neu[$ax_k] = empty($_POST[$ax_k]) ? 0 : 1;
     }
     foreach (array('standardgeraet', 'bremse_fenster_s', 'mindestabstand_s', 'stundengrenze', 'ruhe_von', 'ruhe_bis',
@@ -264,6 +266,34 @@ if ($ax_post && isset($_POST['save'])) {
         $ax_sl[] = array('nr' => (int) $ax_snr, 'name' => $ax_sname, 'anbieter' => $ax_anb);
     }
     if ($ax_sl_fehl) { ax_ui_bean('musik_sender'); } else { $ax_feld('musik_sender', $ax_sl); }
+    // Radio je Zone (Z1): je Zeile "Nummer = Ziel" - Normalname, amazon:<name>
+    // oder gruppe:<name>. Eine unlesbare Zeile oder eine eigene Gruppe, die es
+    // nicht gibt, ist eine Beanstandung; gespeichert wird dann nichts (Nr. 16).
+    $ax_rz = array();
+    $ax_rz_fehl = false;
+    $ax_zn = 0;
+    foreach (preg_split('/\r?\n/', isset($_POST['radio_zonen']) && is_string($_POST['radio_zonen']) ? $_POST['radio_zonen'] : '') as $ax_r) {
+        $ax_zn++;
+        $ax_r = trim($ax_r);
+        if ($ax_r === '') { continue; }
+        $ax_teil = explode('=', $ax_r, 2);
+        $ax_znr = trim($ax_teil[0]);
+        $ax_zziel = isset($ax_teil[1]) ? trim($ax_teil[1]) : '';
+        if (count($ax_teil) !== 2 || !preg_match('/^[1-9][0-9]?\z/', $ax_znr) || (int) $ax_znr > AX_RADIO_ZONEN_MAX || !ax_radio_ziel_form($ax_zziel)) {
+            $ax_hw[] = sprintf(ax_t('MELDUNG.ZONE_ZEILE'), $ax_zn);
+            $ax_rz_fehl = true;
+            continue;
+        }
+        $ax_rz[] = array('zone' => (int) $ax_znr, 'ziel' => $ax_zziel);
+    }
+    if (!$ax_rz_fehl) {
+        $ax_rz_gr = ax_radio_gruppen_fehlen($ax_rz, $ax_gruppen);
+        if ($ax_rz_gr) {
+            $ax_hw[] = sprintf(ax_t('MELDUNG.ZONE_GRUPPE'), implode(', ', $ax_rz_gr));
+            $ax_rz_fehl = true;
+        }
+    }
+    if ($ax_rz_fehl) { ax_ui_bean('radio_zonen'); } else { $ax_feld('radio_zonen', $ax_rz); }
     if ($ax_hw) {
         array_unshift($ax_hw, ax_t('MELDUNG.EINGABEN_ZURUECK'));
         ax_ui_umleiten($ax_datadir, 'tab-settings', array('hinweise' => $ax_hw, 'eingaben' => ax_ui_sammeln('settings')));
@@ -274,8 +304,25 @@ if ($ax_post && isset($_POST['save'])) {
     ax_log('INFO', 'Einstellungen gespeichert (aktiv=' . $ax_neu['aktiv'] . ', Stundengrenze ' . $ax_neu['stundengrenze']
         . ', Bremse ' . $ax_neu['bremse_fenster_s'] . ' s, Ankuendigen ' . $ax_neu['ankuendigen_ein']
         . ', Sperre aus Loxone ' . $ax_neu['sperre_ein'] . ', Musik-Probe ' . $ax_neu['musik_ein']
-        . ' (' . count($ax_neu['musik_sender']) . ' Sender, ' . $ax_neu['musik_stundengrenze'] . '/h)).');
-    ax_ui_umleiten($ax_datadir, 'tab-settings', array('gespeichert' => 1));
+        . ' (' . count($ax_neu['musik_sender']) . ' Sender, ' . $ax_neu['musik_stundengrenze'] . '/h)'
+        . ', Radio je Zone ' . $ax_neu['radio_ein'] . ' (' . count($ax_neu['radio_zonen']) . ' Zonen)).');
+    // Z1: Ziele, die die Geraeteliste nicht kennt, sind kein Fehler beim Speichern
+    // (die Liste kann alt sein) - aber ein Hinweis; am Endpunkt gibt es dafuer 404.
+    $ax_rz_unbek = array();
+    $ax_st_s = $ax_neu['radio_zonen'] ? ax_geraete() : null;
+    if ($ax_st_s) {
+        $ax_kennt = array();
+        foreach ($ax_st_s['liste'] as $ax_g) { $ax_kennt[$ax_g['normal']] = $ax_g['familie']; }
+        foreach ($ax_neu['radio_zonen'] as $ax_z) {
+            if (strpos($ax_z['ziel'], 'gruppe:') === 0) { continue; }
+            $ax_zname = preg_replace('/^amazon:/', '', $ax_z['ziel']);
+            if (!isset($ax_kennt[$ax_zname]) || (strpos($ax_z['ziel'], 'amazon:') === 0 && $ax_kennt[$ax_zname] !== 'WHA')) {
+                $ax_rz_unbek[] = $ax_z['zone'] . ' = ' . $ax_z['ziel'];
+            }
+        }
+    }
+    ax_ui_umleiten($ax_datadir, 'tab-settings', array('gespeichert' => 1)
+        + ($ax_rz_unbek ? array('hinweise' => array(sprintf(ax_t('MELDUNG.ZONE_ZIEL_UNBEKANNT'), implode(', ', $ax_rz_unbek)))) : array()));
 }
 
 /* ---------------- Token neu wuerfeln (je eins, mit Warnung) ---------------- */
@@ -590,6 +637,39 @@ if ($ax_post && (isset($_POST['musik_start']) || isset($_POST['musik_halt']))) {
     ax_ui_umleiten($ax_datadir, 'tab-test', $ax_erg + $ax_rueck);
 }
 
+/* ---------------- Reiter Test: Radio je Zone (Z6) ----------------
+ * Dieselbe Funktion wie aktion=radio/radio_stopp; das Aktionstoken bleibt
+ * intern (es steht in keinem Formular). PRG: das Ergebnis reist in der
+ * Einmalmeldung; beanstandete Felder kommen markiert zurueck (X-2). */
+if ($ax_post && (isset($_POST['radio_start']) || isset($_POST['radio_halt']))) {
+    $ax_start = isset($_POST['radio_start']);
+    $ax_rw = function ($k) { return (isset($_POST[$k]) && is_string($_POST[$k])) ? trim($_POST[$k]) : null; };
+    $ax_rzone = $ax_rw('radio_zone');
+    $ax_rnr = $ax_rw('radio_nr');
+    $ax_rueck = array();
+    if ($ax_rzone !== null && preg_match('/^([1-9][0-9]?|alle)\z/', $ax_rzone)) { $ax_rueck['radio_zone'] = $ax_rzone; }
+    if ($ax_rnr !== null && preg_match('/^[1-9][0-9]?\z/', $ax_rnr)) { $ax_rueck['radio_nr'] = $ax_rnr; }
+    if ($ax_rzone === null || $ax_rzone === '') {
+        ax_ui_umleiten($ax_datadir, 'tab-test', array('fehler' => ax_grund_text('ZONE'), 'radio_falsch' => array('radio_zone')) + $ax_rueck);
+    }
+    if ($ax_start && ($ax_rnr === null || $ax_rnr === '')) {
+        ax_ui_umleiten($ax_datadir, 'tab-test', array('fehler' => ax_grund_text('NR'), 'radio_falsch' => array('radio_nr')) + $ax_rueck);
+    }
+    $ax_par = array('zone' => $ax_rzone);
+    if ($ax_start) { $ax_par['nr'] = $ax_rnr; }
+    list($ax_h, $ax_f) = ax_radio_ausfuehren($ax_start ? 'radio' : 'radio_stopp', $ax_par, 'oberflaeche');
+    $ax_z = ax_zeile('RADIO', $ax_f);
+    $ax_grund = isset($ax_f['GRUND']) ? (string) $ax_f['GRUND'] : '-';
+    $ax_erg = !empty($ax_f['OK'])
+        ? array('meldung' => sprintf(ax_t('TEST.RADIO_OK'), $ax_z))
+        : array('fehler' => sprintf(ax_t('TEST.RADIO_FEHL'), $ax_h, ax_grund_text($ax_grund), $ax_z));
+    $ax_rf = array('ZONE' => array('radio_zone'), 'ZONE_UNBEKANNT' => array('radio_zone'), 'GERAET_UNBEKANNT' => array('radio_zone'),
+                   'GRUPPE_UNBEKANNT' => array('radio_zone'), 'GERAETE_OFFLINE' => array('radio_zone'),
+                   'NR' => array('radio_nr'), 'SENDER_UNBEKANNT' => array('radio_nr'));
+    if (isset($ax_rf[$ax_grund])) { $ax_erg['radio_falsch'] = $ax_rf[$ax_grund]; }
+    ax_ui_umleiten($ax_datadir, 'tab-test', $ax_erg + $ax_rueck);
+}
+
 /* Ein POST, den kein Handler kannte: trotzdem umleiten. */
 if ($ax_post) {
     ax_ui_umleiten($ax_datadir, $ax_tab, array());
@@ -622,6 +702,11 @@ $ax_mz = array('musik_geraet' => $ax_fl('musik_geraet', '/^[a-z0-9_]{1,40}\z/'),
 $ax_mz_falsch = (isset($ax_flash['musik_falsch']) && is_array($ax_flash['musik_falsch']))
     ? array_values(array_intersect($ax_flash['musik_falsch'], array_keys($ax_mz))) : array();
 $ax_mzm = function ($k) use ($ax_mz_falsch) { return in_array($k, $ax_mz_falsch, true) ? ' class="sm-beanstandet" aria-invalid="true"' : ''; };
+// Reiter Test: Radio je Zone (Z6) - die zurueckgegebene Wahl und was beanstandet war.
+$ax_rzf = array('radio_zone' => $ax_fl('radio_zone', '/^([1-9][0-9]?|alle)\z/'), 'radio_nr' => $ax_fl('radio_nr', '/^[1-9][0-9]?\z/'));
+$ax_rzf_falsch = (isset($ax_flash['radio_falsch']) && is_array($ax_flash['radio_falsch']))
+    ? array_values(array_intersect(array_filter($ax_flash['radio_falsch'], 'is_string'), array_keys($ax_rzf))) : array();
+$ax_rzm = function ($k) use ($ax_rzf_falsch) { return in_array($k, $ax_rzf_falsch, true) ? ' class="sm-beanstandet" aria-invalid="true"' : ''; };
 ax_ui_eingaben(isset($ax_flash['eingaben']) ? $ax_flash['eingaben'] : array());
 foreach ($ax_heil as $ax_m) { $ax_hinweise[] = $ax_m; }
 
@@ -652,6 +737,7 @@ $ax_sperre_zeile = function () use ($ax_cfg, $ax_sperre_l, $ax_zeit) {
     return array(1, sprintf(ax_t('TEST.A_SPERRE_OFFEN'), $ax_zeit($ax_sperre_l['seit']), $ax_sperre_l['quelle'] !== '' ? $ax_sperre_l['quelle'] : '-'));
 };
 $ax_rt_anz = ax_json_lesen($ax_datadir . '/routinen.json');
+$ax_radio_text = implode("\n", array_map(function ($z) { return $z['zone'] . ' = ' . $z['ziel']; }, $ax_cfg['radio_zonen']));
 $ax_senderliste_text = implode("\n", array_map(function ($z) { return $z['nr'] . ' = ' . $z['name'] . ' | ' . $z['anbieter']; }, $ax_cfg['musik_sender']));
 
 if (class_exists('LBWeb', false)) {
@@ -907,6 +993,13 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
 <label for="musik_sender"><?= ax_e(ax_t('EINST.L_MUSIK_SENDER')) ?></label>
 <textarea data-role="none" id="musik_sender" name="musik_sender" rows="5" placeholder="<?= ax_e(ax_t('EINST.P_MUSIK_SENDER')) ?>"<?= ax_ui_m('musik_sender') ?>><?= ax_e(ax_ui_w('musik_sender', $ax_senderliste_text)) ?></textarea>
 <div class="sm-small"><?= ax_e(ax_t('EINST.MUSIK_SENDER_HILFE')) ?></div>
+
+<h2 id="radio"><?= ax_e(ax_t('EINST.H_RADIO')) ?></h2>
+<label class="sm-haken"><input data-role="none" type="checkbox" name="radio_ein" value="1"<?= ax_ui_h('radio_ein', !empty($ax_cfg['radio_ein'])) ? ' checked' : '' ?><?= ax_ui_m('radio_ein') ?>> <?= ax_e(ax_t('EINST.L_RADIO')) ?></label>
+<div class="sm-warnung"><?= ax_e(ax_t('EINST.RADIO_HILFE')) ?></div>
+<label for="radio_zonen"><?= ax_e(ax_t('EINST.L_RADIO_ZONEN')) ?></label>
+<textarea data-role="none" id="radio_zonen" name="radio_zonen" rows="6" placeholder="<?= ax_e(ax_t('EINST.P_RADIO_ZONEN')) ?>"<?= ax_ui_m('radio_zonen') ?>><?= ax_e(ax_ui_w('radio_zonen', $ax_radio_text)) ?></textarea>
+<div class="sm-small"><?= ax_e(ax_t('EINST.RADIO_ZONEN_HILFE')) ?></div>
 <div class="sm-knopfreihe">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save" value="1"><?= ax_e(ax_t('SEITE.K_SPEICHERN')) ?></button>
 </div>
@@ -1147,6 +1240,8 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
 <tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/gruppe/<gruppe>/sprechen') ?></span></td><td><?= ax_e(ax_t('MQTT.N_TEXT')) ?></td></tr>
 <tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/routine') ?></span></td><td><?= ax_e(ax_t('MQTT.N_ROUTINE')) ?></td></tr>
 <tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/sperre') ?></span></td><td><?= ax_e(ax_t('MQTT.N_SPERRE')) ?></td></tr>
+<tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/radio/<zone>') ?></span></td><td><?= ax_e(ax_t('MQTT.N_RADIO')) ?></td></tr>
+<tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/radio/<zone>/laut') ?></span></td><td><?= ax_e(ax_t('MQTT.N_RADIO_LAUT')) ?></td></tr>
 </table>
 <div class="sm-small"><?= ax_e(ax_t('MQTT.BEFEHLE_RETAIN')) ?></div>
 </div>
@@ -1188,6 +1283,35 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
 <div class="sm-step"><b>9.</b> <?= ax_e(ax_t('LOX.S9_MUSIK')) ?><br>
 <span class="sm-mono"><?= ax_e('/plugins/' . $ax_p['plugin'] . '/?token=' . $ax_aktion . '&aktion=musik_probe&geraet=' . $ax_std . '&nr=<v>') ?></span><br>
 <span class="sm-mono"><?= ax_e('/plugins/' . $ax_p['plugin'] . '/?token=' . $ax_aktion . '&aktion=musik_stopp&geraet=' . $ax_std) ?></span></div>
+<div class="sm-step" id="radio_loxone"><b>10.</b> <?= ax_e(ax_t('LOX.S10_RADIO')) ?>
+<?php if (empty($ax_cfg['radio_ein'])) { ?><div class="sm-hinweis"><?= ax_e(ax_t('LOX.RADIO_AUS')) ?> <a href="index.php?form=settings#radio"><?= ax_e(ax_t('TEST.ZU_RADIO')) ?></a></div><?php } ?>
+<table class="sm-tbl">
+<tr><th style="width:5%">#</th><th style="width:95%"><?= ax_e(ax_t('LOX.T_SCHRITT')) ?></th></tr>
+<tr><td>a</td><td><?= ax_e(ax_t('LOX.RADIO_B1')) ?></td></tr>
+<tr><td>b</td><td><?= ax_e(ax_t('LOX.RADIO_B2')) ?></td></tr>
+<tr><td>c</td><td><?= ax_e(ax_t('LOX.RADIO_B3')) ?></td></tr>
+<tr><td>d</td><td><?= ax_e(ax_t('LOX.RADIO_B4')) ?></td></tr>
+<tr><td>e</td><td><?= ax_e(ax_t('LOX.RADIO_B5')) ?></td></tr>
+<tr><td>f</td><td><?= ax_e(ax_t('LOX.RADIO_B6')) ?></td></tr>
+</table>
+<?php if ($ax_cfg['radio_zonen']) { $ax_rpfad = '/plugins/' . $ax_p['plugin'] . '/?token=' . $ax_aktion; ?>
+<div class="sm-small"><?= ax_e(ax_t('LOX.RADIO_ADRESSEN')) ?> <span class="sm-mono"><?= ax_e(preg_replace('#/plugins/.*$#', '', $ax_basis)) ?></span></div>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th style="width:8%"><?= ax_e(ax_t('TEST.T_ZONE')) ?></th><th style="width:17%"><?= ax_e(ax_t('TEST.T_ZIEL')) ?></th><th style="width:75%"><?= ax_e(ax_t('LOX.T_RADIO_BEFEHLE')) ?></th></tr>
+<?php foreach (array_merge($ax_cfg['radio_zonen'], array(array('zone' => 'alle', 'ziel' => ax_t('LOX.RADIO_ALLE_ZIEL')))) as $ax_z) { ?>
+<tr><td><?= ax_e((string) $ax_z['zone']) ?></td><td><span class="sm-mono"><?= ax_e($ax_z['ziel']) ?></span></td><td>
+<span class="sm-mono"><?= ax_e($ax_rpfad . '&aktion=radio&zone=' . $ax_z['zone'] . '&nr=<v>') ?></span><br>
+<span class="sm-mono"><?= ax_e($ax_rpfad . '&aktion=radio_stopp&zone=' . $ax_z['zone']) ?></span><br>
+<span class="sm-mono"><?= ax_e($ax_rpfad . '&aktion=radio_laut&zone=' . $ax_z['zone'] . '&wert=<v>') ?></span></td></tr>
+<?php } ?>
+</table>
+</div>
+<?php } else { ?>
+<div class="sm-hinweis"><?= ax_e(ax_t('LOX.RADIO_KEINE_ZONE')) ?> <a href="index.php?form=settings#radio"><?= ax_e(ax_t('TEST.ZU_RADIO')) ?></a></div>
+<?php } ?>
+<span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/radio/<zone>') ?></span> <?= ax_e(ax_t('MQTT.N_RADIO')) ?><br>
+<span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/radio/<zone>/laut') ?></span> <?= ax_e(ax_t('MQTT.N_RADIO_LAUT')) ?></div>
 <h2><?= ax_e(ax_t('LOX.H_VORLAGEN')) ?></h2>
 <div class="sm-small"><?= ax_e(ax_t('LOX.VORLAGEN_TEXT')) ?></div>
 <form action="index.php" method="post">
@@ -1196,9 +1320,11 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
 <div class="sm-knopfreihe">
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="vi"><?= ax_e(ax_t('LOX.K_VI')) ?></button>
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="vo"><?= ax_e(ax_t('LOX.K_VO')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="vr"<?= $ax_cfg['radio_zonen'] ? '' : ' disabled' ?>><?= ax_e(ax_t('LOX.K_VR')) ?></button>
 </div>
 </form>
 <div class="sm-warnung"><?= ax_e(ax_t('LOX.VO_VERTRAULICH')) ?></div>
+<div class="sm-warnung"><?= ax_e(ax_t('LOX.VR_VERTRAULICH')) ?></div>
 <h2><?= ax_e(ax_t('LOX.H_PLUGINS')) ?></h2>
 <div class="sm-small"><?= ax_e(ax_t('LOX.PLUGINS_TEXT')) ?></div>
 <div class="sm-pre"><?= ax_e('http://{ip}/plugins/' . $ax_p['plugin'] . '/?aktion=sprechen&token=' . $ax_sprech . '&geraet={zones}&text={text}') ?></div>
@@ -1443,6 +1569,77 @@ $ax_musik_frei = !empty($ax_cfg['musik_ein']) && $ax_musik_liste;
 <div class="sm-small"><?= ax_e(ax_t('TEST.MUSIK_GESPERRT')) ?> <a href="index.php?form=settings#musik"><?= ax_e(ax_t('TEST.ZU_MUSIK')) ?></a></div>
 <?php } elseif (!$ax_musik_liste) { ?>
 <div class="sm-small"><?= ax_e(ax_t('TEST.ROUTINE_GESPERRT_GERAETE')) ?> <a href="index.php?form=geraete"><?= ax_e(ax_t('TEST.ZU_GERAETE')) ?></a></div>
+<?php } ?>
+</form>
+
+<h3 id="radio_test"><?= ax_e(ax_t('TEST.H_RADIO')) ?></h3>
+<div class="sm-warnung"><?= ax_e(ax_t('TEST.RADIO_HILFE')) ?></div>
+<?php
+$ax_rstand = ax_radio_lesen();
+$ax_rz_liste = $ax_cfg['radio_zonen'];
+$ax_rz_nummern = array_map(function ($z) { return (string) $z['zone']; }, $ax_rz_liste);
+$ax_rzone_wahl = $ax_rzf['radio_zone'] !== '' ? $ax_rzf['radio_zone'] : (count($ax_rz_liste) === 1 ? (string) $ax_rz_liste[0]['zone'] : '');
+$ax_rnr_wahl = $ax_rzf['radio_nr'] !== '' ? $ax_rzf['radio_nr'] : (count($ax_cfg['musik_sender']) === 1 ? (string) $ax_cfg['musik_sender'][0]['nr'] : '');
+$ax_rnr_liste = array_map(function ($z) { return (string) $z['nr']; }, $ax_cfg['musik_sender']);
+$ax_radio_frei = !empty($ax_cfg['radio_ein']) && $ax_rz_liste;
+?>
+<?php if ($ax_rz_liste) { ?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th style="width:8%"><?= ax_e(ax_t('TEST.T_ZONE')) ?></th><th style="width:20%"><?= ax_e(ax_t('TEST.T_ZIEL')) ?></th><th style="width:32%"><?= ax_e(ax_t('TEST.T_BESTAETIGT')) ?></th><th style="width:40%"><?= ax_e(ax_t('TEST.T_LETZTER')) ?></th></tr>
+<?php foreach ($ax_rz_liste as $ax_z) {
+    $ax_re = isset($ax_rstand[$ax_z['zone']]) ? $ax_rstand[$ax_z['zone']] : null;
+    if (!$ax_re || $ax_re['zustand'] < 0) { $ax_rb = '–'; }
+    elseif ($ax_re['zustand'] === 1) { $ax_rb = sprintf(ax_t('TEST.RADIO_SPIELT'), $ax_re['sender'], $ax_zeit($ax_re['t_sender'])); }
+    else { $ax_rb = sprintf(ax_t('TEST.RADIO_GESTOPPT'), $ax_zeit($ax_re['t_sender'])); }
+    if ($ax_re && $ax_re['laut'] >= 0) { $ax_rb .= ' · ' . sprintf(ax_t('TEST.RADIO_LAUT'), $ax_re['laut']); }
+    $ax_rl = (!$ax_re || $ax_re['zeit'] <= 0) ? ax_t('TEST.RADIO_KEIN_BEFEHL')
+        : sprintf(ax_t('TEST.RADIO_LETZTER'), $ax_zeit($ax_re['zeit']), $ax_re['befehl'],
+            $ax_re['ergebnis'] === 1 ? ($ax_re['grund'] === 'UNVERAENDERT' ? ax_grund_text('UNVERAENDERT') : ax_t('TEST.RADIO_GESENDET')) : ax_grund_text($ax_re['grund']),
+            $ax_re['quelle'] === 'oberflaeche' ? ax_t('TEST.WEG_OBERFLAECHE') : strtoupper($ax_re['quelle'])); ?>
+<tr><td><?= (int) $ax_z['zone'] ?></td><td><span class="sm-mono"><?= ax_e($ax_z['ziel']) ?></span></td><td><?= ax_e($ax_rb) ?></td><td><?= ax_e($ax_rl) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<?php } ?>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-test">
+<input data-role="none" type="hidden" name="formtoken" value="<?= ax_e(ax_formtoken($ax_cfg)) ?>">
+<div class="sm-row">
+    <div><label for="radio_zone"><?= ax_e(ax_t('TEST.L_RADIO_ZONE')) ?></label>
+    <select data-role="none" name="radio_zone" id="radio_zone"<?= $ax_rzm('radio_zone') ?>>
+    <option value=""<?= $ax_rzone_wahl === '' ? ' selected' : '' ?>><?= ax_e(ax_t('TEST.O_WAEHLEN')) ?></option>
+<?php foreach ($ax_rz_liste as $ax_z) { ?>
+    <option value="<?= (int) $ax_z['zone'] ?>"<?= $ax_rzone_wahl === (string) $ax_z['zone'] ? ' selected' : '' ?>><?= ax_e($ax_z['zone'] . ' – ' . $ax_z['ziel']) ?></option>
+<?php } ?>
+<?php if ($ax_rz_liste || $ax_rzone_wahl === 'alle') { ?>
+    <option value="alle"<?= $ax_rzone_wahl === 'alle' ? ' selected' : '' ?>><?= ax_e(ax_t('TEST.O_ALLE_ZONEN')) ?></option>
+<?php } ?>
+<?php if ($ax_rzone_wahl !== '' && $ax_rzone_wahl !== 'alle' && !in_array($ax_rzone_wahl, $ax_rz_nummern, true)) { ?>
+    <option value="<?= ax_e($ax_rzone_wahl) ?>" selected><?= ax_e($ax_rzone_wahl . ' – ' . ax_t('EINST.O_UNBEKANNT')) ?></option>
+<?php } ?>
+    </select></div>
+    <div><label for="radio_nr"><?= ax_e(ax_t('TEST.L_RADIO_NR')) ?></label>
+    <select data-role="none" name="radio_nr" id="radio_nr"<?= $ax_rzm('radio_nr') ?>>
+    <option value=""<?= $ax_rnr_wahl === '' ? ' selected' : '' ?>><?= ax_e(ax_t('TEST.O_WAEHLEN')) ?></option>
+<?php foreach ($ax_cfg['musik_sender'] as $ax_z) { ?>
+    <option value="<?= (int) $ax_z['nr'] ?>"<?= $ax_rnr_wahl === (string) $ax_z['nr'] ? ' selected' : '' ?>><?= ax_e($ax_z['nr'] . ' – ' . $ax_z['name'] . ' (' . $ax_z['anbieter'] . ')') ?></option>
+<?php } ?>
+<?php if ($ax_rnr_wahl !== '' && !in_array($ax_rnr_wahl, $ax_rnr_liste, true)) { ?>
+    <option value="<?= ax_e($ax_rnr_wahl) ?>" selected><?= ax_e($ax_rnr_wahl . ' – ' . ax_t('EINST.O_UNBEKANNT')) ?></option>
+<?php } ?>
+    </select></div>
+</div>
+<div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="radio_start" value="1"<?= ($ax_radio_frei && $ax_cfg['musik_sender']) ? '' : ' disabled' ?>><?= ax_e(ax_t('TEST.K_RADIO_START')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="radio_halt" value="1"<?= $ax_radio_frei ? '' : ' disabled' ?>><?= ax_e(ax_t('TEST.K_RADIO_STOPP')) ?></button>
+</div>
+<?php if (empty($ax_cfg['radio_ein'])) { ?>
+<div class="sm-small"><?= ax_e(ax_t('TEST.RADIO_GESPERRT')) ?> <a href="index.php?form=settings#radio"><?= ax_e(ax_t('TEST.ZU_RADIO')) ?></a></div>
+<?php } elseif (!$ax_rz_liste) { ?>
+<div class="sm-small"><?= ax_e(ax_t('TEST.RADIO_KEINE_ZONE')) ?> <a href="index.php?form=settings#radio"><?= ax_e(ax_t('TEST.ZU_RADIO')) ?></a></div>
+<?php } elseif (!$ax_cfg['musik_sender']) { ?>
+<div class="sm-small"><?= ax_e(ax_t('TEST.RADIO_KEIN_SENDER')) ?> <a href="index.php?form=settings#musik"><?= ax_e(ax_t('TEST.ZU_SENDER')) ?></a></div>
 <?php } ?>
 </form>
 

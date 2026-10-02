@@ -13,6 +13,8 @@
  *   <p>/befehl/gruppe/<g>/sprechen  Nutzlast: Text
  *   <p>/befehl/routine              Nutzlast: Name (nur mit eigenem Haken)
  *   <p>/befehl/sperre               Nutzlast: 1 sperren, 0 oeffnen (nur mit Haken "Sperre aus Loxone")
+ *   <p>/befehl/radio/<zone>         Nutzlast: Sendernummer oder stopp (nur mit Haken "Radio je Zone")
+ *   <p>/befehl/radio/<zone>/laut    Nutzlast: 0-100; <zone> ist 1-24 oder alle
  *
  * Zurueckbehaltene Nachrichten werden VERWORFEN, nie ausgefuehrt: sonst
  * spraeche jeder Neustart die letzte Ansage erneut (Bauplan 2.7). Doppelt
@@ -56,6 +58,8 @@ function ax_befehl_thema($thema, $praefix)
     $rest = substr($thema, strlen($vor));
     if ($rest === 'routine') { return array('routine', ''); }
     if ($rest === 'sperre') { return array('sperre', ''); }
+    if (preg_match('#^radio/([a-z0-9]{1,4})\z#', $rest, $m)) { return array('radio', $m[1]); }
+    if (preg_match('#^radio/([a-z0-9]{1,4})/laut\z#', $rest, $m)) { return array('radio_laut', $m[1]); }
     if (preg_match('#^gruppe/([a-z0-9_]{1,40})/sprechen\z#', $rest, $m)) { return array('sprechen', 'gruppe:' . $m[1]); }
     if (preg_match('#^([a-z0-9_]{1,40})/(sprechen|ankuendigen|lautstaerke)\z#', $rest, $m)) {
         if ($m[1] === 'gruppe') { return null; }
@@ -132,6 +136,22 @@ while (true) {
             if ($ax_akt === 'sperre') {
                 // K1: dieselbe Funktion wie der Endpunkt; prueft Haken und Wert selbst.
                 ax_loxsperre_setzen(trim($ax_nutz), 'mqtt');
+                $ax_zaehler['ausgefuehrt']++;
+                continue;
+            }
+            if ($ax_akt === 'radio' || $ax_akt === 'radio_laut') {
+                // Radio je Zone (Z3): dieselbe Funktion wie der Endpunkt; sie prueft
+                // Haken, Zone, Sender und Wert selbst. Nutzlast "stopp" haelt an.
+                $ax_wert = trim($ax_nutz);
+                if ($ax_akt === 'radio_laut') {
+                    $ax_rp = array('zone' => $ax_ger, 'wert' => $ax_wert);
+                } elseif ($ax_wert === 'stopp') {
+                    $ax_akt = 'radio_stopp';
+                    $ax_rp = array('zone' => $ax_ger);
+                } else {
+                    $ax_rp = array('zone' => $ax_ger, 'nr' => $ax_wert);
+                }
+                ax_radio_ausfuehren($ax_akt, $ax_rp, 'mqtt');
                 $ax_zaehler['ausgefuehrt']++;
                 continue;
             }

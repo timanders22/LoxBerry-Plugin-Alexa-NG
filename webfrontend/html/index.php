@@ -14,6 +14,9 @@
  *   ?aktion=musik_probe&token=A&geraet=..&nr=1-50             nur Aktionstoken, ab Werk aus (Stufe 3)
  *   ?aktion=musik_probe&token=A&geraet=..&sender=..[&anbieter=tunein|amazon]
  *   ?aktion=musik_stopp&token=A&geraet=..
+ *   ?aktion=radio&token=A&zone=1-24|alle&nr=1-50              nur Aktionstoken, ab Werk aus (Radio je Zone)
+ *   ?aktion=radio_stopp&token=A&zone=1-24|alle
+ *   ?aktion=radio_laut&token=A&zone=1-24|alle&wert=0-100
  *   [&absender=<plugin>] bei jeder ausloesenden Aktion: Name fuer die Absenderuebersicht
  *
  * T = Sprech- oder Aktionstoken, A = nur Aktionstoken (E4). GET und POST,
@@ -50,7 +53,7 @@ try {
     $ax_par = array();
     $ax_falsch = array();
     foreach (array('aktion', 'token', 'geraet', 'text', 'laut', 'ssml', 'titel', 'wert', 'name', 'dringend',
-                   'json', 'selftest', 'nr', 'sender', 'anbieter', 'absender') as $ax_k) {
+                   'json', 'selftest', 'nr', 'sender', 'anbieter', 'absender', 'zone') as $ax_k) {
         $ax_w = null;
         if (isset($_POST[$ax_k])) { $ax_w = $_POST[$ax_k]; } elseif (isset($_GET[$ax_k])) { $ax_w = $_GET[$ax_k]; }
         if ($ax_w === null) { continue; }
@@ -61,7 +64,8 @@ try {
     $ax_aktion = isset($ax_par['aktion']) ? $ax_par['aktion'] : (isset($ax_par['selftest']) ? 'selftest' : 'status');
     $ax_kopf = array('status' => 'ALEXANG', 'geraete' => 'GERAET', 'selftest' => 'SELFTEST', 'sprechen' => 'SPRECHEN',
                      'ankuendigen' => 'ANKUENDIGEN', 'lautstaerke' => 'LAUTSTAERKE', 'routine' => 'ROUTINE',
-                     'sperre' => 'SPERRE', 'musik_probe' => 'MUSIK', 'musik_stopp' => 'MUSIK');
+                     'sperre' => 'SPERRE', 'musik_probe' => 'MUSIK', 'musik_stopp' => 'MUSIK',
+                     'radio' => 'RADIO', 'radio_stopp' => 'RADIO', 'radio_laut' => 'RADIO');
     if (!isset($ax_kopf[$ax_aktion])) {
         ax_log('WARN', 'Endpunkt: unbekannte Aktion (Laenge ' . strlen($ax_aktion) . ') von ' . $ax_wer);
         ax_ende_roh(400, 'ALEXANG;OK=0;GRUND=AKTION');
@@ -142,13 +146,20 @@ try {
         ax_log('WARN', 'Endpunkt: routine von ' . $ax_wer . ' mit dem Sprechtoken abgewiesen.');
         ax_ende_roh(403, 'ROUTINE;OK=0;ERR=TOKEN;GRUND=SPRECHTOKEN_STARTET_KEINE_ROUTINE');
     }
-    if (in_array($ax_aktion, array('sperre', 'musik_probe', 'musik_stopp'), true) && !$ax_ist_akt) {
+    if (in_array($ax_aktion, array('sperre', 'musik_probe', 'musik_stopp', 'radio', 'radio_stopp', 'radio_laut'), true) && !$ax_ist_akt) {
         ax_log('WARN', 'Endpunkt: ' . $ax_aktion . ' von ' . $ax_wer . ' mit dem Sprechtoken abgewiesen.');
         ax_ende_roh(403, ax_zeile($K, array('OK' => 0, 'ERR' => 'TOKEN', 'GRUND' => 'NUR_AKTIONSTOKEN')));
     }
     if ($ax_aktion === 'sperre') {
         list($ax_h, $ax_f) = ax_loxsperre_setzen(isset($ax_par['wert']) ? $ax_par['wert'] : null, 'http',
                                                  isset($ax_par['absender']) ? $ax_par['absender'] : '');
+        ax_ende_roh($ax_h, ax_zeile($K, $ax_f));
+    }
+    if (in_array($ax_aktion, array('radio', 'radio_stopp', 'radio_laut'), true)) {
+        // Radio je Zone (Z2). Ein virtueller Ausgang schliesst die Verbindung nach
+        // dem Senden; die Zonen werden trotzdem zu Ende gesendet und protokolliert.
+        ignore_user_abort(true);
+        list($ax_h, $ax_f) = ax_radio_ausfuehren($ax_aktion, $ax_par, 'http');
         ax_ende_roh($ax_h, ax_zeile($K, $ax_f));
     }
     list($ax_h, $ax_f) = ax_befehl_ausfuehren($ax_aktion, $ax_par, 'http');

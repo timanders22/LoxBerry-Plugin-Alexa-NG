@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 0.9.2
+Version 0.9.3
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -14,6 +14,30 @@ mit der curl-Erweiterung). Kein Node, kein Python, kein Docker.
 > (Weg b) hat am echten Amazon-Konto funktioniert: Token, Cookies und
 > Geräteliste kamen, und eine Testansage an einen Echo kam an. Die übrigen
 > Punkte unter „Noch am Gerät zu messen“ stehen noch aus.
+
+## Fassung 0.9.3
+
+* **Radio je Zone** (Stufe 3, ab Werk aus, mehrere Zonen nicht am Gerät erprobt): Zonentabelle 1–24 im Reiter
+  Einstellungen, je Zeile `Nummer = Ziel` – ein Echo (Normalname), eine Mehrraum-Musikgruppe der Alexa-App
+  (`amazon:<name>`, als Ganzes) oder eine eigene Gruppe (`gruppe:<name>`, jedes Gerät einzeln). Gespielt wird ein
+  Sender nach Nummer aus der Senderliste der Musik-Probe.
+* Befehle nur mit dem Aktionstoken: `aktion=radio&zone=<n|alle>&nr=<sender>`, `aktion=radio_stopp&zone=<n|alle>`,
+  `aktion=radio_laut&zone=<n|alle>&wert=0..100`. Antwort `RADIO;OK=…;ZONE=…;NR=…;GERAET=…`, Fehler mit `GRUND`
+  (404 unbekannte Zone oder Sender, 409 aus, 429 Grenze, 503 beschäftigt). `zone=alle` spielt in allen Zonen
+  denselben Sender, nacheinander mit mindestens 1 s Abstand; je Zone ein Aufruf gibt jeder Zone ihren eigenen Sender.
+* Über MQTT (mit eingeschaltetem Befehlsabo): `alexang/befehl/radio/<zone>` mit Nummer oder `stopp`,
+  `alexang/befehl/radio/<zone>/laut`. Je Zone flüchtig `alexang/radio/<zone>/sender` und `…/zustand` – das, was
+  zuletzt bestätigt gesendet wurde, nicht, was der Echo spielt.
+* Bremsen: derselbe Sender, ein Stopp oder dieselbe Lautstärke in derselben Zone binnen 60 s ergibt
+  `UNVERAENDERT=1`; die Musik-Stundengrenze gilt für alle Zonen zusammen und für den ganzen Befehl; antwortet Amazon
+  mit 429, hält das Plugin an (`GRUND=AMAZON_RATE`, `OFFEN=n`) und nimmt 60 s lang keine Radiobefehle an
+  (429 `GRUND=AMAZON_PAUSE`) – kein zweiter Versuch.
+* Die Sperre aus Loxone und die Ruhezeit gelten für Radio nicht.
+* Reiter Einbindung in Loxone: Schritt 10 mit allen Adressen je Zone und der Vorlage „Radio je Zone“ (virtueller
+  Ausgang: je Zone Sender, Stopp, Lautstärke, dazu alle Zonen; trägt das Aktionstoken).
+* Reiter Test: Knöpfe „Zone abspielen“ und „Zone stoppen“ mit Auswahl von Zone und Sender, dazu je Zone eine Zeile
+  mit dem zuletzt bestätigt gesendeten Zustand und dem letzten Befehl.
+* Die Selbstprüfung „Sind die Vorlagen wohlgeformt?“ prüft jetzt alle drei Vorlagen.
 
 ## Fassung 0.9.2
 
@@ -235,6 +259,9 @@ Mit Token (`T` = Sprech- **oder** Aktionstoken, `A` = nur Aktionstoken):
 | `?aktion=musik_probe&token=A&geraet=…&nr=1-50` | A | Musik-Probe mit dem Sender Nummer `nr` aus der Senderliste; `MUSIK;OK=1;GERAET=kueche;ANBIETER=tunein;NR=1;SUCHE=EIGEN;UNVERAENDERT=0`; ab Werk 409 `GRUND=MUSIK_AUS` |
 | `?aktion=musik_probe&token=A&geraet=…&sender=…[&anbieter=tunein\|amazon]` | A | dasselbe mit einem Sendernamen (Zusatz), Anbieter ab Werk `tunein` |
 | `?aktion=musik_stopp&token=A&geraet=…` | A | Musik anhalten; `MUSIK;OK=1;GERAET=kueche;STOPP=1` |
+| `?aktion=radio&token=A&zone=1-24\|alle&nr=1-50` | A | Radio je Zone: Sender Nummer `nr` aus der Senderliste in der Zone; `RADIO;OK=1;ZONE=2;NR=5;GERAET=kueche;ANBIETER=tunein;SUCHE=EIGEN;UNVERAENDERT=0;OFFLINE=0`; ab Werk 409 `GRUND=RADIO_AUS` |
+| `?aktion=radio_stopp&token=A&zone=1-24\|alle` | A | Radio der Zone anhalten; `RADIO;OK=1;ZONE=2;NR=0;GERAET=kueche;STOPP=1;UNVERAENDERT=0;OFFLINE=0` |
+| `?aktion=radio_laut&token=A&zone=1-24\|alle&wert=0-100` | A | Lautstärke der Zone; `RADIO;OK=1;ZONE=2;WERT=30;GERAET=kueche;UNVERAENDERT=0;OFFLINE=0` |
 
 **`geraet`** ist eine Kommaliste aus Normalnamen, `gruppe:<name>` oder `alle`;
 der Amazon-Anzeigename wird ebenfalls angenommen. Ohne `geraet` gilt das
@@ -314,6 +341,53 @@ MP3**.
 * Im Reiter **Test**: Knöpfe **„Musik-Probe“** und **„Musik stoppen“** mit
   Auswahl aus der Senderliste und des Geräts.
 
+### Radio je Zone (Stufe 3, mehrere Zonen nicht am Gerät erprobt)
+
+Ab Werk aus (Reiter **Einstellungen**, Haken „Radio je Zone erlauben“). Es
+baut auf dem direkten Musikbefehl der Musik-Probe auf; am Gerät belegt ist
+ein Echo (Ton nach etwa 3 s). Mehrere Zonen gleichzeitig sind nur an einer
+Amazon-Attrappe geprüft. Kein beliebiger Stream, keine Adresse, keine eigene
+MP3.
+
+* **Zonentabelle** (Reiter Einstellungen): je Zeile `Nummer = Ziel`, Nummer
+  1–24. Ziel ist der Normalname eines Echos (`kueche`), `amazon:<name>` für
+  eine Mehrraum-Musikgruppe der Alexa-App (als Ganzes angesprochen) oder
+  `gruppe:<name>` für eine eigene Gruppe (jedes Gerät einzeln, nicht
+  synchron). Eine unlesbare Zeile oder eine eigene Gruppe, die es nicht gibt,
+  wird beanstandet; gespeichert wird dann nichts. Ein Ziel, das die
+  Geräteliste nicht kennt, ergibt nach dem Speichern einen Hinweis und am
+  Endpunkt 404.
+* **Sender** nach Nummer aus der Senderliste der Musik-Probe (`nr=1-50`).
+* **Alle gleich, jede anders:** `zone=alle` mit einem Sender — alle Zonen
+  spielen denselben Sender; die Zonen gehen nacheinander mit mindestens 1 s
+  Abstand hinaus. Je Zone ein eigener Aufruf gibt jeder Zone ihren eigenen
+  Sender. Die Antwort auf `zone=alle` zählt:
+  `RADIO;OK=1;ZONE=alle;NR=5;GERAET=alle;ANBIETER=tunein;SUCHE=EIGEN;ZONEN=3;GESENDET=3;UNVERAENDERT=0;OFFLINE=0;FEHLER=0`.
+* **Bremsen:** derselbe Sender, ein Stopp oder dieselbe Lautstärke in
+  derselben Zone binnen 60 s ergibt `UNVERAENDERT=1` und sendet nichts. Die
+  Musik-Stundengrenze (ab Werk 30) gilt für alle Zonen zusammen und für den
+  ganzen Befehl — reicht sie nicht, geht nichts hinaus (429
+  `GRUND=MUSIK_STUNDENGRENZE`). Antwortet Amazon mit 429, hält das Plugin an:
+  die übrigen Zonen werden nicht versucht (`OFFEN=n`), die Antwort sagt 503
+  `GRUND=AMAZON_RATE;WARTE=60`, und 60 s lang antworten Radiobefehle mit 429
+  `GRUND=AMAZON_PAUSE`. Ein zweiter Versuch geschieht nicht.
+* **Fehler:** 400 `ZONE`, `NR`, `WERT` · 404 `ZONE_UNBEKANNT`,
+  `SENDER_UNBEKANNT`, `GERAET_UNBEKANNT`, `GRUPPE_UNBEKANNT` · 409 `RADIO_AUS`
+  · 429 `MUSIK_STUNDENGRENZE`, `AMAZON_PAUSE` · 503 `BESCHAEFTIGT`,
+  `GERAETE_OFFLINE`, `AMAZON_RATE`, `AMAZON`, `NETZ`.
+* **Sperre aus Loxone und Ruhezeit gelten für Radio nicht** (wie für die
+  Musik-Probe).
+* **Zustand:** Der Reiter **Test** zeigt je Zone, was zuletzt bestätigt
+  gesendet wurde, und den letzten Befehl; über MQTT gehen flüchtig
+  `alexang/radio/<zone>/sender` und `…/zustand`. „Bestätigt“ heißt: Amazon
+  hat den Befehl angenommen — was der Echo tatsächlich spielt, meldet Amazon
+  nicht.
+* **Loxone:** Reiter **Einbindung in Loxone**, Schritt 10, mit allen Adressen
+  je Zone und der Vorlage „Radio je Zone“ (virtueller Ausgang, je Zone
+  Sender, Stopp und Lautstärke, dazu alle Zonen; trägt das Aktionstoken).
+* Im Reiter **Test**: Knöpfe **„Zone abspielen“** und **„Zone stoppen“** mit
+  Auswahl von Zone und Sender.
+
 ### Aus anderen Plugins
 
 Diese Plugins haben die Ausgabeart **„Alexa-NG“** (dort ab Werk nicht
@@ -375,6 +449,8 @@ Broker aus der LoxBerry-Konfiguration, nicht über den UDP-Eingang.
 | `alexang/letzte/geraet` | Normalname(n) | ja |
 | `alexang/letzte/ergebnis` | 1/0 | ja |
 | `alexang/letzte/grund` | Grund, `-` ohne Grund | ja |
+| `alexang/radio/<zone>/sender` | Sendernummer, zuletzt bestätigt gesendet; `0` nach Stopp | nie |
+| `alexang/radio/<zone>/zustand` | `1` Start, `0` Stopp, zuletzt bestätigt gesendet | nie |
 
 Kein Thema geht leer hinaus. Ein Gerät, das aus der Amazon-Liste
 verschwindet, bekommt einmal `-1` und bleibt im Reiter **Geräte** als
@@ -394,6 +470,8 @@ sagt, welche Fassung läuft.
 | `alexang/befehl/gruppe/<g>/sprechen` | Text |
 | `alexang/befehl/routine` | Name (nur mit eigenem Haken und Freigabe) |
 | `alexang/befehl/sperre` | `1` sperren, `0` öffnen (nur mit Haken „Sperre aus Loxone annehmen“) |
+| `alexang/befehl/radio/<zone>` | Sendernummer oder `stopp`; `<zone>` ist `1`–`24` oder `alle` (nur mit Haken „Radio je Zone erlauben“) |
+| `alexang/befehl/radio/<zone>/laut` | 0–100 |
 
 Zurückbehaltene (retained) Befehle werden **verworfen**, nicht ausgeführt.
 Es gelten dieselbe Prüfung und Bremse wie am Endpunkt; das Ergebnis steht in
@@ -411,10 +489,11 @@ Es gelten dieselbe Prüfung und Bremse wie am Endpunkt; das Ergebnis steht in
   Heimnetz ausgelöst werden darf.
 * **Nur amazon.de.**
 * **Höchstens 60 Befehle je Stunde** ab Werk (10–240), Wiederholbremse 30 s,
-  mindestens 1 s zwischen zwei Aufrufen an Amazon. Die Musik-Probe zählt
-  getrennt (ab Werk 30 je Stunde).
-* **Sperre aus Loxone, Musik-Probe** und `sperre`/`musik_*` am Endpunkt nur
-  mit dem **Aktionstoken**; beide ab Werk aus.
+  mindestens 1 s zwischen zwei Aufrufen an Amazon. Musik-Probe und Radio je
+  Zone zählen zusammen getrennt (ab Werk 30 je Stunde).
+* **Sperre aus Loxone, Musik-Probe, Radio je Zone** und
+  `sperre`/`musik_*`/`radio*` am Endpunkt nur mit dem **Aktionstoken**; alle
+  ab Werk aus.
 * **Ansagetexte stehen nicht im Protokoll**, nur ihre Länge. Ein Haken für
   die Fehlersuche schreibt sie gekürzt auf 60 Zeichen. Nie im Protokoll:
   Token, Cookies, csrf, Kundennummer, Seriennummern, Autorisierungscode.
@@ -470,6 +549,10 @@ zurückbehaltenen MQTT-Themen ab und löscht die Zweitschriften.
 12. Sperre aus Loxone: setzt Loxone sie zuverlässig (HTTP und MQTT)?
 13. Verschwundene Geräte: Hinweis nach einem Echo-Tausch; sind die
     Konfigurationen der fünf Plugins am Gerät lesbar?
+14. Radio je Zone: eine Zone, dann alle; mit einem zweiten Echo zwei Zonen
+    mit verschiedenen Sendern gleichzeitig; eine Amazon-Gruppe als Zone
+    (synchron?); Stopp und Lautstärke je Zone; ab wie vielen Befehlen je
+    Minute Amazon mit 429 antwortet.
 
 ## Voraussetzungen
 

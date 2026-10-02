@@ -48,6 +48,9 @@ define('AX_DOMAIN', 'amazon.de');    // Entscheidung 18: nur amazon.de
 define('AX_APP_TYP', 'A2IVLV5VM2W81');
 define('AX_MUSIK_NR_MAX', 50);       // Senderliste: Nummern 1..50 (Entscheidung 29)
 define('AX_SENDER_MAX', 100);        // Zeichen je Sendername (Bauliste B1)
+define('AX_RADIO_ZONEN_MAX', 24);    // Radio je Zone: Zonen 1..24 (Bauliste alexa3 Z1)
+define('AX_RADIO_GLEICH_S', 60);     // gleicher Sollwert je Zone binnen 60 s -> UNVERAENDERT (X-7, Z4)
+define('AX_RADIO_PAUSE_S', 60);      // nach AMAZON_RATE: Radio-Pause, kein Wiederholen (Z4)
 
 /* ==================================================================
  * Pfade
@@ -271,6 +274,12 @@ function ax_vorgaben()
         'musik_ein' => 0,
         'musik_stundengrenze' => 30,
         'musik_sender' => array(),
+        // Radio je Zone (Stufe 3, Entscheidung 32): Zonentabelle 1..24 ->
+        // Echo (Normalname), Amazon-Gruppe (amazon:<name>) oder eigene
+        // Gruppe (gruppe:<name>); Sender nach Nummer aus musik_sender.
+        // Ab Werk aus.
+        'radio_ein' => 0,
+        'radio_zonen' => array(),
         // MQTT ab Werk an (Hausstandard); der Befehlseingang ab Werk aus.
         'mqtt_ein' => 1,
         'mqtt_praefix' => 'alexang',
@@ -373,6 +382,7 @@ function ax_wert_pruefen($schluessel, $wert, &$grund = '')
         case 'befehle_routine_ein':
         case 'sperre_ein':
         case 'musik_ein':
+        case 'radio_ein':
             return $schalter($wert);
         case 'bremse_fenster_s': return $zahl($wert, 0, 3600);
         case 'mindestabstand_s': return $zahl($wert, 0, 600);
@@ -446,6 +456,24 @@ function ax_wert_pruefen($schluessel, $wert, &$grund = '')
                 $anb = ax_musik_anbieter();
                 if (!is_string($z['anbieter']) || !isset($anb[$z['anbieter']])) { $grund = 'ANBIETER_ZEILE|' . $z['nr']; return null; }
                 $aus[] = array('nr' => $z['nr'], 'name' => $z['name'], 'anbieter' => $z['anbieter']);
+            }
+            return $aus;
+        case 'radio_zonen':
+            /* Zonentabelle (Radio je Zone, Z1). Je Eintrag genau zone (ganze
+             * Zahl 1..24, eindeutig) und ziel (Normalname, amazon:<name>
+             * oder gruppe:<name>). Ob eine eigene Gruppe besteht, pruefen
+             * Formular und Sicherung (ax_radio_gruppen_fehlen). */
+            if (!is_array($wert)) { $grund = 'KEINE_LISTE'; return null; }
+            if (count($wert) > AX_RADIO_ZONEN_MAX) { $grund = 'MEHR_ZEILEN|' . AX_RADIO_ZONEN_MAX; return null; }
+            $aus = array();
+            $zn = array();
+            foreach (array_values($wert) as $i => $z) {
+                if (!is_array($z) || count($z) !== 2 || !isset($z['zone'], $z['ziel'])) { $grund = 'ZONENZEILE|' . ($i + 1); return null; }
+                if (!is_int($z['zone']) || $z['zone'] < 1 || $z['zone'] > AX_RADIO_ZONEN_MAX) { $grund = 'ZONENNUMMER|' . ($i + 1); return null; }
+                if (isset($zn[$z['zone']])) { $grund = 'ZONE_DOPPELT|' . $z['zone']; return null; }
+                $zn[$z['zone']] = 1;
+                if (!ax_radio_ziel_form($z['ziel'])) { $grund = 'ZONENZIEL|' . $z['zone']; return null; }
+                $aus[] = array('zone' => $z['zone'], 'ziel' => $z['ziel']);
             }
             return $aus;
     }
@@ -998,10 +1026,12 @@ function ax_sitzung_sichern($erzwingen = false)
 
 /**
  * Eine Anfrage an alexa.amazon.de mit Sitzung. 401/403 -> EINMAL neu
- * tauschen und EINMAL wiederholen; 429 -> nach 2 s einmal wiederholen.
+ * tauschen und EINMAL wiederholen; 429 -> nach 2 s einmal wiederholen
+ * (nicht mit $bei_429_nochmal = false: Radio, Bauliste alexa3 Z4 - dort folgt
+ * eine Pause und eine ehrliche Antwort, kein stiller zweiter Versuch).
  * Rueckgabe: array(ok, grund, antwort).
  */
-function ax_alexa($methode, $pfad, $rumpf = null)
+function ax_alexa($methode, $pfad, $rumpf = null, $bei_429_nochmal = true)
 {
     list($ok, $grund, $s) = ax_sitzung_sichern(false);
     if (!$ok) { return array(false, $grund, null); }
@@ -1012,7 +1042,7 @@ function ax_alexa($methode, $pfad, $rumpf = null)
         if (!$ok) { return array(false, $grund, $r); }
         $r = ax_http($methode, ax_amazon_url('alexa', $pfad), ax_alexa_kopf($s, $json), $rumpf);
     }
-    if ($r['code'] === 429) {
+    if ($r['code'] === 429 && $bei_429_nochmal) {
         sleep(2);
         $r = ax_http($methode, ax_amazon_url('alexa', $pfad), ax_alexa_kopf($s, $json), $rumpf);
     }
@@ -2110,6 +2140,394 @@ function ax_suchphrase_pruefen(array $ziel, $phrase, $anbieter_id, $kunde)
 }
 
 /* ==================================================================
+ * Radio je Zone (Stufe 3, Entscheidung 32; ab Werk aus). Gebaut auf dem
+ * direkten Musikbefehl der Musik-Probe (am Geraet mit einem Echo belegt:
+ * Ton nach etwa 3 s). Mehrere Zonen gleichzeitig sind nur an der Attrappe
+ * geprueft [ungemessen am Geraet - im Haus gibt es ein sprechfaehiges Echo].
+ * ================================================================== */
+
+/** Form eines Zonenziels: Normalname, amazon:<name> (Amazon-Gruppe) oder gruppe:<name> (eigene Gruppe). */
+function ax_radio_ziel_form($s)
+{
+    if (!is_string($s) || !preg_match('/^(?:amazon:|gruppe:)?([a-z0-9_]{1,40})\z/', $s, $m)) { return false; }
+    return !in_array($m[1], array('alle', 'gruppe'), true);
+}
+
+/** Zonen, die eine eigene Gruppe nennen, die es in $gruppen nicht gibt (je "3 = gruppe:oben"). */
+function ax_radio_gruppen_fehlen(array $zonen, array $gruppen)
+{
+    $da = array();
+    foreach ($gruppen as $g) { if (is_array($g) && isset($g['name']) && is_string($g['name'])) { $da[$g['name']] = 1; } }
+    $fehl = array();
+    foreach ($zonen as $z) {
+        if (is_array($z) && isset($z['zone'], $z['ziel']) && is_string($z['ziel']) && strpos($z['ziel'], 'gruppe:') === 0
+            && !isset($da[substr($z['ziel'], 7)])) {
+            $fehl[] = (int) $z['zone'] . ' = ' . $z['ziel'];
+        }
+    }
+    return $fehl;
+}
+
+/**
+ * Zustand je Zone (data/radio.json, 0644, keine Geheimnisse). sender (Nummer,
+ * 0 nach Stopp) und zustand (1 Start, 0 Stopp) sind das, was zuletzt
+ * BESTAETIGT gesendet wurde - Amazon nahm den Befehl an; was der Echo
+ * tatsaechlich spielt, sagt das nicht (Z3). Dazu je Zone der letzte Befehl
+ * mit Ergebnis (Reiter Test, Z6). Liegt im Datenordner und beginnt nach
+ * einem Update neu. -1 = nie.
+ */
+function ax_radio_lesen()
+{
+    $p = ax_paths();
+    $d = ax_json_lesen($p['datadir'] . '/radio.json');
+    $aus = array();
+    if (!is_array($d)) { return $aus; }
+    foreach ($d as $k => $e) {
+        if (!preg_match('/^[1-9][0-9]?\z/', (string) $k) || (int) $k > AX_RADIO_ZONEN_MAX || !is_array($e)) { continue; }
+        $zahl = function ($n, $v) use ($e) { return (isset($e[$n]) && is_int($e[$n])) ? $e[$n] : $v; };
+        $text = function ($n, $muster) use ($e) {
+            return (isset($e[$n]) && is_string($e[$n])) ? (string) preg_replace($muster, '', substr($e[$n], 0, 60)) : '';
+        };
+        $aus[(int) $k] = array('sender' => $zahl('sender', -1), 'zustand' => $zahl('zustand', -1), 't_sender' => $zahl('t_sender', 0),
+            'ziel_s' => $text('ziel_s', '/[^a-z0-9_:]/'), 'laut' => $zahl('laut', -1), 't_laut' => $zahl('t_laut', 0),
+            'ziel_l' => $text('ziel_l', '/[^a-z0-9_:]/'), 'zeit' => $zahl('zeit', 0), 'ergebnis' => $zahl('ergebnis', -1),
+            'befehl' => $text('befehl', '/[^a-z0-9_ ]/'), 'grund' => $text('grund', '/[^A-Z0-9_\-]/'), 'quelle' => $text('quelle', '/[^a-z]/'));
+    }
+    ksort($aus);
+    return $aus;
+}
+
+/** Eine Zone im Zustand nachfuehren - unter einer eigenen kurzen Sperre (2 s), wie die Absenderuebersicht. */
+function ax_radio_merken($zone, array $neu)
+{
+    if (ax_nur_lesen()) { return false; }
+    $p = ax_paths();
+    if (!is_dir($p['datadir'])) { return false; }
+    $fh = @fopen($p['datadir'] . '/radio.lock', 'c');
+    if ($fh === false) { return false; }
+    $frist = microtime(true) + 2;
+    $gehalten = false;
+    do {
+        if (flock($fh, LOCK_EX | LOCK_NB)) { $gehalten = true; break; }
+        usleep(50000);
+    } while (microtime(true) < $frist);
+    if (!$gehalten) { fclose($fh); return false; }
+    $datei = $p['datadir'] . '/radio.json';
+    $d = ax_json_lesen($datei);
+    if (!is_array($d)) { $d = array(); }
+    $k = (string) (int) $zone;
+    $e = (isset($d[$k]) && is_array($d[$k])) ? $d[$k] : array();
+    foreach ($neu as $n => $v) { $e[$n] = $v; }
+    $d[$k] = $e;
+    $ok = ax_write_json($datei, $d, 0644);
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    return $ok;
+}
+
+/**
+ * Die Geraete einer Zone. Echo oder amazon:<name>: Start und Stopp gehen an
+ * genau dieses Ziel (eine Amazon-Gruppe als Ganzes, wie die Musik-Probe), die
+ * Lautstaerke an die Mitglieder einer Amazon-Gruppe. gruppe:<name>: jedes
+ * Mitglied einzeln (nicht synchron); offline ausgelassen und gezaehlt.
+ * Rueckgabe array(http, grund, geraete, offline).
+ */
+function ax_radio_ziel($ziel, $aktion, array $cfg, array $st)
+{
+    $nach_normal = array();
+    foreach ($st['liste'] as $g) { $nach_normal[$g['normal']] = $g; }
+    if (strpos($ziel, 'gruppe:') === 0) {
+        $da = false;
+        foreach ($cfg['gruppen'] as $z) { if ($z['name'] === substr($ziel, 7)) { $da = true; } }
+        if (!$da) { return array(404, 'GRUPPE_UNBEKANNT', array(), 0); }
+        list($h, $gr, $ziele, $off) = ax_geraete_aufloesen($ziel, $cfg, $st);
+        return array($h, $gr, $ziele, $off);
+    }
+    $amazon = (strpos($ziel, 'amazon:') === 0);
+    $n = $amazon ? substr($ziel, 7) : $ziel;
+    if (!isset($nach_normal[$n])) { return array(404, $amazon ? 'GRUPPE_UNBEKANNT' : 'GERAET_UNBEKANNT', array(), 0); }
+    $g = $nach_normal[$n];
+    if ($amazon && $g['familie'] !== 'WHA') { return array(404, 'GRUPPE_UNBEKANNT', array(), 0); }
+    if ($aktion === 'radio_laut') {
+        list($h, $gr, $ziele, $off) = ax_geraete_aufloesen($n, $cfg, $st);
+        return array($h, $gr, $ziele, $off);
+    }
+    if (empty($g['online'])) { return array(503, 'GERAETE_OFFLINE', array(), 1); }
+    return array(200, '', array($g), 0);
+}
+
+/**
+ * Eine Befehlsfolge fuer Radio senden - unter der Amazon-Sperre des Aufrufers.
+ * Mindestabstand zur vorigen Folge (AX_PREVIEW_ABSTAND_S), zaehlt in der
+ * Musik-Stundengrenze; bei 429 KEIN zweiter Versuch, sondern die Radio-Pause
+ * (Z4). Rueckgabe array(ok, grund).
+ */
+function ax_radio_senden(array $seq)
+{
+    $sj = json_encode($seq, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($sj === false) { return array(false, 'TEXT'); }
+    $b = ax_bremse_lesen();
+    $seit = ax_mono() - (float) $b['letzter_preview'];
+    if ($seit >= 0 && $seit < AX_PREVIEW_ABSTAND_S) { usleep((int) ((AX_PREVIEW_ABSTAND_S - $seit) * 1000000)); }
+    $b['letzter_preview'] = ax_mono();
+    $b['musik_stunde'][] = time();
+    list($ok, $g) = ax_alexa('POST', '/api/behaviors/preview', ax_preview_rumpf('PREVIEW', $sj), false);
+    $b['letzter_preview'] = ax_mono();
+    if (!$ok && $g === 'AMAZON_RATE') {
+        $b['radio_pause_bis'] = time() + AX_RADIO_PAUSE_S;
+        ax_log('WARN', 'Radio: Amazon meldet zu viele Anfragen (429) - Pause ' . AX_RADIO_PAUSE_S . ' s, kein weiterer Versuch.');
+    }
+    ax_bremse_schreiben($b);
+    return array($ok, $g);
+}
+
+/**
+ * Einen Radiobefehl ausfuehren (Bauliste alexa3 Z2-Z4, Z7): radio (nr aus der
+ * Senderliste), radio_stopp, radio_laut (wert 0..100) - je fuer eine Zone
+ * 1..24 oder "alle". $par: zone, nr, wert, absender (Zeichenketten). Nur mit
+ * Aktionstoken; die Pruefung macht der Aufrufer. $quelle: http | mqtt |
+ * oberflaeche. Die Sperre aus Loxone und die Ruhezeit gelten nicht (Z7).
+ * Bremsen (Z4): derselbe Sollwert in derselben Zone binnen
+ * AX_RADIO_GLEICH_S -> UNVERAENDERT (X-7, verglichen mit dem zuletzt
+ * bestaetigt gesendeten); die Musik-Stundengrenze gilt fuer alle Zonen
+ * zusammen und fuer den GANZEN Befehl (reicht sie nicht, geht nichts
+ * hinaus); die Zonen gehen nacheinander, je unter der Amazon-Sperre und
+ * mindestens AX_PREVIEW_ABSTAND_S auseinander; nach einem Amazon-Fehler
+ * werden die uebrigen Zonen nicht mehr versucht, nach AMAZON_RATE gilt
+ * zusaetzlich die Pause AX_RADIO_PAUSE_S (429 AMAZON_PAUSE).
+ * Rueckgabe array(http, felder) - RADIO;OK=..;ZONE=..;NR=..;GERAET=..
+ */
+function ax_radio_ausfuehren($aktion, array $par, $quelle)
+{
+    $t0 = microtime(true);
+    $cfg = ax_config();
+    $zp = (isset($par['zone']) && is_string($par['zone'])) ? $par['zone'] : '';
+    $f = array('OK' => 0);
+    $ende = function ($http, array $felder, $versucht = false, array $namen = array()) use ($aktion, $quelle, $t0, $cfg, $par) {
+        $wer = ($quelle === 'http' && isset($_SERVER['REMOTE_ADDR']))
+             ? preg_replace('/[^0-9a-fA-F:.]/', '', (string) $_SERVER['REMOTE_ADDR']) : $quelle;
+        $grund = isset($felder['GRUND']) ? (string) $felder['GRUND'] : '-';
+        $zeile = strtoupper($aktion) . ' von ' . $wer . ': Zone ' . (isset($felder['ZONE']) ? $felder['ZONE'] : '-')
+               . ($namen ? ' (' . implode(',', array_unique($namen)) . ')' : '')
+               . (isset($felder['NR']) ? ', NR ' . $felder['NR'] : '') . (isset($felder['WERT']) ? ', WERT ' . $felder['WERT'] : '')
+               . ', HTTP ' . $http . ', OK=' . (int) $felder['OK'] . ', GRUND=' . $grund
+               . (isset($felder['GESENDET']) ? ', Zonen gesendet ' . $felder['GESENDET'] : '')
+               . ', ' . (int) round((microtime(true) - $t0) * 1000) . ' ms';
+        ax_log($felder['OK'] ? 'INFO' : 'WARN', $zeile);
+        if ($versucht) {
+            $letzte = array('zeit' => time(), 'aktion' => $aktion, 'geraet' => $namen ? implode(',', array_unique($namen)) : '-',
+                            'laenge' => 0, 'ergebnis' => (int) $felder['OK'], 'grund' => ($grund === '' ? '-' : $grund),
+                            'quelle' => $quelle);
+            $p = ax_paths();
+            ax_write_json($p['datadir'] . '/letzte.json', $letzte, 0644);
+            ax_mqtt_letzte($letzte, $cfg);
+        }
+        ax_absender_merken($aktion, $quelle, isset($par['absender']) ? (string) $par['absender'] : '', $felder);
+        return array($http, $felder);
+    };
+
+    if (!in_array($aktion, array('radio', 'radio_stopp', 'radio_laut'), true)) { $f['GRUND'] = 'AKTION'; return $ende(400, $f); }
+    if (isset($par['absender']) && !ax_absender_ok($par['absender'])) { $f['GRUND'] = 'ABSENDER'; return $ende(400, $f); }
+    if (empty($cfg['aktiv'])) { $f['GRUND'] = 'PLUGIN_AUS'; return $ende(409, $f); }
+    if (empty($cfg['radio_ein'])) { $f['GRUND'] = 'RADIO_AUS'; return $ende(409, $f); }
+    if ($zp !== 'alle' && (!preg_match('/^[1-9][0-9]?\z/', $zp) || (int) $zp > AX_RADIO_ZONEN_MAX)) {
+        $f['GRUND'] = 'ZONE';
+        return $ende(400, $f);
+    }
+    $f['ZONE'] = $zp;
+
+    // ---- Sender bzw. Wert: abweisen, nie zurechtbiegen ----
+    $nr = 0;
+    $wert = -1;
+    $sender = null;
+    if ($aktion === 'radio') {
+        $n = (isset($par['nr']) && is_string($par['nr'])) ? $par['nr'] : '';
+        if (!preg_match('/^[1-9][0-9]?\z/', $n) || (int) $n > AX_MUSIK_NR_MAX) { $f['GRUND'] = 'NR'; return $ende(400, $f); }
+        $nr = (int) $n;
+        $f['NR'] = $nr;
+        foreach ($cfg['musik_sender'] as $z) { if ($z['nr'] === $nr) { $sender = $z; } }
+        if ($sender === null) { $f['GRUND'] = 'SENDER_UNBEKANNT'; return $ende(404, $f); }
+    } elseif ($aktion === 'radio_stopp') {
+        $f['NR'] = 0;
+    } else {
+        $w = (isset($par['wert']) && is_string($par['wert'])) ? $par['wert'] : '';
+        if (!preg_match('/^[0-9]{1,3}\z/', $w) || (int) $w > 100) { $f['GRUND'] = 'WERT'; return $ende(400, $f); }
+        $wert = (int) $w;
+        $f['WERT'] = $wert;
+    }
+    $zonen = array();
+    foreach ($cfg['radio_zonen'] as $z) {
+        if ($zp === 'alle' || $z['zone'] === (int) $zp) { $zonen[] = $z; }
+    }
+    if (!$zonen) { $f['GRUND'] = 'ZONE_UNBEKANNT'; return $ende(404, $f); }
+    $f['GERAET'] = ($zp === 'alle') ? 'alle' : $zonen[0]['ziel'];
+    $kopf = $f;
+    unset($kopf['OK']);
+
+    // ---- Anmeldung, Pause nach AMAZON_RATE ----
+    if (!ax_amazon()) { $f['GRUND'] = 'ANMELDUNG'; return $ende(503, $f); }
+    $bef = ax_anmeldung_befund();
+    if ($bef['befund'] === 'ABGELAUFEN') { $f['GRUND'] = 'ANMELDUNG_ABGELAUFEN'; return $ende(503, $f); }
+    if (!function_exists('curl_init')) { $f['GRUND'] = 'CURL_FEHLT'; return $ende(503, $f); }
+    $b = ax_bremse_lesen();
+    $pause = isset($b['radio_pause_bis']) ? (int) $b['radio_pause_bis'] - time() : 0;
+    if ($pause > AX_RADIO_PAUSE_S) { $pause = 0; }   // weiter als die Pause selbst: nur nach einem Uhrsprung
+    if ($pause > 0) { $f['GRUND'] = 'AMAZON_PAUSE'; $f['WARTE'] = $pause; return $ende(429, $f); }
+    $st = ax_geraete();
+    if (!$st) {
+        $sp = ax_sperre();
+        if (!$sp) { $f['GRUND'] = 'BESCHAEFTIGT'; return $ende(503, $f); }
+        list($ok, $g, $st) = ax_geraete_holen();
+        ax_sperre_frei($sp);
+        if (!$ok) { $f['GRUND'] = $g; return $ende(503, $f); }
+    }
+
+    // ---- Plan: je Zone die Ziele und ob derselbe Sollwert schon gilt (X-7) ----
+    $stand = ax_radio_lesen();
+    $jetzt = time();
+    $plan = array();
+    $bedarf = 0;
+    foreach ($zonen as $z) {
+        list($h, $g, $ger, $off) = ax_radio_ziel($z['ziel'], $aktion, $cfg, $st);
+        $e = isset($stand[$z['zone']]) ? $stand[$z['zone']] : null;
+        $gleich = false;
+        if ($h === 200 && $e) {
+            if ($aktion === 'radio_laut') {
+                $gleich = $e['ziel_l'] === $z['ziel'] && $e['laut'] === $wert && $jetzt >= $e['t_laut'] && $jetzt - $e['t_laut'] < AX_RADIO_GLEICH_S;
+            } else {
+                $frisch = $e['ziel_s'] === $z['ziel'] && $jetzt >= $e['t_sender'] && $jetzt - $e['t_sender'] < AX_RADIO_GLEICH_S;
+                $gleich = $frisch && (($aktion === 'radio') ? ($e['zustand'] === 1 && $e['sender'] === $nr) : ($e['zustand'] === 0));
+            }
+        }
+        $n = ($h !== 200 || $gleich) ? 0 : (($aktion === 'radio_laut') ? 1 : count($ger));
+        $bedarf += $n;
+        $plan[] = array('zone' => $z['zone'], 'ziel' => $z['ziel'], 'h' => $h, 'g' => $g, 'geraete' => $ger, 'offline' => $off, 'gleich' => $gleich);
+    }
+    // Die Musik-Stundengrenze gilt fuer alle Zonen zusammen und fuer den ganzen
+    // Befehl: reicht sie nicht, geht nichts hinaus - nie nur ein Teil der Zonen.
+    if ($bedarf > 0 && count($b['musik_stunde']) + $bedarf > (int) $cfg['musik_stundengrenze']) {
+        $f['GRUND'] = 'MUSIK_STUNDENGRENZE';
+        return $ende(429, $f);
+    }
+
+    // ---- Senden: Zone fuer Zone, je unter der Amazon-Sperre ----
+    if (count($plan) > 1 && function_exists('set_time_limit')) { @set_time_limit(60 + 15 * count($plan)); }
+    $anb = ax_musik_anbieter();
+    $bereinigt = null;
+    $suche = '';
+    $gesendet = 0;
+    $unv = 0;
+    $off_z = 0;
+    $fehl_z = 0;
+    $offen = 0;
+    $off_ger = 0;
+    $abbruch = '';
+    $erst = null;
+    $namen = array();
+    $versucht = false;
+    $befehl = ($aktion === 'radio') ? 'radio ' . $nr : (($aktion === 'radio_stopp') ? 'stopp' : 'laut ' . $wert);
+    foreach ($plan as $pz) {
+        $merk = array('befehl' => $befehl, 'zeit' => time(), 'quelle' => $quelle);
+        if ($abbruch !== '') {
+            $offen++;
+            ax_radio_merken($pz['zone'], $merk + array('ergebnis' => 0, 'grund' => 'NICHT_GESENDET'));
+            continue;
+        }
+        if ($pz['h'] !== 200) {
+            if ($pz['g'] === 'GERAETE_OFFLINE') { $off_z++; } else { $fehl_z++; }
+            if ($erst === null) { $erst = $pz; }
+            ax_radio_merken($pz['zone'], $merk + array('ergebnis' => 0, 'grund' => $pz['g']));
+            continue;
+        }
+        if ($pz['gleich']) {
+            $unv++;
+            ax_radio_merken($pz['zone'], $merk + array('ergebnis' => 1, 'grund' => 'UNVERAENDERT'));
+            continue;
+        }
+        $sp = ax_sperre();
+        if (!$sp) {
+            $abbruch = 'BESCHAEFTIGT';
+            $offen++;
+            ax_radio_merken($pz['zone'], $merk + array('ergebnis' => 0, 'grund' => 'BESCHAEFTIGT'));
+            continue;
+        }
+        $versucht = true;
+        list($ok, $g, $s) = ax_sitzung_sichern(false);
+        if ($ok) {
+            $folgen = array();
+            if ($aktion === 'radio') {
+                $id = $anb[$sender['anbieter']];
+                if ($bereinigt === null) {
+                    list($bereinigt, $suche) = ax_suchphrase_pruefen($pz['geraete'][0], $sender['name'], $id, $s['kunde']);
+                }
+                foreach ($pz['geraete'] as $gz) { $folgen[] = ax_sequenz_musik($gz, $sender['name'], $bereinigt, $id, $s['kunde']); }
+            } elseif ($aktion === 'radio_stopp') {
+                foreach ($pz['geraete'] as $gz) { $folgen[] = ax_sequenz_musik_stopp($gz, $s['kunde']); }
+            } else {
+                $folgen[] = ax_sequenz_lautstaerke($pz['geraete'], $wert, $s['kunde']);
+            }
+            foreach ($folgen as $seq) {
+                list($ok, $g) = ax_radio_senden($seq);
+                if (!$ok) { break; }
+            }
+        }
+        ax_sperre_frei($sp);
+        foreach ($pz['geraete'] as $gz) { $namen[] = $gz['normal']; }
+        if (!$ok) {
+            $abbruch = $g;
+            $offen++;
+            ax_radio_merken($pz['zone'], $merk + array('ergebnis' => 0, 'grund' => $g));
+            continue;
+        }
+        $gesendet++;
+        $off_ger += $pz['offline'];
+        $neu = $merk + array('ergebnis' => 1, 'grund' => '-');
+        if ($aktion === 'radio_laut') {
+            $neu += array('laut' => $wert, 't_laut' => time(), 'ziel_l' => $pz['ziel']);
+        } else {
+            $neu += array('sender' => $nr, 'zustand' => ($aktion === 'radio') ? 1 : 0, 't_sender' => time(), 'ziel_s' => $pz['ziel']);
+            // Z3: je Zone fluechtig, was zuletzt bestaetigt gesendet wurde.
+            $zn = (int) $pz['zone'];
+            ax_mqtt_senden(array('radio/' . $zn . '/sender' => $nr, 'radio/' . $zn . '/zustand' => ($aktion === 'radio') ? 1 : 0), $cfg);
+        }
+        ax_radio_merken($pz['zone'], $neu);
+    }
+
+    // ---- Antwort: ehrlich, was hinausging ----
+    $anbieter = ($aktion === 'radio') ? array('ANBIETER' => $sender['anbieter']) : array();
+    if ($zp !== 'alle') {
+        $pz = $plan[0];
+        if ($pz['h'] !== 200) {
+            $f['GRUND'] = $pz['g'];
+            if ($pz['g'] === 'GERAETE_OFFLINE') { $f['OFFLINE'] = $pz['offline']; }
+            return $ende($pz['h'], $f);
+        }
+        if ($pz['gleich']) {
+            return $ende(200, array('OK' => 1) + $kopf + $anbieter + array('UNVERAENDERT' => 1, 'GRUND' => 'UNVERAENDERT'));
+        }
+        if ($abbruch !== '') {
+            $f['GRUND'] = $abbruch;
+            if ($abbruch === 'AMAZON_RATE') { $f['WARTE'] = AX_RADIO_PAUSE_S; }
+            return $ende(503, $f, $versucht, $namen);
+        }
+        $aus = array('OK' => 1) + $kopf + $anbieter + ($aktion === 'radio' ? array('SUCHE' => $suche) : array())
+             + ($aktion === 'radio_stopp' ? array('STOPP' => 1) : array()) + array('UNVERAENDERT' => 0, 'OFFLINE' => $off_ger);
+        return $ende(200, $aus, true, $namen);
+    }
+    $zahlen = array('ZONEN' => count($plan), 'GESENDET' => $gesendet, 'UNVERAENDERT' => $unv, 'OFFLINE' => $off_z, 'FEHLER' => $fehl_z);
+    if ($abbruch !== '') {
+        $aus = $f + $zahlen + array('OFFEN' => $offen, 'GRUND' => $abbruch) + ($abbruch === 'AMAZON_RATE' ? array('WARTE' => AX_RADIO_PAUSE_S) : array());
+        return $ende(503, $aus, $versucht, $namen);
+    }
+    if ($gesendet + $unv === 0) {
+        $aus = $f + $zahlen + array('GRUND' => $erst['g']);
+        return $ende($erst['h'], $aus);
+    }
+    $aus = array('OK' => 1) + $kopf + $anbieter + ($aktion === 'radio' && $suche !== '' ? array('SUCHE' => $suche) : array()) + $zahlen;
+    return $ende(200, $aus, $versucht, $namen);
+}
+
+/* ==================================================================
  * Die Befehle - eine Funktion fuer Endpunkt, MQTT-Befehlseingang und
  * Testknoepfe (Regeln/03: Trockenlauf und Ernstfall in derselben Funktion)
  * ================================================================== */
@@ -2526,6 +2944,8 @@ function ax_mqtt_themen()
         'letzte/geraet'             => array(true, 'THEMA.LETZTE_GERAET'),
         'letzte/ergebnis'           => array(true, 'THEMA.LETZTE_ERGEBNIS'),
         'letzte/grund'              => array(true, 'THEMA.LETZTE_GRUND'),
+        'radio/<zone>/sender'       => array(false, 'THEMA.RADIO_SENDER'),
+        'radio/<zone>/zustand'      => array(false, 'THEMA.RADIO_ZUSTAND'),
     );
 }
 
@@ -2533,6 +2953,7 @@ function ax_mqtt_themen()
 function ax_mqtt_retain($thema)
 {
     $muster = preg_replace('#^geraet/[a-z0-9_]{1,40}/#', 'geraet/<name>/', $thema);
+    $muster = preg_replace('#^radio/[0-9]{1,2}/#', 'radio/<zone>/', $muster);
     $t = ax_mqtt_themen();
     return isset($t[$muster]) ? $t[$muster][0] : false;
 }
@@ -3026,10 +3447,13 @@ function ax_xml_virtual_out(array $kopf, array $cmds)
         . '" Address="' . ax_x($kopf['address']) . '" CmdInit="" CloseAfterSend="true" CmdSep="">' . $crlf;
     $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
     foreach ($cmds as $c) {
+        // 'analog' => false: digitaler Befehl ohne Skalierung (Regeln/07, Ausfuhr VQ_KEBA); sonst analog wie bisher.
+        $digital = isset($c['analog']) && $c['analog'] === false;
         $o .= "\t" . '<VirtualOutCmd Title="' . ax_x($c['title']) . '" Comment="' . ax_x($c['comment'])
             . '" CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="' . ax_x($c['on'])
-            . '" CmdOnHTTP="" CmdOnPost="" CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="true"'
-            . ' Repeat="0" RepeatRate="0" SourceValLow="0" DestValLow="0" SourceValHigh="10" DestValHigh="10" HintText=""/>' . $crlf;
+            . '" CmdOnHTTP="" CmdOnPost="" CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="' . ($digital ? 'false' : 'true') . '"'
+            . ' Repeat="0" RepeatRate="0"' . ($digital ? '' : ' SourceValLow="0" DestValLow="0" SourceValHigh="10" DestValHigh="10"')
+            . ' HintText=""/>' . $crlf;
     }
     $o .= '</VirtualOut>' . $crlf;
     return $o;
@@ -3075,6 +3499,38 @@ function ax_vorlage_aus($host, array $cfg)
     $basis = ax_endpunkt_basis($host);
     return array('VQ_alexang.xml', ax_xml_virtual_out(array('title' => 'Alexa NG Ansagen',
         'comment' => ax_t('LOX.VO_KOMMENTAR') . ' (' . date('d.m.Y') . ')',
+        'address' => preg_replace('#/plugins/.*$#', '', $basis)), $cmds));
+}
+
+/**
+ * [Dateiname, Inhalt] der Radio-Vorlage (Z5): je Zone "Sender" (analog, <v> ist
+ * die Nummer aus der Senderliste), "Stopp" (digital) und "Lautstärke" (analog
+ * 0-100), dazu dieselben drei fuer alle Zonen. Traegt das AKTIONStoken -
+ * vertraulich. Titel mit Umlaut (vorlagen_pruefen h3); die aeltere
+ * Ansage-Vorlage behaelt "Lautstaerke", weil ihre Titel schon importiert sind.
+ */
+function ax_vorlage_radio($host, array $cfg)
+{
+    $p = ax_paths();
+    $zonen = array();
+    if (isset($cfg['radio_zonen']) && is_array($cfg['radio_zonen'])) {
+        foreach ($cfg['radio_zonen'] as $z) { if (is_array($z) && isset($z['zone'])) { $zonen[] = (string) (int) $z['zone']; } }
+    }
+    $zonen[] = 'alle';
+    $pfad = '/plugins/' . $p['plugin'] . '/?token=' . rawurlencode(isset($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '');
+    $cmds = array();
+    foreach ($zonen as $zn) {
+        $t = ($zn === 'alle') ? 'alle Zonen' : 'Zone ' . $zn;
+        $cmds[] = array('title' => 'Alexa Radio ' . $t . ' Sender', 'comment' => 'Radio ' . $t . ': Sender-Nr.',
+            'on' => $pfad . '&aktion=radio&zone=' . $zn . '&nr=<v>');
+        $cmds[] = array('title' => 'Alexa Radio ' . $t . ' Stopp', 'comment' => 'Radio ' . $t . ': Stopp', 'analog' => false,
+            'on' => $pfad . '&aktion=radio_stopp&zone=' . $zn);
+        $cmds[] = array('title' => 'Alexa Radio ' . $t . ' Lautstärke', 'comment' => 'Radio ' . $t . ' %',
+            'on' => $pfad . '&aktion=radio_laut&zone=' . $zn . '&wert=<v>');
+    }
+    $basis = ax_endpunkt_basis($host);
+    return array('VQ_alexang_radio.xml', ax_xml_virtual_out(array('title' => 'Alexa NG Radio',
+        'comment' => ax_t('LOX.VR_KOMMENTAR') . ' (' . date('d.m.Y') . ')',
         'address' => preg_replace('#/plugins/.*$#', '', $basis)), $cmds));
 }
 
@@ -3160,6 +3616,10 @@ function ax_sicherung_lesen($roh)
     if ($neu['sprechtoken'] !== '' && $neu['sprechtoken'] === $neu['aktionstoken']) {
         $mangel[] = ax_t('SICH.TOKEN_GLEICH');
     }
+    // Radio (Z1): eine Zone auf eine eigene Gruppe braucht diese Gruppe (aus der
+    // Sicherung oder, fehlt sie dort, aus dem jetzigen Stand).
+    $fg = ax_radio_gruppen_fehlen($neu['radio_zonen'], $neu['gruppen']);
+    if ($fg) { $mangel[] = sprintf(ax_t('SICH.RADIO_GRUPPE'), implode(', ', $fg)); }
     if ($mangel) { return array(null, $mangel, $anzahl, null); }
     $fehlend = array_values(array_diff(array_keys($vorgaben), array_keys($gesehen)));
     if ($fehlend) { $hinweise[] = sprintf(ax_t('SICH.FEHLEND'), count($fehlend), implode(', ', $fehlend)); }
@@ -3269,6 +3729,8 @@ function ax_pruef_themen()
     preg_match_all("/'geraet\/' \. \\\$weg \. '\/([a-z]+)'/", $q, $m3);
     $gesendet = array_unique($m[1]);
     foreach (array_merge($m2[1], $m3[1]) as $s) { $gesendet[] = 'geraet/<name>/' . $s; }
+    preg_match_all("/'radio\/' \. \\\$zn \. '\/([a-z]+)'/", $q, $m4);
+    foreach ($m4[1] as $s) { $gesendet[] = 'radio/<zone>/' . $s; }
     $gesendet = array_values(array_unique($gesendet));
     $tabelle = array_keys(ax_mqtt_themen());
     if (!$gesendet) { return array(0, ax_t('TEST.A_THEMEN_LEER')); }
@@ -3286,7 +3748,7 @@ function ax_pruef_vorlagen(array $cfg)
     if (!function_exists('simplexml_load_string')) { return array(-1, ax_t('TEST.A_XML_NICHT')); }
     $fehl = array();
     $alt = libxml_use_internal_errors(true);
-    foreach (array(ax_vorlage_ein('loxberry'), ax_vorlage_aus('loxberry', $cfg)) as $v) {
+    foreach (array(ax_vorlage_ein('loxberry'), ax_vorlage_aus('loxberry', $cfg), ax_vorlage_radio('loxberry', $cfg)) as $v) {
         if (@simplexml_load_string($v[1]) === false) { $fehl[] = $v[0]; }
     }
     libxml_clear_errors();
