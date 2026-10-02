@@ -14,7 +14,7 @@
  *   ?aktion=musik_probe&token=A&geraet=..&nr=1-50             nur Aktionstoken, ab Werk aus (Stufe 3)
  *   ?aktion=musik_probe&token=A&geraet=..&sender=..[&anbieter=tunein|amazon]
  *   ?aktion=musik_stopp&token=A&geraet=..
- *   ?aktion=radio&token=A&zone=1-24|alle&nr=1-50              nur Aktionstoken, ab Werk aus (Radio je Zone)
+ *   ?aktion=radio&token=A&zone=1-24|alle&nr=0-50              nur Aktionstoken, ab Werk aus (Radio je Zone; nr=0 = Stopp)
  *   ?aktion=radio_stopp&token=A&zone=1-24|alle
  *   ?aktion=radio_laut&token=A&zone=1-24|alle&wert=0-100
  *   [&absender=<plugin>] bei jeder ausloesenden Aktion: Name fuer die Absenderuebersicht

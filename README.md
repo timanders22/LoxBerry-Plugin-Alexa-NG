@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 0.9.3
+Version 0.9.4
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -14,6 +14,31 @@ mit der curl-Erweiterung). Kein Node, kein Python, kein Docker.
 > (Weg b) hat am echten Amazon-Konto funktioniert: Token, Cookies und
 > Geräteliste kamen, und eine Testansage an einen Echo kam an. Die übrigen
 > Punkte unter „Noch am Gerät zu messen“ stehen noch aus.
+
+## Fassung 0.9.4
+
+Hue-Probe, Radio-Stopp über Radiotasten, Geräte austragen (Vorabfassung).
+Gemessen mit der Amazon-Attrappe unter PHP 7.4, 8.3 (WSL) und 8.5; die Hue-Probe nur in einem eigenen Netz-Namensraum
+(WSL, ohne Weg nach außen) gegen eine Echo-Attrappe. Am Gerät noch nicht.
+
+* **Hue-Probe** (Vorstufe zu Fassung 2 „Steuerung“, ab Werk aus, nicht am Gerät erprobt): Haken „Hue-Probe (nicht am
+  Gerät erprobt)“ im Reiter Einstellungen. Ein eigener Dienst beantwortet die Suche nach einer Hue-Bridge (SSDP, UDP 1900,
+  nur als Antwort an den Suchenden) und stellt auf Port 8380 (einstellbar 1024–65535, nicht 80) eine einzige Lampe
+  „Loxone Probe“ bereit. Schaltet ein Echo sie, geht nur `alexang/hue_probe/ein` (1/0, flüchtig) über MQTT hinaus –
+  keine Verbindung zu Loxone-Steuerungen. Der Reiter Test zeigt, ob der Dienst läuft und antwortet, ob eine Suche
+  angekommen ist (Absender-IP, Zeit) und ob ein Echo die Beschreibung geholt, die Lampe abgefragt oder geschaltet hat.
+  Ehrlich: neuere Echo-Geräte unterstützen die lokale Hue-Suche zum Teil nicht mehr – genau das misst die Probe.
+* **Radio je Zone:** `nr=0` hält die Zone an (Antwort `STOPP=1`) – Radiotasten in Loxone senden 0, wenn keine Taste
+  gewählt ist; ein eigener Stopp-Taster ist nicht mehr nötig. Über MQTT gilt dasselbe für die Nutzlast `0`. Jede
+  Stopp-Antwort trägt jetzt `STOPP=1`, auch bei `zone=alle`.
+* **Senderliste** mit eigener Überschrift „Sender (für Musik-Probe und Radio je Zone)“; sie braucht keinen der Haken.
+* **Musik-Probe bei 429** wie Radio: kein zweiter Versuch, 503 `GRUND=AMAZON_RATE;WARTE=60`, danach 60 s Musik-Pause
+  für Musik-Probe und Radio (429 `GRUND=AMAZON_PAUSE`); Ansagen gehen weiter.
+* **Verschwundene Geräte:** Knopf „austragen“ im Reiter Geräte (mit Haken zur Bestätigung) – der Normalname wird frei.
+  Ein Aufruf an ein verschwundenes Gerät antwortet mit 404 `GRUND=GERAET_VERSCHWUNDEN` statt `GERAET_UNBEKANNT`.
+* **Einbindung in Loxone:** die Baustein-Liste nennt jetzt auch die Vorlage „Radio je Zone“ (virtueller Ausgang, Befehle
+  Sender/Stopp/Lautstärke, Radiotasten).
+* Deinstallation und Update halten die Hue-Probe an.
 
 ## Fassung 0.9.3
 
@@ -177,7 +202,11 @@ Behebung.
   Name noch eingetragen ist: Standardgerät, eigene Gruppen und die
   Ausgabeart „Alexa-NG“ der Plugins Sprachsteuerung lokal, Octopus Dynamic,
   Abfuhrkalender, Abfahrts-Assistent und Ferien und Feiertage (soweit ihre
-  Konfiguration lesbar ist; gelesen wird nur das Gerätefeld).
+  Konfiguration lesbar ist; gelesen wird nur das Gerätefeld). Mit dem Knopf
+  **„austragen“** (und dem Haken zur Bestätigung) verschwindet die Zeile, und
+  der Normalname ist wieder frei; bis dahin antwortet ein Aufruf an das Gerät
+  mit 404 `GRUND=GERAET_VERSCHWUNDEN`. Ein Gerät, das Amazon noch meldet, lässt
+  sich nicht austragen.
 * Für den Start einer Routine aus Loxone zählt nur der Name in der Freigabe.
   Spricht man eine Routine auch selbst, Sprachauslöser **ohne** Musik-,
   Sender- oder Genrewörter wählen (nicht „Radio an“, sondern z. B.
@@ -259,14 +288,16 @@ Mit Token (`T` = Sprech- **oder** Aktionstoken, `A` = nur Aktionstoken):
 | `?aktion=musik_probe&token=A&geraet=…&nr=1-50` | A | Musik-Probe mit dem Sender Nummer `nr` aus der Senderliste; `MUSIK;OK=1;GERAET=kueche;ANBIETER=tunein;NR=1;SUCHE=EIGEN;UNVERAENDERT=0`; ab Werk 409 `GRUND=MUSIK_AUS` |
 | `?aktion=musik_probe&token=A&geraet=…&sender=…[&anbieter=tunein\|amazon]` | A | dasselbe mit einem Sendernamen (Zusatz), Anbieter ab Werk `tunein` |
 | `?aktion=musik_stopp&token=A&geraet=…` | A | Musik anhalten; `MUSIK;OK=1;GERAET=kueche;STOPP=1` |
-| `?aktion=radio&token=A&zone=1-24\|alle&nr=1-50` | A | Radio je Zone: Sender Nummer `nr` aus der Senderliste in der Zone; `RADIO;OK=1;ZONE=2;NR=5;GERAET=kueche;ANBIETER=tunein;SUCHE=EIGEN;UNVERAENDERT=0;OFFLINE=0`; ab Werk 409 `GRUND=RADIO_AUS` |
+| `?aktion=radio&token=A&zone=1-24\|alle&nr=0-50` | A | Radio je Zone: Sender Nummer `nr` aus der Senderliste in der Zone; `RADIO;OK=1;ZONE=2;NR=5;GERAET=kueche;ANBIETER=tunein;SUCHE=EIGEN;UNVERAENDERT=0;OFFLINE=0`; `nr=0` hält die Zone an wie `radio_stopp` (`STOPP=1`); ab Werk 409 `GRUND=RADIO_AUS` |
 | `?aktion=radio_stopp&token=A&zone=1-24\|alle` | A | Radio der Zone anhalten; `RADIO;OK=1;ZONE=2;NR=0;GERAET=kueche;STOPP=1;UNVERAENDERT=0;OFFLINE=0` |
 | `?aktion=radio_laut&token=A&zone=1-24\|alle&wert=0-100` | A | Lautstärke der Zone; `RADIO;OK=1;ZONE=2;WERT=30;GERAET=kueche;UNVERAENDERT=0;OFFLINE=0` |
 
 **`geraet`** ist eine Kommaliste aus Normalnamen, `gruppe:<name>` oder `alle`;
 der Amazon-Anzeigename wird ebenfalls angenommen. Ohne `geraet` gilt das
 Standardgerät. Ein unbekannter Name ergibt **404** `GRUND=GERAET_UNBEKANNT` —
-nie einen Rückfall auf „alle“. Geräte, die offline sind, werden ausgelassen
+nie einen Rückfall auf „alle“. Gehört der Name einem verschwundenen Gerät
+(Amazon meldet es nicht mehr), heißt der Grund `GERAET_VERSCHWUNDEN`, ebenfalls
+mit 404. Geräte, die offline sind, werden ausgelassen
 und gezählt (`OFFLINE=n`); sind alle offline, 503.
 
 **`text`**: 1–1000 Zeichen UTF-8, ohne Steuerzeichen. `text=0` oder ein
@@ -323,7 +354,9 @@ keinem Echo gemessen. Gespielt wird nur, was Amazon selbst bei TuneIn oder
 Amazon Music findet: **kein beliebiger Stream, keine Adresse, keine eigene
 MP3**.
 
-* **Senderliste** (Reiter Einstellungen): je Zeile `Nummer = Sendername |
+* **Senderliste** (Reiter Einstellungen, eigene Überschrift „Sender (für
+  Musik-Probe und Radio je Zone)“; sie gilt für beide und braucht keinen der
+  Haken): je Zeile `Nummer = Sendername |
   anbieter`, Nummer 1–50, `anbieter` `tunein` oder `amazon` (ohne Angabe
   `tunein`). Hauptweg ist `nr=<Nummer>` — passend zu den Radiotasten 1–16 in
   Loxone; `sender=<Name>` ist der Zusatz. Eine unbekannte Nummer ergibt 404
@@ -335,6 +368,10 @@ MP3**.
   Ansagen, darüber 429 `GRUND=MUSIK_STUNDENGRENZE`), derselbe Sender am
   selben Gerät innerhalb der Wiederholbremse ergibt `UNVERAENDERT`, eine
   besetzte Sperre 503 `BESCHAEFTIGT`.
+* **429 von Amazon:** wie bei Radio je Zone kein zweiter Versuch. Die Antwort
+  ist 503 `GRUND=AMAZON_RATE;WARTE=60`, und 60 s lang antworten Musik-Probe und
+  Radio mit 429 `GRUND=AMAZON_PAUSE` (eine gemeinsame Musik-Pause); Ansagen
+  gehen weiter.
 * Vor dem Abspielen lässt das Plugin die Suchphrase von Amazon prüfen;
   `SUCHE=AMAZON` heißt, Amazon hat sie bereinigt, `SUCHE=EIGEN`, es galt die
   eigene Bereinigung.
@@ -357,7 +394,10 @@ MP3.
   wird beanstandet; gespeichert wird dann nichts. Ein Ziel, das die
   Geräteliste nicht kennt, ergibt nach dem Speichern einen Hinweis und am
   Endpunkt 404.
-* **Sender** nach Nummer aus der Senderliste der Musik-Probe (`nr=1-50`).
+* **Sender** nach Nummer aus der Senderliste (`nr=1-50`). **`nr=0` hält die
+  Zone an** (wie `radio_stopp`, Antwort `STOPP=1`): Radiotasten in Loxone
+  senden 0, wenn keine Taste gewählt ist – ein eigener Stopp-Taster ist dafür
+  nicht nötig. Über MQTT gilt dasselbe für die Nutzlast `0`.
 * **Alle gleich, jede anders:** `zone=alle` mit einem Sender — alle Zonen
   spielen denselben Sender; die Zonen gehen nacheinander mit mindestens 1 s
   Abstand hinaus. Je Zone ein eigener Aufruf gibt jeder Zone ihren eigenen
@@ -369,10 +409,10 @@ MP3.
   ganzen Befehl — reicht sie nicht, geht nichts hinaus (429
   `GRUND=MUSIK_STUNDENGRENZE`). Antwortet Amazon mit 429, hält das Plugin an:
   die übrigen Zonen werden nicht versucht (`OFFEN=n`), die Antwort sagt 503
-  `GRUND=AMAZON_RATE;WARTE=60`, und 60 s lang antworten Radiobefehle mit 429
+  `GRUND=AMAZON_RATE;WARTE=60`, und 60 s lang antworten Radiobefehle und die Musik-Probe mit 429
   `GRUND=AMAZON_PAUSE`. Ein zweiter Versuch geschieht nicht.
 * **Fehler:** 400 `ZONE`, `NR`, `WERT` · 404 `ZONE_UNBEKANNT`,
-  `SENDER_UNBEKANNT`, `GERAET_UNBEKANNT`, `GRUPPE_UNBEKANNT` · 409 `RADIO_AUS`
+  `SENDER_UNBEKANNT`, `GERAET_UNBEKANNT`, `GERAET_VERSCHWUNDEN`, `GRUPPE_UNBEKANNT` · 409 `RADIO_AUS`
   · 429 `MUSIK_STUNDENGRENZE`, `AMAZON_PAUSE` · 503 `BESCHAEFTIGT`,
   `GERAETE_OFFLINE`, `AMAZON_RATE`, `AMAZON`, `NETZ`.
 * **Sperre aus Loxone und Ruhezeit gelten für Radio nicht** (wie für die
@@ -387,6 +427,37 @@ MP3.
   Sender, Stopp und Lautstärke, dazu alle Zonen; trägt das Aktionstoken).
 * Im Reiter **Test**: Knöpfe **„Zone abspielen“** und **„Zone stoppen“** mit
   Auswahl von Zone und Sender.
+
+### Hue-Probe (Fassung 2, nicht am Gerät erprobt)
+
+Fassung 2 „Steuerung“ (Alexa schaltet Loxone, lokal ohne Cloud) soll eine
+Hue-Bridge nachbilden. Gebaut wird sie erst, wenn gemessen ist, dass ein Echo
+die Nachbildung erkennt. Diese Probe misst genau das. Ab Werk aus (Reiter
+**Einstellungen**, Abschnitt Hue-Probe, Haken „Hue-Probe (nicht am Gerät
+erprobt)“).
+
+* Mit Haken läuft ein eigener Dienst (`bin/ax_hue.php`, gestartet über
+  `bin/hue_dienst.sh`; der Takt hält ihn ohne Haken an). Er beantwortet die
+  Suche nach einer Bridge (SSDP auf UDP 1900, Gruppe 239.255.255.250) mit
+  einer Antwort an den Suchenden und stellt auf einem eigenen Port (ab Werk
+  **8380**, einstellbar 1024–65535) `description.xml` und die Hue-Schnittstelle
+  `/api/<user>/lights` mit genau einer Lampe **„Loxone Probe“** bereit. Er sendet
+  nie von sich aus ins Netz. Port 80 gehört dem LoxBerry-Webserver und bleibt
+  unberührt.
+* Schaltet ein Echo die Lampe, geht nur `alexang/hue_probe/ein` (`1`/`0`,
+  flüchtig) über MQTT hinaus — **keine Verbindung zu Loxone-Steuerungen**.
+* Ablauf: Haken setzen, Speichern (die Meldung sagt, ob der Dienst läuft); in
+  der Alexa-App „Geräte suchen“ (Philips Hue) oder „Alexa, suche Geräte“;
+  danach „Alexa, schalte Loxone Probe ein“; im Reiter **Test**, Abschnitt
+  Hue-Probe, nachsehen: ob eine Suche angekommen ist (Absender-IP, Zeit), ob
+  ein Echo die Beschreibung geholt, die Lampe abgefragt oder geschaltet hat
+  (Zähler).
+* Ehrlich: Echo-Geräte der neueren Generation unterstützen die lokale
+  Hue-Suche zum Teil nicht mehr, manche nur auf Port 80. Kommt keine Suche an
+  oder bleibt die Abfrage aus, ist das ein Messergebnis, kein Fehler des
+  Plugins.
+* Braucht die PHP-Erweiterung **sockets** (für den Beitritt zur SSDP-Gruppe);
+  fehlt sie, endet der Dienst mit `SOCKETS_FEHLT`, und der Reiter Test zeigt es.
 
 ### Aus anderen Plugins
 
@@ -451,6 +522,7 @@ Broker aus der LoxBerry-Konfiguration, nicht über den UDP-Eingang.
 | `alexang/letzte/grund` | Grund, `-` ohne Grund | ja |
 | `alexang/radio/<zone>/sender` | Sendernummer, zuletzt bestätigt gesendet; `0` nach Stopp | nie |
 | `alexang/radio/<zone>/zustand` | `1` Start, `0` Stopp, zuletzt bestätigt gesendet | nie |
+| `alexang/hue_probe/ein` | `1`/`0`: ein Echo hat die Lampe „Loxone Probe“ der Hue-Probe geschaltet | nie |
 
 Kein Thema geht leer hinaus. Ein Gerät, das aus der Amazon-Liste
 verschwindet, bekommt einmal `-1` und bleibt im Reiter **Geräte** als
@@ -470,7 +542,7 @@ sagt, welche Fassung läuft.
 | `alexang/befehl/gruppe/<g>/sprechen` | Text |
 | `alexang/befehl/routine` | Name (nur mit eigenem Haken und Freigabe) |
 | `alexang/befehl/sperre` | `1` sperren, `0` öffnen (nur mit Haken „Sperre aus Loxone annehmen“) |
-| `alexang/befehl/radio/<zone>` | Sendernummer oder `stopp`; `<zone>` ist `1`–`24` oder `alle` (nur mit Haken „Radio je Zone erlauben“) |
+| `alexang/befehl/radio/<zone>` | Sendernummer; `0` oder `stopp` hält an; `<zone>` ist `1`–`24` oder `alle` (nur mit Haken „Radio je Zone erlauben“) |
 | `alexang/befehl/radio/<zone>/laut` | 0–100 |
 
 Zurückbehaltene (retained) Befehle werden **verworfen**, nicht ausgeführt.
@@ -500,6 +572,10 @@ Es gelten dieselbe Prüfung und Bremse wie am Endpunkt; das Ergebnis steht in
 * **Sicherung:** „Einstellungen sichern“ nimmt die Amazon-Anmeldung **nur mit
   Haken** auf (ab Werk aus) — die Datei ist dann ein Zugang zu Ihrem
   Amazon-Konto.
+* **Hue-Probe** (ab Werk aus): wie eine echte Hue-Bridge ohne Anmeldung im
+  Heimnetz erreichbar — jeder im Netz kann die Probe-Lampe schalten. Das
+  bewirkt nur die flüchtige MQTT-Meldung `alexang/hue_probe/ein`, nichts an
+  Loxone.
 * Die Schnittstelle ist **inoffiziell**; Amazon kann sie jederzeit ändern.
 
 ### Wo Zugangsdaten liegen
@@ -512,7 +588,7 @@ Es gelten dieselbe Prüfung und Bremse wie am Endpunkt; das Ergebnis steht in
 | `data/plugins/alexang/sitzung.json` | Sitzungscookies, csrf | 0600 |
 | `data/plugins/alexang/pkce.json` | offene Anmeldung, höchstens 30 min | 0600 |
 
-Die Deinstallation hält das Befehlsabo an, meldet das Gerät bei Amazon ab
+Die Deinstallation hält das Befehlsabo und die Hue-Probe an, meldet das Gerät bei Amazon ab
 (scheitert das, steht eine Warnung im Installationsprotokoll), räumt die
 zurückbehaltenen MQTT-Themen ab und löscht die Zweitschriften.
 
@@ -553,12 +629,21 @@ zurückbehaltenen MQTT-Themen ab und löscht die Zweitschriften.
     mit verschiedenen Sendern gleichzeitig; eine Amazon-Gruppe als Zone
     (synchron?); Stopp und Lautstärke je Zone; ab wie vielen Befehlen je
     Minute Amazon mit 429 antwortet.
+15. Radiotasten: kommt ohne gewählte Taste `nr=0` an (Reiter Logdateien,
+    Zeile `RADIO_STOPP von …, nr=0 als Stopp`), und hält die Zone an?
+16. Hue-Probe: kommt die Suche eines Echos an (Absender-IP), holt er
+    `description.xml`, findet die Alexa-App „Loxone Probe“, schaltet „Alexa,
+    schalte Loxone Probe ein“ die Lampe (Zähler, MQTT `hue_probe/ein`)? Ist
+    Port 8380 am Gerät frei, und reicht er dem Echo, oder braucht er Port 80?
 
 ## Voraussetzungen
 
 - Amazon-Konto auf amazon.de mit mindestens einem Echo
 - PHP mit curl-Erweiterung (LoxBerry-Standard)
 - Paket **mosquitto-clients** (wird bei der Installation mitinstalliert)
+- Nur für die Hue-Probe (ab Werk aus): die PHP-Erweiterung **sockets** (am
+  LoxBerry unter PHP 7.4 vorhanden), ein freier TCP-Port (ab Werk 8380) und
+  UDP 1900
 
 ## Lizenz
 

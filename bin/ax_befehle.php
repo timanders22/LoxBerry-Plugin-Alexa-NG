@@ -13,7 +13,7 @@
  *   <p>/befehl/gruppe/<g>/sprechen  Nutzlast: Text
  *   <p>/befehl/routine              Nutzlast: Name (nur mit eigenem Haken)
  *   <p>/befehl/sperre               Nutzlast: 1 sperren, 0 oeffnen (nur mit Haken "Sperre aus Loxone")
- *   <p>/befehl/radio/<zone>         Nutzlast: Sendernummer oder stopp (nur mit Haken "Radio je Zone")
+ *   <p>/befehl/radio/<zone>         Nutzlast: Sendernummer, 0 oder stopp (nur mit Haken "Radio je Zone")
  *   <p>/befehl/radio/<zone>/laut    Nutzlast: 0-100; <zone> ist 1-24 oder alle
  *
  * Zurueckbehaltene Nachrichten werden VERWORFEN, nie ausgefuehrt: sonst
@@ -141,7 +141,7 @@ while (true) {
             }
             if ($ax_akt === 'radio' || $ax_akt === 'radio_laut') {
                 // Radio je Zone (Z3): dieselbe Funktion wie der Endpunkt; sie prueft
-                // Haken, Zone, Sender und Wert selbst. Nutzlast "stopp" haelt an.
+                // Haken, Zone, Sender und Wert selbst. Nutzlast "stopp" oder "0" haelt an.
                 $ax_wert = trim($ax_nutz);
                 if ($ax_akt === 'radio_laut') {
                     $ax_rp = array('zone' => $ax_ger, 'wert' => $ax_wert);

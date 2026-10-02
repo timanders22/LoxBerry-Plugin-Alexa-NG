@@ -9,4 +9,9 @@
 # php-curl zeigt auf die Vorgabefassung der Paketquelle, LoxBerry faehrt
 # aber PHP 7.4 (Regeln/06). Ob php7.4-curl und php8.4-curl am Geraet liegen,
 # ist vor der ersten Installation zu messen; der Reiter Test zeigt es.
+#
+# Aus demselben Grund steht die Erweiterung sockets nicht hier. Nur die
+# Hue-Probe (ab Werk aus) braucht sie fuer den Beitritt zur SSDP-Gruppe; am
+# Geraet ist sie unter PHP 7.4 vorhanden (gemessen 28.09.2026). Fehlt sie,
+# endet die Hue-Probe mit Grund SOCKETS_FEHLT, und der Reiter Test zeigt es.
 mosquitto-clients

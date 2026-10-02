@@ -8,7 +8,8 @@
 #   1. Upgrade-Marke NEBEN den Datenordner (Unixzeit) - als Erstes. Ohne sie
 #      hielte preinstall.sh das Update fuer eine Neuinstallation; deshalb
 #      Abbruch mit rc 2, VOR purge_installation.
-#   2. Befehlsabo anhalten (dienst.sh der ALTEN Fassung: status, dann stop).
+#   2. Befehlsabo anhalten (dienst.sh der ALTEN Fassung: status, dann stop),
+#      ebenso die Hue-Probe (hue_dienst.sh, ab 0.9.4).
 #   3. Einen alten Bestand erst wegraeumen, dann Einstellungen und
 #      Anmeldung frisch nach data/plugins/<ordner>.upgrade_bestand/ (0700,
 #      Dateien 0600) sichern und mit cmp nachsehen. Die Zweitschriften
@@ -55,6 +56,16 @@ if [ -f "$DIENST" ]; then
             echo "<OK> Befehlsabo fuer das Update angehalten (der Takt startet es danach wieder, wenn es eingeschaltet ist)."
         else
             echo "<WARNING> Das Befehlsabo liess sich nicht anhalten; postinstall.sh haelt jeden verbliebenen Dienst an."
+        fi
+    fi
+fi
+HUEDIENST="$BASE/bin/plugins/$PFOLDER/hue_dienst.sh"
+if [ -f "$HUEDIENST" ]; then
+    if timeout 15 /bin/sh "$HUEDIENST" status >/dev/null 2>&1; then
+        if timeout 30 /bin/sh "$HUEDIENST" stop >/dev/null 2>&1 && ! timeout 15 /bin/sh "$HUEDIENST" status >/dev/null 2>&1; then
+            echo "<OK> Hue-Probe fuer das Update angehalten (der Takt startet sie danach wieder, wenn sie eingeschaltet ist)."
+        else
+            echo "<WARNING> Die Hue-Probe liess sich nicht anhalten; postinstall.sh haelt jede verbliebene an."
         fi
     fi
 fi

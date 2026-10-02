@@ -50,7 +50,8 @@ define('AX_MUSIK_NR_MAX', 50);       // Senderliste: Nummern 1..50 (Entscheidung
 define('AX_SENDER_MAX', 100);        // Zeichen je Sendername (Bauliste B1)
 define('AX_RADIO_ZONEN_MAX', 24);    // Radio je Zone: Zonen 1..24 (Bauliste alexa3 Z1)
 define('AX_RADIO_GLEICH_S', 60);     // gleicher Sollwert je Zone binnen 60 s -> UNVERAENDERT (X-7, Z4)
-define('AX_RADIO_PAUSE_S', 60);      // nach AMAZON_RATE: Radio-Pause, kein Wiederholen (Z4)
+define('AX_RADIO_PAUSE_S', 60);      // nach AMAZON_RATE: Musik-Pause (Radio und Musik-Probe), kein Wiederholen (Z4, alexa4 N3)
+define('AX_HUE_PORT', 8380);         // Hue-Probe: HTTP-Port ab Werk - nicht 80, Apache bleibt unberuehrt (alexa4 H1)
 
 /* ==================================================================
  * Pfade
@@ -280,6 +281,12 @@ function ax_vorgaben()
         // Ab Werk aus.
         'radio_ein' => 0,
         'radio_zonen' => array(),
+        // Hue-Probe (Bauliste alexa4 H1, Entscheidungen 17 und 29): misst, ob
+        // ein Echo eine Hue-Bridge-Nachbildung im Heimnetz findet. Ab Werk
+        // aus, nicht am Geraet erprobt; eigener Dienst bin/hue_dienst.sh,
+        // laeuft nur mit Haken. Schalten geht nur fluechtig an MQTT.
+        'hue_ein' => 0,
+        'hue_port' => AX_HUE_PORT,
         // MQTT ab Werk an (Hausstandard); der Befehlseingang ab Werk aus.
         'mqtt_ein' => 1,
         'mqtt_praefix' => 'alexang',
@@ -383,11 +390,13 @@ function ax_wert_pruefen($schluessel, $wert, &$grund = '')
         case 'sperre_ein':
         case 'musik_ein':
         case 'radio_ein':
+        case 'hue_ein':
             return $schalter($wert);
         case 'bremse_fenster_s': return $zahl($wert, 0, 3600);
         case 'mindestabstand_s': return $zahl($wert, 0, 600);
         case 'stundengrenze':    return $zahl($wert, 10, 240);
         case 'musik_stundengrenze': return $zahl($wert, 10, 240);
+        case 'hue_port':         return $zahl($wert, 1024, 65535);   // ohne root kein Port unter 1024
         case 'ruhe_von':
         case 'ruhe_bis':         return $zeit($wert);
         case 'standardgeraet':
@@ -1408,6 +1417,60 @@ function ax_geraete()
     return $d;
 }
 
+/**
+ * Grund fuer einen Normalnamen, den die Geraeteliste nicht kennt (alexa4 N5):
+ * GERAET_VERSCHWUNDEN, wenn er einem verschwundenen Geraet gehoert (Amazon
+ * meldet es nicht mehr), sonst GERAET_UNBEKANNT. Der HTTP-Code bleibt 404.
+ */
+function ax_geraet_fehlt_grund($normal, array $st)
+{
+    if (isset($st['verschwunden']) && is_array($st['verschwunden'])) {
+        foreach ($st['verschwunden'] as $g) {
+            if (is_array($g) && isset($g['normal']) && $g['normal'] === $normal) { return 'GERAET_VERSCHWUNDEN'; }
+        }
+    }
+    return 'GERAET_UNBEKANNT';
+}
+
+/**
+ * Ein verschwundenes Geraet austragen (alexa4 N4): seine Zuordnung
+ * Seriennummer -> Normalname aus der Namenszuordnung nehmen und den Eintrag
+ * aus "verschwunden" der Geraeteliste. Danach ist der Normalname frei. Nie
+ * ein Geraet, das Amazon noch meldet. Unter der Amazon-Sperre - der Takt
+ * schreibt dieselben Dateien. Rueckgabe array(ok, grund).
+ */
+function ax_geraet_austragen($normal)
+{
+    if (!is_string($normal) || !preg_match('/^[a-z0-9_]{1,40}\z/', $normal)) { return array(false, 'GERAET'); }
+    $p = ax_paths();
+    $sp = ax_sperre();
+    if (!$sp) { return array(false, 'BESCHAEFTIGT'); }
+    $st = ax_geraete();
+    $weg = array();
+    $rest = array();
+    $gemeldet = false;
+    if ($st) {
+        foreach ($st['liste'] as $g) { if (is_array($g) && isset($g['normal']) && $g['normal'] === $normal) { $gemeldet = true; } }
+        foreach ($st['verschwunden'] as $g) { if ($g['normal'] === $normal) { $weg[] = $g['serial']; } else { $rest[] = $g; } }
+    }
+    if ($gemeldet || !$weg) {
+        ax_sperre_frei($sp);
+        return array(false, $gemeldet ? 'GERAET_GEMELDET' : 'GERAET_NICHT_VERSCHWUNDEN');
+    }
+    $namen = ax_namen_lesen();
+    foreach ($weg as $ser) { unset($namen[$ser]); }
+    $roh = ax_json_lesen($p['datadir'] . '/geraete.json');
+    $ok = is_array($roh) && ax_write_json($p['namen'], $namen, 0644);
+    if ($ok) {
+        $roh['verschwunden'] = $rest;
+        $ok = ax_write_json($p['datadir'] . '/geraete.json', $roh, 0644);
+    }
+    ax_sperre_frei($sp);
+    if (!$ok) { return array(false, 'SCHREIBEN'); }
+    ax_log('INFO', 'Geraete: ' . $normal . ' ausgetragen (verschwunden, von Hand) - der Normalname ist frei.');
+    return array(true, '');
+}
+
 /** Plugins mit der Ausgabeart "Alexa-NG": Ordner => (Titel, Konfigurationsdatei). */
 function ax_bekannte_plugins()
 {
@@ -1528,7 +1591,7 @@ function ax_geraete_aufloesen($param, array $cfg, array $st)
             return array(404, 'GRUPPE_UNBEKANNT', array(), 0, array(), $gn);
         }
         $n = ax_name_normal($roh);
-        if (!isset($nach_normal[$n])) { return array(404, 'GERAET_UNBEKANNT', array(), 0, array(), $n); }
+        if (!isset($nach_normal[$n])) { return array(404, ax_geraet_fehlt_grund($n, $st), array(), 0, array(), $n); }
         $namen[] = $n;
         $eintrag($nach_normal[$n]);
     }
@@ -2078,7 +2141,7 @@ function ax_musik_ziel($param, array $cfg, array $st)
         if (!isset($nach_normal[$n]) || $nach_normal[$n]['familie'] !== 'WHA') { return array(404, 'GRUPPE_UNBEKANNT', null, $n); }
     } else {
         $n = ax_name_normal($roh);
-        if (!isset($nach_normal[$n])) { return array(404, 'GERAET_UNBEKANNT', null, $n); }
+        if (!isset($nach_normal[$n])) { return array(404, ax_geraet_fehlt_grund($n, $st), null, $n); }
     }
     $g = $nach_normal[$n];
     if (empty($g['online'])) { return array(503, 'GERAETE_OFFLINE', null, $n); }
@@ -2245,7 +2308,7 @@ function ax_radio_ziel($ziel, $aktion, array $cfg, array $st)
     }
     $amazon = (strpos($ziel, 'amazon:') === 0);
     $n = $amazon ? substr($ziel, 7) : $ziel;
-    if (!isset($nach_normal[$n])) { return array(404, $amazon ? 'GRUPPE_UNBEKANNT' : 'GERAET_UNBEKANNT', array(), 0); }
+    if (!isset($nach_normal[$n])) { return array(404, $amazon ? 'GRUPPE_UNBEKANNT' : ax_geraet_fehlt_grund($n, $st), array(), 0); }
     $g = $nach_normal[$n];
     if ($amazon && $g['familie'] !== 'WHA') { return array(404, 'GRUPPE_UNBEKANNT', array(), 0); }
     if ($aktion === 'radio_laut') {
@@ -2254,6 +2317,19 @@ function ax_radio_ziel($ziel, $aktion, array $cfg, array $st)
     }
     if (empty($g['online'])) { return array(503, 'GERAETE_OFFLINE', array(), 1); }
     return array(200, '', array($g), 0);
+}
+
+/**
+ * Restdauer der Musik-Pause nach AMAZON_RATE in Sekunden, 0 = keine (Radio je
+ * Zone, Z4; seit alexa4 N3 auch die Musik-Probe - dieselbe Pause, derselbe
+ * Schluessel radio_pause_bis in bremse.json). Steht sie weiter in der Zukunft
+ * als die Pause selbst, war es ein Uhrsprung: dann keine Pause.
+ */
+function ax_musik_pause_rest(array $b)
+{
+    $pause = isset($b['radio_pause_bis']) ? (int) $b['radio_pause_bis'] - time() : 0;
+    if ($pause > AX_RADIO_PAUSE_S) { $pause = 0; }
+    return max(0, $pause);
 }
 
 /**
@@ -2300,10 +2376,14 @@ function ax_radio_senden(array $seq)
 function ax_radio_ausfuehren($aktion, array $par, $quelle)
 {
     $t0 = microtime(true);
+    // N1 (alexa4): nr=0 ist der benannte Stopp der Zone - Radiotasten in Loxone
+    // senden 0, wenn keine Taste gewaehlt ist. Antwort wie radio_stopp (STOPP=1).
+    $nr0 = ($aktion === 'radio' && isset($par['nr']) && $par['nr'] === '0');
+    if ($nr0) { $aktion = 'radio_stopp'; }
     $cfg = ax_config();
     $zp = (isset($par['zone']) && is_string($par['zone'])) ? $par['zone'] : '';
     $f = array('OK' => 0);
-    $ende = function ($http, array $felder, $versucht = false, array $namen = array()) use ($aktion, $quelle, $t0, $cfg, $par) {
+    $ende = function ($http, array $felder, $versucht = false, array $namen = array()) use ($aktion, $quelle, $t0, $cfg, $par, $nr0) {
         $wer = ($quelle === 'http' && isset($_SERVER['REMOTE_ADDR']))
              ? preg_replace('/[^0-9a-fA-F:.]/', '', (string) $_SERVER['REMOTE_ADDR']) : $quelle;
         $grund = isset($felder['GRUND']) ? (string) $felder['GRUND'] : '-';
@@ -2312,6 +2392,7 @@ function ax_radio_ausfuehren($aktion, array $par, $quelle)
                . (isset($felder['NR']) ? ', NR ' . $felder['NR'] : '') . (isset($felder['WERT']) ? ', WERT ' . $felder['WERT'] : '')
                . ', HTTP ' . $http . ', OK=' . (int) $felder['OK'] . ', GRUND=' . $grund
                . (isset($felder['GESENDET']) ? ', Zonen gesendet ' . $felder['GESENDET'] : '')
+               . ($nr0 ? ', nr=0 als Stopp' : '')
                . ', ' . (int) round((microtime(true) - $t0) * 1000) . ' ms';
         ax_log($felder['OK'] ? 'INFO' : 'WARN', $zeile);
         if ($versucht) {
@@ -2370,8 +2451,7 @@ function ax_radio_ausfuehren($aktion, array $par, $quelle)
     if ($bef['befund'] === 'ABGELAUFEN') { $f['GRUND'] = 'ANMELDUNG_ABGELAUFEN'; return $ende(503, $f); }
     if (!function_exists('curl_init')) { $f['GRUND'] = 'CURL_FEHLT'; return $ende(503, $f); }
     $b = ax_bremse_lesen();
-    $pause = isset($b['radio_pause_bis']) ? (int) $b['radio_pause_bis'] - time() : 0;
-    if ($pause > AX_RADIO_PAUSE_S) { $pause = 0; }   // weiter als die Pause selbst: nur nach einem Uhrsprung
+    $pause = ax_musik_pause_rest($b);
     if ($pause > 0) { $f['GRUND'] = 'AMAZON_PAUSE'; $f['WARTE'] = $pause; return $ende(429, $f); }
     $st = ax_geraete();
     if (!$st) {
@@ -2503,7 +2583,8 @@ function ax_radio_ausfuehren($aktion, array $par, $quelle)
             return $ende($pz['h'], $f);
         }
         if ($pz['gleich']) {
-            return $ende(200, array('OK' => 1) + $kopf + $anbieter + array('UNVERAENDERT' => 1, 'GRUND' => 'UNVERAENDERT'));
+            return $ende(200, array('OK' => 1) + $kopf + $anbieter + ($aktion === 'radio_stopp' ? array('STOPP' => 1) : array())
+                + array('UNVERAENDERT' => 1, 'GRUND' => 'UNVERAENDERT'));
         }
         if ($abbruch !== '') {
             $f['GRUND'] = $abbruch;
@@ -2523,7 +2604,8 @@ function ax_radio_ausfuehren($aktion, array $par, $quelle)
         $aus = $f + $zahlen + array('GRUND' => $erst['g']);
         return $ende($erst['h'], $aus);
     }
-    $aus = array('OK' => 1) + $kopf + $anbieter + ($aktion === 'radio' && $suche !== '' ? array('SUCHE' => $suche) : array()) + $zahlen;
+    $aus = array('OK' => 1) + $kopf + $anbieter + ($aktion === 'radio' && $suche !== '' ? array('SUCHE' => $suche) : array())
+         + ($aktion === 'radio_stopp' ? array('STOPP' => 1) : array()) + $zahlen;
     return $ende(200, $aus, $versucht, $namen);
 }
 
@@ -2653,6 +2735,11 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
     $bef = ax_anmeldung_befund();
     if ($bef['befund'] === 'ABGELAUFEN') { $f['GRUND'] = 'ANMELDUNG_ABGELAUFEN'; return $ende(503, $f); }
     if (!function_exists('curl_init')) { $f['GRUND'] = 'CURL_FEHLT'; return $ende(503, $f); }
+    // N3 (alexa4): nach AMAZON_RATE gilt die Musik-Pause auch fuer die Musik-Probe.
+    if ($musik) {
+        $pause = ax_musik_pause_rest(ax_bremse_lesen());
+        if ($pause > 0) { $f['GRUND'] = 'AMAZON_PAUSE'; $f['WARTE'] = $pause; return $ende(429, $f); }
+    }
 
     // ---- ab hier unter der Amazon-Sperre ----
     $sp = ax_sperre();
@@ -2815,8 +2902,13 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
     if ($seit >= 0 && $seit < AX_PREVIEW_ABSTAND_S) { usleep((int) ((AX_PREVIEW_ABSTAND_S - $seit) * 1000000)); }
     $b['letzter_preview'] = ax_mono();
     if ($musik) { $b['musik_stunde'][] = time(); } else { $b['stunde'][] = time(); }
-    list($ok, $g, $r) = ax_alexa('POST', '/api/behaviors/preview', ax_preview_rumpf($behavior, $sj));
+    // N3 (alexa4): die Musik-Probe wie Radio - bei 429 kein zweiter Versuch, danach die Musik-Pause.
+    list($ok, $g, $r) = ax_alexa('POST', '/api/behaviors/preview', ax_preview_rumpf($behavior, $sj), !$musik);
     $b['letzter_preview'] = ax_mono();
+    if ($musik && !$ok && $g === 'AMAZON_RATE') {
+        $b['radio_pause_bis'] = time() + AX_RADIO_PAUSE_S;
+        ax_log('WARN', 'Musik-Probe: Amazon meldet zu viele Anfragen (429) - Pause ' . AX_RADIO_PAUSE_S . ' s, kein weiterer Versuch.');
+    }
     if ($ok) {
         foreach ($ziele as $z) {
             $b['fenster'][($musik ? 'musik' : $aktion) . '|' . $z['serial']] = array('h' => $hash, 't' => time());
@@ -2825,7 +2917,11 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
     }
     ax_bremse_schreiben($b);
     ax_sperre_frei($sp);
-    if (!$ok) { $f['GRUND'] = $g; return $ende(503, $f, true, $ziele, $laenge); }
+    if (!$ok) {
+        $f['GRUND'] = $g;
+        if ($musik && $g === 'AMAZON_RATE') { $f['WARTE'] = AX_RADIO_PAUSE_S; }
+        return $ende(503, $f, true, $ziele, $laenge);
+    }
     // Musik: MUSIK;OK=1;GERAET=...;ANBIETER=... (Bauliste B1)
     $aus = $musik ? array('OK' => 1) + $zusatz + array('UNVERAENDERT' => $unveraendert)
          : array('OK' => 1, 'GERAETE' => count($ziele)) + $zusatz
@@ -2875,7 +2971,7 @@ function ax_takt_lesen()
     $t = ax_json_lesen($p['datadir'] . '/takt.json');
     if (!is_array($t)) { $t = array(); }
     return $t + array('ts' => 0, 'zaehler' => -1, 'ok' => 0, 'status_ts' => 0, 'geraete_ts' => 0,
-                      'dienst_versuch' => 0, 'voll_ts' => 0);
+                      'dienst_versuch' => 0, 'voll_ts' => 0, 'hue_versuch' => 0);
 }
 
 /** Alter zur Lesezeit; -1 = noch nie (Regeln/03). */
@@ -2946,6 +3042,7 @@ function ax_mqtt_themen()
         'letzte/grund'              => array(true, 'THEMA.LETZTE_GRUND'),
         'radio/<zone>/sender'       => array(false, 'THEMA.RADIO_SENDER'),
         'radio/<zone>/zustand'      => array(false, 'THEMA.RADIO_ZUSTAND'),
+        'hue_probe/ein'             => array(false, 'THEMA.HUE_EIN'),
     );
 }
 
@@ -3219,6 +3316,146 @@ function ax_dienst($was)
     $o = array(); $rc = 0;
     @exec('timeout 20 /bin/sh ' . escapeshellarg($sh) . ' ' . $was . ' 2>&1', $o, $rc);
     return array($rc === 0, implode(' ', array_slice($o, 0, 3)));
+}
+
+/* ==================================================================
+ * Hue-Probe (Bauliste alexa4 H1-H3; ab Werk aus, nicht am Geraet erprobt).
+ * Der Dienst ist bin/ax_hue.php, gestartet ueber bin/hue_dienst.sh.
+ * ================================================================== */
+
+/** Soll die Hue-Probe laufen? Nur mit Haken und eingeschaltetem Plugin. */
+function ax_hue_soll(array $cfg)
+{
+    return !empty($cfg['hue_ein']) && !empty($cfg['aktiv']);
+}
+
+/** Laeuft die Hue-Probe? Fragt hue_dienst.sh status; null = nicht feststellbar. */
+function ax_hue_dienst_status()
+{
+    $p = ax_paths();
+    if (DIRECTORY_SEPARATOR === '\\' || !function_exists('exec')) { return null; }
+    $sh = $p['bindir'] . '/hue_dienst.sh';
+    if (!is_file($sh)) { return null; }
+    $o = array(); $rc = 0;
+    @exec('timeout 10 /bin/sh ' . escapeshellarg($sh) . ' status 2>/dev/null', $o, $rc);
+    return $rc === 0;
+}
+
+function ax_hue_dienst($was)
+{
+    $p = ax_paths();
+    if (DIRECTORY_SEPARATOR === '\\' || !function_exists('exec') || !in_array($was, array('start', 'stop'), true)) {
+        return array(false, 'NICHT_MOEGLICH');
+    }
+    $sh = $p['bindir'] . '/hue_dienst.sh';
+    if (!is_file($sh)) { return array(false, 'DIENST_SH_FEHLT'); }
+    $o = array(); $rc = 0;
+    @exec('timeout 25 /bin/sh ' . escapeshellarg($sh) . ' ' . $was . ' 2>&1', $o, $rc);
+    return array($rc === 0, implode(' ', array_slice($o, 0, 3)));
+}
+
+/**
+ * Der Messstand der Hue-Probe (data/hue_probe.json, nur der Dienst schreibt
+ * ihn) - jeder Wert geprueft, Fehlendes mit Vorgabe. Zaehler: suchen (eine
+ * SSDP-Suche nach einer Bridge, je Absender), beschreibung (description.xml),
+ * abfragen (/api/<user>/lights), schalten (PUT .../state mit on), eigene
+ * (Selbstprobe aus dem Reiter Test), andere (Suchen nach anderen Geraeten).
+ */
+function ax_hue_lesen()
+{
+    $p = ax_paths();
+    $d = ax_json_lesen($p['datadir'] . '/hue_probe.json');
+    if (!is_array($d)) { $d = array(); }
+    $zahl = function ($a, $k) { return (is_array($a) && isset($a[$k]) && is_int($a[$k]) && $a[$k] >= 0) ? $a[$k] : 0; };
+    $ip = function ($a, $k) {
+        return (is_array($a) && isset($a[$k]) && is_string($a[$k]) && preg_match('/^\d{1,3}(\.\d{1,3}){3}\z/', $a[$k])) ? $a[$k] : '';
+    };
+    $st = function ($a, $k) { return (is_array($a) && isset($a[$k]) && is_string($a[$k])) ? substr((string) preg_replace('/[^\x21-\x7E]/', '', $a[$k]), 0, 120) : ''; };
+    $aus = array('pid' => $zahl($d, 'pid'), 'start' => $zahl($d, 'start'), 'ende' => $zahl($d, 'ende'), 'port' => $zahl($d, 'port'),
+                 'fehler' => (isset($d['fehler']) && is_string($d['fehler']) && preg_match('/^[A-Z_]{1,30}(\|[0-9]{1,5})?\z/', $d['fehler'])) ? $d['fehler'] : '',
+                 'eigene_ip' => $ip($d, 'eigene_ip'), 'andere' => $zahl($d, 'andere'));
+    foreach (array('beschreibung', 'abfragen', 'eigene') as $art) {
+        $x = isset($d[$art]) ? $d[$art] : null;
+        $aus[$art] = array('anzahl' => $zahl($x, 'anzahl'), 'ip' => $ip($x, 'ip'), 'zeit' => $zahl($x, 'zeit'));
+    }
+    $x = isset($d['schalten']) ? $d['schalten'] : null;
+    $aus['schalten'] = array('anzahl' => $zahl($x, 'anzahl'), 'ip' => $ip($x, 'ip'), 'zeit' => $zahl($x, 'zeit'),
+                             'ein' => $zahl($x, 'ein') === 1 ? 1 : 0, 'mqtt' => $zahl($x, 'mqtt'), 'mqtt_nicht' => $zahl($x, 'mqtt_nicht'));
+    $x = isset($d['suchen']) ? $d['suchen'] : null;
+    $s = array('anzahl' => $zahl($x, 'anzahl'), 'beantwortet' => $zahl($x, 'beantwortet'), 'ip' => $ip($x, 'ip'), 'zeit' => $zahl($x, 'zeit'),
+               'st' => $st($x, 'st'), 'absender' => array());
+    if (is_array($x) && isset($x['absender']) && is_array($x['absender'])) {
+        foreach ($x['absender'] as $a => $e) {
+            if (!is_string($a) || !preg_match('/^\d{1,3}(\.\d{1,3}){3}\z/', $a) || !is_array($e)) { continue; }
+            $s['absender'][$a] = array('anzahl' => $zahl($e, 'anzahl'), 'erste' => $zahl($e, 'erste'), 'zeit' => $zahl($e, 'zeit'), 'st' => $st($e, 'st'));
+            if (count($s['absender']) >= 10) { break; }
+        }
+    }
+    $aus['suchen'] = $s;
+    $x = isset($d['lampe']) ? $d['lampe'] : null;
+    $bri = $zahl($x, 'bri');
+    $aus['lampe'] = array('ein' => $zahl($x, 'ein') === 1 ? 1 : 0, 'bri' => ($bri >= 1 && $bri <= 254) ? $bri : 254);
+    return $aus;
+}
+
+/** H3: das Schalten der Probe-Lampe geht fluechtig an MQTT, sonst nirgends hin. */
+function ax_hue_melden($ein, array $cfg)
+{
+    return ax_mqtt_senden(array('hue_probe/ein' => $ein ? 1 : 0), $cfg);
+}
+
+/**
+ * Die Hue-Probe nach einer Aenderung nachziehen (Speichern, Zurueckspielen):
+ * starten, anhalten oder - anderer Port - neu starten. Rueckgabe: Satz fuer
+ * die Meldung ('' = nichts zu tun). Gesagt wird, was nachgesehen wurde.
+ */
+function ax_hue_nachziehen(array $neu, array $alt)
+{
+    $soll = ax_hue_soll($neu);
+    $laeuft = ax_hue_dienst_status();
+    if ($laeuft === null) { return $soll ? ax_t('MELDUNG.HUE_NICHT_PRUEFBAR') : ''; }
+    if ($soll) {
+        $port_neu = isset($alt['hue_port']) && (int) $alt['hue_port'] !== (int) $neu['hue_port'];
+        if ($laeuft && !$port_neu) { return ''; }
+        if ($laeuft) { ax_hue_dienst('stop'); }
+        list($ok, $text) = ax_hue_dienst('start');
+        if ($ok && ax_hue_dienst_status()) { return sprintf(ax_t('MELDUNG.HUE_GESTARTET'), (int) $neu['hue_port']); }
+        $z = ax_hue_lesen();
+        return sprintf(ax_t('MELDUNG.HUE_FEHL'), trim($text . ' ' . ($z['fehler'] !== '' ? ax_grund_text($z['fehler']) : '')));
+    }
+    if ($laeuft) {
+        list($ok) = ax_hue_dienst('stop');
+        return ($ok && ax_hue_dienst_status() === false) ? ax_t('MELDUNG.HUE_ANGEHALTEN') : sprintf(ax_t('MELDUNG.HUE_FEHL'), '');
+    }
+    // Der Haken ging weg und der Dienst endete schon selbst (er prueft alle 5 s):
+    // auch das wird gesagt - nachgesehen ist es mit dem status oben.
+    return ax_hue_soll($alt) ? ax_t('MELDUNG.HUE_ANGEHALTEN') : '';
+}
+
+/**
+ * Selbstprobe aus dem Reiter Test: description.xml und /api/.../lights ueber
+ * 127.0.0.1 holen (Kennung im User-Agent - der Dienst zaehlt sie getrennt).
+ * Rueckgabe array(stand, text): 1 beide Antworten wie erwartet, 0 andere
+ * Antwort, -1 nicht feststellbar.
+ */
+function ax_hue_selbstprobe(array $cfg)
+{
+    if (!function_exists('curl_init')) { return array(-1, ax_t('TEST.A_HUE_PROBE_NICHT')); }
+    $erg = array();
+    foreach (array('/description.xml', '/api/selbstprobe/lights') as $pfad) {
+        $ch = curl_init('http://127.0.0.1:' . (int) $cfg['hue_port'] . $pfad);
+        curl_setopt_array($ch, array(CURLOPT_RETURNTRANSFER => true, CURLOPT_CONNECTTIMEOUT => 3, CURLOPT_TIMEOUT => 3,
+                                     CURLOPT_FOLLOWLOCATION => false, CURLOPT_PROXY => '', CURLOPT_USERAGENT => 'AlexaNG-Selbstprobe/1'));
+        $r = curl_exec($ch);
+        $erg[] = array((int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE), (string) $r);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
+    }
+    if ($erg[0][0] === 0) { return array(0, sprintf(ax_t('TEST.A_HUE_PROBE_FEHL'), (int) $cfg['hue_port'], '-')); }
+    $j = json_decode($erg[1][1], true);
+    $gut = $erg[0][0] === 200 && strpos($erg[0][1], '<modelName>Philips hue bridge 2012</modelName>') !== false
+        && $erg[1][0] === 200 && is_array($j) && isset($j['1']['name']) && $j['1']['name'] === 'Loxone Probe' && count($j) === 1;
+    if ($gut) { return array(1, sprintf(ax_t('TEST.A_HUE_PROBE_OK'), (int) $cfg['hue_port'])); }
+    return array(0, sprintf(ax_t('TEST.A_HUE_PROBE_FEHL'), (int) $cfg['hue_port'], $erg[0][0] . '/' . $erg[1][0]));
 }
 
 /* ==================================================================
@@ -3521,7 +3758,7 @@ function ax_vorlage_radio($host, array $cfg)
     $cmds = array();
     foreach ($zonen as $zn) {
         $t = ($zn === 'alle') ? 'alle Zonen' : 'Zone ' . $zn;
-        $cmds[] = array('title' => 'Alexa Radio ' . $t . ' Sender', 'comment' => 'Radio ' . $t . ': Sender-Nr.',
+        $cmds[] = array('title' => 'Alexa Radio ' . $t . ' Sender', 'comment' => 'Radio ' . $t . ': Sender-Nr., 0 = Stopp',
             'on' => $pfad . '&aktion=radio&zone=' . $zn . '&nr=<v>');
         $cmds[] = array('title' => 'Alexa Radio ' . $t . ' Stopp', 'comment' => 'Radio ' . $t . ': Stopp', 'analog' => false,
             'on' => $pfad . '&aktion=radio_stopp&zone=' . $zn);
@@ -3724,7 +3961,7 @@ function ax_pruef_formulare($quelle)
 function ax_pruef_themen()
 {
     $q = (string) @file_get_contents(__FILE__);
-    preg_match_all("/'((?:status|geraete|letzte)\/[a-z_]+)'\s*=>\s*[^a]/", $q, $m);
+    preg_match_all("/'((?:status|geraete|letzte|hue_probe)\/[a-z_]+)'\s*=>\s*[^a]/", $q, $m);
     preg_match_all("/'geraet\/' \. \\\$[a-z]+\['normal'\] \. '\/([a-z]+)'/", $q, $m2);
     preg_match_all("/'geraet\/' \. \\\$weg \. '\/([a-z]+)'/", $q, $m3);
     $gesendet = array_unique($m[1]);

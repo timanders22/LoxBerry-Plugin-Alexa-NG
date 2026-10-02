@@ -7,7 +7,8 @@
 #
 # Fail closed: sieht die Lage nicht wie ein LoxBerry aus, wird nichts
 # geloescht. Jeder Schritt mit timeout; gemeldet wird, was nachgesehen wurde.
-#   1. Befehlsabo anhalten (dienst.sh status, dann stop; PID-Datei ist kein Beleg)
+#   1. Befehlsabo und Hue-Probe anhalten (dienst.sh bzw. hue_dienst.sh status,
+#      dann stop; PID-Datei ist kein Beleg)
 #   2. Bei Amazon abmelden (/auth/deregister, 15 s) [ungemessen]; scheitert
 #      es: WARNING, das Geraet im Amazon-Konto von Hand entfernen
 #   3. Eigene retained Themen unter dem eingestellten Praefix abraeumen
@@ -57,6 +58,18 @@ if [ -f "$BIN/dienst.sh" ]; then
         fi
     else
         echo "<INFO> Das Befehlsabo lief nicht."
+    fi
+fi
+if [ -f "$BIN/hue_dienst.sh" ]; then
+    if timeout 15 /bin/sh "$BIN/hue_dienst.sh" status >/dev/null 2>&1; then
+        timeout 30 /bin/sh "$BIN/hue_dienst.sh" stop >/dev/null 2>&1
+        if timeout 15 /bin/sh "$BIN/hue_dienst.sh" status >/dev/null 2>&1; then
+            echo "<WARNING> Die Hue-Probe laeuft noch - bitte den LoxBerry neu starten."
+        else
+            echo "<OK> Hue-Probe angehalten (nachgesehen)."
+        fi
+    else
+        echo "<INFO> Die Hue-Probe lief nicht."
     fi
 fi
 

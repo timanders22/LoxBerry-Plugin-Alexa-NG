@@ -94,6 +94,11 @@ if [ -f "$MARKE" ]; then
         timeout 30 /bin/sh "$DIENST" stop >/dev/null 2>&1
         echo "<INFO> Ein Befehlsabo aus der Update-Luecke wurde angehalten."
     fi
+    HUEDIENST="$BASE/bin/plugins/$PFOLDER/hue_dienst.sh"
+    if [ -f "$HUEDIENST" ] && timeout 15 /bin/sh "$HUEDIENST" status >/dev/null 2>&1; then
+        timeout 30 /bin/sh "$HUEDIENST" stop >/dev/null 2>&1
+        echo "<INFO> Eine Hue-Probe aus der Update-Luecke wurde angehalten."
+    fi
     for AX_PAAR in "alexang.json:$CF:cfg:$BK" "amazon.json:$AF:amazon:$BKA"; do
         AX_NAME=${AX_PAAR%%:*}; AX_R=${AX_PAAR#*:}
         AX_ZIEL=${AX_R%%:*}; AX_R=${AX_R#*:}

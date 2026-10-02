@@ -5,6 +5,7 @@
  *   php ax_takt.php                 ein Takt: Konfiguration vervollstaendigen,
  *                                   Anmeldung alle 30 min pruefen, Geraeteliste
  *                                   alle 6 h, Lebenszeichen, Waechter Befehlsabo
+ *                                   und Hue-Probe
  *   php ax_takt.php --abmelden      bei Amazon abmelden (Deinstallation), rc 0/1
  *   php ax_takt.php --mqtt-raeumen  eigene retained Themen abraeumen, rc 0/1
  *
@@ -125,6 +126,23 @@ if ($ax_status !== null) {
         list($ax_d_ok) = ax_dienst('stop');
         ax_log('INFO', 'Takt: Befehlsabo angehalten (ausgeschaltet).');
         $ax_laeuft = !$ax_d_ok;
+    }
+}
+
+/* ---------------- Waechter der Hue-Probe (Bauliste alexa4 H1) ----------------
+ * Sie laeuft nur, solange der Haken gesetzt ist: fehlt er, haelt der Takt sie
+ * an (der Dienst endet auch selbst binnen 5 s); ist er gesetzt und sie laeuft
+ * nicht, ein Startversuch hoechstens alle 10 Minuten. */
+$ax_hs = ax_hue_dienst_status();
+if ($ax_hs !== null) {
+    $ax_hsoll = ax_hue_soll($ax_cfg);
+    if ($ax_hsoll && !$ax_hs && time() - (int) $ax_t['hue_versuch'] >= 600 && !is_file($ax_p['marke'])) {
+        $ax_t['hue_versuch'] = time();
+        list($ax_d_ok, $ax_d_text) = ax_hue_dienst('start');
+        ax_log($ax_d_ok ? 'INFO' : 'WARN', 'Takt: Hue-Probe ' . ($ax_d_ok ? 'gestartet.' : 'liess sich nicht starten: ' . $ax_d_text));
+    } elseif (!$ax_hsoll && $ax_hs) {
+        ax_hue_dienst('stop');
+        ax_log('INFO', 'Takt: Hue-Probe angehalten (ausgeschaltet).');
     }
 }
 
