@@ -66,7 +66,8 @@ function ax_ui_felder($formular)
         return array('aktiv', 'standardgeraet', 'gruppe_name', 'gruppe_geraete', 'bremse_fenster_s', 'mindestabstand_s',
                      'stundengrenze', 'ruhe_ein', 'ruhe_von', 'ruhe_bis', 'ankuendigen_ein', 'routinen_frei',
                      'texte_protokollieren', 'sperre_ein', 'musik_ein', 'musik_stundengrenze', 'musik_sender',
-                     'radio_ein', 'radio_zonen', 'hue_ein', 'hue_port');
+                     'radio_ein', 'radio_zonen', 'hue_ein', 'hue_port', 'hue_art', 'hue_ip', 'hue_schnittstelle',
+                     'hue_probe_lampe', 'hue_l_id', 'hue_l_name', 'hue_l_art', 'hue_l_kuerzel', 'hue_l_frei', 'hue_echos');
     }
     if ($formular === 'mqtt') { return array('mqtt_ein', 'mqtt_praefix', 'befehle_mqtt_ein', 'befehle_routine_ein'); }
     return array();
@@ -90,7 +91,8 @@ function ax_ui_sammeln($formular)
         if (is_array($w)) {
             $z = array();
             foreach ($w as $k => $v) {
-                if (count($z) < 20 && preg_match('/^\d{1,2}\z/', (string) $k) && ax_ui_tauglich($v)) { $z[(string) (int) $k] = $v; }
+                // alexa6: bis 60 Zeilen (Lampentabelle: 50 Lampen und die leeren Zeilen dahinter)
+                if (count($z) < 60 && preg_match('/^\d{1,2}\z/', (string) $k) && ax_ui_tauglich($v)) { $z[(string) (int) $k] = $v; }
             }
             $werte[$f] = $z;
         } elseif (ax_ui_tauglich($w)) {
@@ -143,6 +145,86 @@ function ax_ui_m($feld, $idx = null)
     return ($e !== null && in_array($n, $e['falsch'], true)) ? ' class="sm-beanstandet" aria-invalid="true"' : '';
 }
 function ax_ui_post($k) { return (isset($_POST[$k]) && is_string($_POST[$k])) ? trim($_POST[$k]) : ''; }
+/**
+ * Fassung 2 (alexa6): die Lampenliste aus dem Formular - je Zeile
+ * hue_l_id (verborgen, bleibt beim Umbenennen), hue_l_name, hue_l_art,
+ * hue_l_kuerzel, hue_l_frei. Eine Zeile ohne Name und Kuerzel entfaellt (so
+ * wird eine Lampe geloescht). Jede Beanstandung markiert ihr Feld (X-2) und
+ * wird gesammelt; gespeichert wird nur, wenn keine kam (Nr. 16, Nr. 19).
+ * Rueckgabe array(liste, naechste_id, meldungen, vorschlaege zeile => kuerzel).
+ */
+function ax_ui_hue_lampen(array $alt)
+{
+    $feld = function ($f) { return (isset($_POST[$f]) && is_array($_POST[$f])) ? $_POST[$f] : array(); };
+    $ids = $feld('hue_l_id');
+    $namen = $feld('hue_l_name');
+    $arten = $feld('hue_l_art');
+    $kz = $feld('hue_l_kuerzel');
+    $frei = $feld('hue_l_frei');
+    $idx = array();
+    foreach (array($ids, $namen, $arten, $kz, $frei) as $a) {
+        foreach (array_keys($a) as $k) { if (preg_match('/^\d{1,2}\z/', (string) $k)) { $idx[(int) $k] = 1; } }
+    }
+    ksort($idx);
+    $text = function ($a, $i) { return (isset($a[$i]) && is_string($a[$i])) ? trim($a[$i]) : ''; };
+    $alt_ids = array();
+    $max = 1;
+    foreach ($alt['hue_lampen'] as $l) { $alt_ids[(int) $l['id']] = 1; $max = max($max, (int) $l['id']); }
+    $naechste = max((int) $alt['hue_lampe_naechste'], $max + 1);
+    $liste = array();
+    $hw = array();
+    $vor = array();
+    $ges_id = array();
+    $ges_n = array();
+    $ges_k = array();
+    $zeilen = 0;
+    $satz = function ($i, $g) { return sprintf(ax_t('MELDUNG.LAMPE_ZEILE'), $i + 1, ax_grund_text($g)); };
+    foreach (array_keys($idx) as $i) {
+        $name = $text($namen, $i);
+        $k = $text($kz, $i);
+        $art = $text($arten, $i);
+        $id = $text($ids, $i);
+        $f = (isset($frei[$i]) && $frei[$i] === '1') ? 1 : 0;
+        if ($name === '' && $k === '') { continue; }
+        $zeilen++;
+        $fehl = false;
+        if ($name === '') { $hw[] = $satz($i, 'LAMPE_NAME_FEHLT'); ax_ui_bean('hue_l_name', $i); $fehl = true; }
+        if ($id !== '' && (!preg_match('/^[1-9][0-9]{0,3}\z/', $id) || !isset($alt_ids[(int) $id]) || isset($ges_id[(int) $id]))) {
+            $hw[] = $satz($i, 'LAMPE_ID_FREMD');
+            ax_ui_bean('hue_l_name', $i);
+            $fehl = true;
+        }
+        if ($k === '' && $name !== '') {
+            $vor[$i] = ax_hue_kuerzel_vorschlag($name, 0);
+            $hw[] = $satz($i, 'LAMPE_KUERZEL_FEHLT|' . $vor[$i]);
+            ax_ui_bean('hue_l_kuerzel', $i);
+            $fehl = true;
+        }
+        if ($fehl) { continue; }
+        if ($id !== '') { $ges_id[(int) $id] = 1; }
+        $zeile = array('id' => $id !== '' ? (int) $id : $naechste++, 'name' => $name, 'art' => $art, 'kuerzel' => $k, 'frei' => $f);
+        $g = '';
+        if (ax_wert_pruefen('hue_lampen', array($zeile), $g) === null) {
+            $hw[] = $satz($i, $g);
+            $kk = explode('|', $g);
+            $ziel = array('LAMPE_KUERZEL' => 'hue_l_kuerzel', 'LAMPE_ART' => 'hue_l_art', 'LAMPE_GEFAHR' => 'hue_l_frei');
+            ax_ui_bean(isset($ziel[$kk[0]]) ? $ziel[$kk[0]] : 'hue_l_name', $i);
+            if ($kk[0] === 'LAMPE_KUERZEL') { $vor[$i] = ax_hue_kuerzel_vorschlag($name, 0); }
+            continue;
+        }
+        $nn = ax_name_normal($name);
+        if (isset($ges_n[$nn])) { $hw[] = $satz($i, 'LAMPE_NAME_DOPPELT|' . str_replace('|', '/', $name)); ax_ui_bean('hue_l_name', $i); continue; }
+        if (isset($ges_k[$k])) { $hw[] = $satz($i, 'LAMPE_KUERZEL_DOPPELT|' . $k); ax_ui_bean('hue_l_kuerzel', $i); continue; }
+        $ges_n[$nn] = 1;
+        $ges_k[$k] = 1;
+        $liste[] = $zeile;
+    }
+    if ($zeilen > AX_HUE_LAMPEN_MAX) {
+        $hw[] = sprintf(ax_t('MELDUNG.LAMPEN_ZU_VIELE'), $zeilen, AX_HUE_LAMPEN_MAX);
+        ax_ui_bean('hue_l_name', AX_HUE_LAMPEN_MAX);
+    }
+    return array($liste, $naechste, $hw, $vor);
+}
 
 /* Drei Stellen gehoeren zusammen: Reiterleiste, Bereiche, diese Positivliste. */
 $ax_muster = '/^tab-(settings|amazon|geraete|mqtt|loxone|test|log)$/';
@@ -170,7 +252,8 @@ if ($ax_post && !ax_formtoken_ok($ax_cfg)) {
 if ($ax_post && isset($_POST['download'])) {
     $ax_host = isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : '';
     $ax_dl = is_string($_POST['download']) ? $_POST['download'] : '';
-    $ax_v = ($ax_dl === 'vo') ? ax_vorlage_aus($ax_host, $ax_cfg) : (($ax_dl === 'vr') ? ax_vorlage_radio($ax_host, $ax_cfg) : ax_vorlage_ein($ax_host));
+    $ax_v = ($ax_dl === 'vo') ? ax_vorlage_aus($ax_host, $ax_cfg) : (($ax_dl === 'vr') ? ax_vorlage_radio($ax_host, $ax_cfg)
+        : (($ax_dl === 'vh') ? ax_vorlage_hue_ein($ax_host, $ax_cfg) : (($ax_dl === 'vq') ? ax_vorlage_hue_aus($ax_host, $ax_cfg) : ax_vorlage_ein($ax_host))));
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $ax_v[0] . '"');
     header('Content-Length: ' . strlen($ax_v[1]));
@@ -215,6 +298,51 @@ if ($ax_post && isset($_POST['save'])) {
     // H1: der Port wird geprueft, wenn das Formular ihn sendet (das eigene tut es
     // immer); fehlt das Feld ganz, bleibt der gespeicherte Wert - nichts ersetzt.
     if (array_key_exists('hue_port', $_POST)) { $ax_feld('hue_port', ax_ui_post('hue_port')); }
+    // Nr. 41 (alexa5): Art, eigene IP und Schnittstelle - geprueft, wenn das Formular sie sendet.
+    // Bei "eigene Netzadresse" muss die IP ins Netz der Schnittstelle passen und frei sein
+    // (die Belegt-Probe entfaellt, wenn sich IP und Schnittstelle nicht aendern: dann traegt
+    // sie womoeglich schon der eigene Container, und den sieht der LoxBerry nicht - macvlan).
+    foreach (array('hue_art', 'hue_ip', 'hue_schnittstelle') as $ax_k) {
+        if (array_key_exists($ax_k, $_POST)) { $ax_feld($ax_k, ax_ui_post($ax_k)); }
+    }
+    if (ax_hue_art($ax_neu) === 'docker' && !array_intersect(array('hue_art', 'hue_ip', 'hue_schnittstelle'), ax_ui_bean())) {
+        $ax_hue_gleich = ax_hue_art($ax_alt) === 'docker' && $ax_alt['hue_ip'] === $ax_neu['hue_ip']
+                         && $ax_alt['hue_schnittstelle'] === $ax_neu['hue_schnittstelle'];
+        $ax_hg = ax_hue_ip_pruefen($ax_neu['hue_ip'], $ax_neu['hue_schnittstelle'], !$ax_hue_gleich);
+        if ($ax_hg !== '') {
+            $ax_hf = ax_hue_ip_feld($ax_hg);
+            $ax_hw[] = sprintf(ax_t('MELDUNG.FELD_ABGEWIESEN'), ax_t('FELD.' . strtoupper($ax_hf)), ax_grund_text($ax_hg));
+            ax_ui_bean($ax_hf);
+        }
+    }
+    // Fassung 2 (alexa6): Lampen fuer Alexa, Probe-Lampe und freigegebene Echos - nur, wenn das
+    // Formular den Abschnitt sendet (Merkmal hue_lampen_form; das eigene tut es immer). Fehlt er,
+    // bleibt alles wie gespeichert - nichts wird ersetzt.
+    $ax_hl_vor = array();
+    if (isset($_POST['hue_lampen_form'])) {
+        $ax_neu['hue_probe_lampe'] = empty($_POST['hue_probe_lampe']) ? 0 : 1;
+        list($ax_hl, $ax_hl_naechste, $ax_hl_hw, $ax_hl_vor) = ax_ui_hue_lampen($ax_alt);
+        foreach ($ax_hl_hw as $ax_m) { $ax_hw[] = $ax_m; }
+        if (!$ax_hl_hw) {
+            $ax_feld('hue_lampen', $ax_hl);
+            $ax_feld('hue_lampe_naechste', $ax_hl_naechste);
+        }
+        $ax_el = array();
+        foreach (preg_split('/[\s,;]+/', ax_ui_post('hue_echos')) as $ax_x) { if ($ax_x !== '') { $ax_el[] = $ax_x; } }
+        $ax_eg = '';
+        if (ax_wert_pruefen('hue_echos', $ax_el, $ax_eg) === null) {
+            $ax_hw[] = sprintf(ax_t('MELDUNG.FELD_ABGEWIESEN'), ax_t('FELD.HUE_ECHOS'), ax_grund_text($ax_eg));
+            ax_ui_bean('hue_echos');
+        } else {
+            $ax_eg = ax_hue_echos_pruefen($ax_el, $ax_neu['hue_schnittstelle']);
+            if ($ax_eg !== '') {
+                $ax_hw[] = sprintf(ax_t('MELDUNG.FELD_ABGEWIESEN'), ax_t('FELD.HUE_ECHOS'), ax_grund_text($ax_eg));
+                ax_ui_bean('hue_echos');
+            } else {
+                $ax_neu['hue_echos'] = $ax_el;
+            }
+        }
+    }
     $ax_gn = isset($_POST['gruppe_name']) && is_array($_POST['gruppe_name']) ? $_POST['gruppe_name'] : array();
     $ax_gg = isset($_POST['gruppe_geraete']) && is_array($_POST['gruppe_geraete']) ? $_POST['gruppe_geraete'] : array();
     $ax_gruppen = array();
@@ -299,7 +427,13 @@ if ($ax_post && isset($_POST['save'])) {
     if ($ax_rz_fehl) { ax_ui_bean('radio_zonen'); } else { $ax_feld('radio_zonen', $ax_rz); }
     if ($ax_hw) {
         array_unshift($ax_hw, ax_t('MELDUNG.EINGABEN_ZURUECK'));
-        ax_ui_umleiten($ax_datadir, 'tab-settings', array('hinweise' => $ax_hw, 'eingaben' => ax_ui_sammeln('settings')));
+        $ax_ein = ax_ui_sammeln('settings');
+        // alexa6: ein vorgeschlagenes Kuerzel steht nach der Beanstandung im Feld - gespeichert ist es nicht.
+        foreach ($ax_hl_vor as $ax_i => $ax_v) {
+            if (!isset($ax_ein['werte']['hue_l_kuerzel']) || !is_array($ax_ein['werte']['hue_l_kuerzel'])) { $ax_ein['werte']['hue_l_kuerzel'] = array(); }
+            $ax_ein['werte']['hue_l_kuerzel'][(string) (int) $ax_i] = $ax_v;
+        }
+        ax_ui_umleiten($ax_datadir, 'tab-settings', array('hinweise' => $ax_hw, 'eingaben' => $ax_ein));
     }
     if (!ax_config_speichern($ax_neu)) {
         ax_ui_umleiten($ax_datadir, 'tab-settings', array('fehler' => sprintf(ax_t('MELDUNG.SPEICHERN_FEHL'), $ax_p['config'])));
@@ -309,7 +443,10 @@ if ($ax_post && isset($_POST['save'])) {
         . ', Sperre aus Loxone ' . $ax_neu['sperre_ein'] . ', Musik-Probe ' . $ax_neu['musik_ein']
         . ' (' . count($ax_neu['musik_sender']) . ' Sender, ' . $ax_neu['musik_stundengrenze'] . '/h)'
         . ', Radio je Zone ' . $ax_neu['radio_ein'] . ' (' . count($ax_neu['radio_zonen']) . ' Zonen)'
-        . ', Hue-Probe ' . $ax_neu['hue_ein'] . ' (Port ' . $ax_neu['hue_port'] . ')).');
+        . ', Hue-Probe ' . $ax_neu['hue_ein'] . ' (' . (ax_hue_art($ax_neu) === 'docker'
+            ? 'eigene Netzadresse ' . $ax_neu['hue_ip'] . ' an ' . $ax_neu['hue_schnittstelle'] : 'Port ' . $ax_neu['hue_port']) . ')).');
+    ax_log('INFO', 'Hue-Lampen: ' . count($ax_neu['hue_lampen']) . ' in der Liste, Probe-Lampe ' . $ax_neu['hue_probe_lampe']
+        . ', freigegebene Echos ' . ($ax_neu['hue_echos'] ? implode(' ', $ax_neu['hue_echos']) : 'alle im Heimnetz') . '.');
     // Z1: Ziele, die die Geraeteliste nicht kennt, sind kein Fehler beim Speichern
     // (die Liste kann alt sein) - aber ein Hinweis; am Endpunkt gibt es dafuer 404.
     $ax_rz_unbek = array();
@@ -326,6 +463,8 @@ if ($ax_post && isset($_POST['save'])) {
         }
     }
     $ax_hw = $ax_rz_unbek ? array(sprintf(ax_t('MELDUNG.ZONE_ZIEL_UNBEKANNT'), implode(', ', $ax_rz_unbek))) : array();
+    // alexa6: die Probe-Lampe bleibt neben den ersten eigenen Lampen sichtbar - gesagt, nicht still geaendert.
+    if (!$ax_alt['hue_lampen'] && $ax_neu['hue_lampen'] && !empty($ax_neu['hue_probe_lampe'])) { $ax_hw[] = ax_t('MELDUNG.HUE_PROBE_LAMPE_NOCH'); }
     // H1: die Hue-Probe nachziehen (starten, anhalten, neuer Port) und sagen, was geschah.
     $ax_hue_t = ax_hue_nachziehen($ax_neu, $ax_alt);
     if ($ax_hue_t !== '') { $ax_hw[] = $ax_hue_t; }
@@ -506,6 +645,7 @@ if ($ax_post && isset($_POST['save_mqtt'])) {
     }
     if (is_file($ax_datadir . '/mqtt_letzte.json')) { @unlink($ax_datadir . '/mqtt_letzte.json'); }
     ax_abo_datei($ax_neu['mqtt_praefix'], true);
+    ax_hue_docker_datei_nachziehen($ax_neu);   // Nr. 41: MQTT-Werte fuer den Container (ohne Docker-Aufruf)
     ax_log('INFO', 'MQTT gespeichert (ein=' . $ax_neu['mqtt_ein'] . ', Praefix ' . $ax_neu['mqtt_praefix']
         . ', Befehle ' . $ax_neu['befehle_mqtt_ein'] . ', Routine ' . $ax_neu['befehle_routine_ein'] . ').');
     // Das Befehlsabo nachziehen und sagen, was geschah.
@@ -1040,6 +1180,76 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
         <input data-role="none" type="number" id="hue_port" name="hue_port" min="1024" max="65535" value="<?= ax_e(ax_ui_w('hue_port', $ax_cfg['hue_port'])) ?>"<?= ax_ui_m('hue_port') ?>>
         <div class="sm-small"><?= ax_e(ax_t('EINST.HUE_PORT_HILFE')) ?></div></div>
 </div>
+<?php
+// Nr. 41: Art, eigene IP, Schnittstelle. Die Auswahl der Schnittstellen kommt aus "ip -o link show";
+// eine gespeicherte, die es nicht (mehr) gibt, bleibt waehlbar und wird beim Speichern beanstandet.
+$ax_hue_art_w = ax_ui_w('hue_art', $ax_cfg['hue_art']);
+$ax_hue_if_w = ax_ui_w('hue_schnittstelle', $ax_cfg['hue_schnittstelle']);
+$ax_hue_if = ax_hue_schnittstellen();
+if (!in_array($ax_hue_if_w, $ax_hue_if, true)) { $ax_hue_if[] = $ax_hue_if_w; }
+?>
+<div class="sm-row">
+    <div><label for="hue_art"><?= ax_e(ax_t('FELD.HUE_ART')) ?></label>
+        <select data-role="none" name="hue_art" id="hue_art"<?= ax_ui_m('hue_art') ?>>
+        <option value="loxberry"<?= $ax_hue_art_w !== 'docker' ? ' selected' : '' ?>><?= ax_e(ax_t('EINST.O_HUE_LOXBERRY')) ?></option>
+        <option value="docker"<?= $ax_hue_art_w === 'docker' ? ' selected' : '' ?>><?= ax_e(ax_t('EINST.O_HUE_DOCKER')) ?></option>
+        </select>
+        <div class="sm-small"><?= ax_e(ax_t('EINST.HUE_ART_HILFE')) ?></div></div>
+    <div><label for="hue_ip"><?= ax_e(ax_t('FELD.HUE_IP')) ?></label>
+        <input data-role="none" type="text" id="hue_ip" name="hue_ip" maxlength="15" placeholder="<?= ax_e(ax_t('EINST.P_HUE_IP')) ?>" value="<?= ax_e(ax_ui_w('hue_ip', $ax_cfg['hue_ip'])) ?>"<?= ax_ui_m('hue_ip') ?>>
+        <div class="sm-small"><?= ax_e(ax_t('EINST.HUE_IP_HILFE')) ?></div></div>
+    <div><label for="hue_schnittstelle"><?= ax_e(ax_t('FELD.HUE_SCHNITTSTELLE')) ?></label>
+        <select data-role="none" name="hue_schnittstelle" id="hue_schnittstelle"<?= ax_ui_m('hue_schnittstelle') ?>>
+<?php foreach ($ax_hue_if as $ax_n) { ?>
+        <option value="<?= ax_e($ax_n) ?>"<?= $ax_n === $ax_hue_if_w ? ' selected' : '' ?>><?= ax_e($ax_n) ?></option>
+<?php } ?>
+        </select>
+        <div class="sm-small"><?= ax_e(ax_t('EINST.HUE_SCHNITTSTELLE_HILFE')) ?></div></div>
+</div>
+<div class="sm-hinweis"><?= ax_e(ax_t('EINST.HUE_DOCKER_HINWEIS')) ?></div>
+<h3 id="hue_lampen"><?= ax_e(ax_t('EINST.H_HUE_LAMPEN')) ?></h3>
+<input data-role="none" type="hidden" name="hue_lampen_form" value="1">
+<div class="sm-small"><?= ax_e(ax_t('EINST.HUE_LAMPEN_HILFE')) ?></div>
+<label class="sm-haken"><input data-role="none" type="checkbox" name="hue_probe_lampe" value="1"<?= ax_ui_h('hue_probe_lampe', !empty($ax_cfg['hue_probe_lampe'])) ? ' checked' : '' ?><?= ax_ui_m('hue_probe_lampe') ?>> <?= ax_e(ax_t('EINST.L_HUE_PROBE_LAMPE')) ?></label>
+<div class="sm-small"><?= ax_e(ax_t('EINST.HUE_PROBE_LAMPE_HILFE')) ?></div>
+<?php
+// Fassung 2 (alexa6): je Lampe eine Zeile, dazu drei leere zum Ergaenzen. Nach einer Beanstandung kommen
+// genau die eingegebenen Zeilen zurueck (X-2), ein vorgeschlagenes Kuerzel steht dann im Feld.
+$ax_hl_e = ax_ui_eingaben();
+$ax_hl_akt = $ax_hl_e !== null && ax_ui_aktiv('hue_l_name');
+$ax_hl_n = count($ax_cfg['hue_lampen']) + 3;
+if ($ax_hl_akt) {
+    foreach (array('hue_l_id', 'hue_l_name', 'hue_l_art', 'hue_l_kuerzel', 'hue_l_frei') as $ax_f) {
+        if (isset($ax_hl_e['werte'][$ax_f]) && is_array($ax_hl_e['werte'][$ax_f])) {
+            foreach (array_keys($ax_hl_e['werte'][$ax_f]) as $ax_k) { $ax_hl_n = max($ax_hl_n, (int) $ax_k + 2); }
+        }
+    }
+}
+$ax_hl_n = min($ax_hl_n, AX_HUE_LAMPEN_MAX + 3);
+?>
+<div class="sm-breit">
+<table class="sm-tbl" id="hue_lampen_tabelle">
+<tr><th style="width:5%">#</th><th style="width:33%"><?= ax_e(ax_t('EINST.T_HUE_NAME')) ?></th><th style="width:17%"><?= ax_e(ax_t('EINST.T_HUE_ART')) ?></th><th style="width:25%"><?= ax_e(ax_t('EINST.T_HUE_KUERZEL')) ?></th><th style="width:20%"><?= ax_e(ax_t('EINST.T_HUE_FREI')) ?></th></tr>
+<?php for ($ax_i = 0; $ax_i < $ax_hl_n; $ax_i++) {
+    $ax_l = isset($ax_cfg['hue_lampen'][$ax_i]) ? $ax_cfg['hue_lampen'][$ax_i] : null;
+    $ax_la = ax_ui_w('hue_l_art', $ax_l ? $ax_l['art'] : 'schalter', $ax_i);
+    $ax_lf = $ax_hl_akt ? isset($ax_hl_e['werte']['hue_l_frei'][(string) $ax_i]) : ($ax_l && !empty($ax_l['frei'])); ?>
+<tr><td><?= $ax_i + 1 ?><input data-role="none" type="hidden" name="hue_l_id[<?= $ax_i ?>]" value="<?= ax_e(ax_ui_w('hue_l_id', $ax_l ? $ax_l['id'] : '', $ax_i)) ?>"></td>
+<td><input data-role="none" type="text" name="hue_l_name[<?= $ax_i ?>]" aria-label="<?= ax_e(ax_t('EINST.T_HUE_NAME')) ?> <?= $ax_i + 1 ?>" value="<?= ax_e(ax_ui_w('hue_l_name', $ax_l ? $ax_l['name'] : '', $ax_i)) ?>"<?= ax_ui_m('hue_l_name', $ax_i) ?>></td>
+<td><select data-role="none" name="hue_l_art[<?= $ax_i ?>]" aria-label="<?= ax_e(ax_t('EINST.T_HUE_ART')) ?> <?= $ax_i + 1 ?>"<?= ax_ui_m('hue_l_art', $ax_i) ?>>
+<option value="schalter"<?= $ax_la !== 'dimmer' && $ax_la !== 'licht' ? ' selected' : '' ?>><?= ax_e(ax_t('EINST.O_HUE_SCHALTER')) ?></option>
+<option value="licht"<?= $ax_la === 'licht' ? ' selected' : '' ?>><?= ax_e(ax_t('EINST.O_HUE_LICHT')) ?></option>
+<option value="dimmer"<?= $ax_la === 'dimmer' ? ' selected' : '' ?>><?= ax_e(ax_t('EINST.O_HUE_DIMMER')) ?></option>
+</select></td>
+<td><input data-role="none" type="text" name="hue_l_kuerzel[<?= $ax_i ?>]" aria-label="<?= ax_e(ax_t('EINST.T_HUE_KUERZEL')) ?> <?= $ax_i + 1 ?>" placeholder="<?= ax_e(ax_t('EINST.P_HUE_KUERZEL')) ?>" value="<?= ax_e(ax_ui_w('hue_l_kuerzel', $ax_l ? $ax_l['kuerzel'] : '', $ax_i)) ?>"<?= ax_ui_m('hue_l_kuerzel', $ax_i) ?>></td>
+<td><label class="sm-haken"><input data-role="none" type="checkbox" name="hue_l_frei[<?= $ax_i ?>]" value="1"<?= $ax_lf ? ' checked' : '' ?><?= ax_ui_m('hue_l_frei', $ax_i) ?>> <?= ax_e(ax_t('EINST.L_HUE_FREI')) ?></label></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-small"><?= ax_e(ax_t('EINST.HUE_LAMPEN_ZEILEN_HILFE')) ?></div>
+<label for="hue_echos"><?= ax_e(ax_t('FELD.HUE_ECHOS')) ?></label>
+<input data-role="none" type="text" id="hue_echos" name="hue_echos" placeholder="<?= ax_e(ax_t('EINST.P_HUE_ECHOS')) ?>" value="<?= ax_e(ax_ui_w('hue_echos', implode(', ', $ax_cfg['hue_echos']))) ?>"<?= ax_ui_m('hue_echos') ?>>
+<div class="sm-small"><?= ax_e(ax_t('EINST.HUE_ECHOS_HILFE')) ?></div>
 <div class="sm-small"><a href="index.php?form=test#hue_probe"><?= ax_e(ax_t('EINST.ZU_HUE_TEST')) ?></a></div>
 <div class="sm-knopfreihe">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save" value="1"><?= ax_e(ax_t('SEITE.K_SPEICHERN')) ?></button>
@@ -1116,7 +1326,7 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
     <a class="sm-btn sm-b-technik" href="<?= ax_e($ax_pkce['adresse']) ?>" target="_blank" rel="noopener noreferrer"><?= ax_e(ax_t('AMZ.K_SEITE_OEFFNEN')) ?></a>
 <?php } ?>
 </div>
-<?php if ($ax_pkce) { ?><div class="sm-small"><?= ax_e(sprintf(ax_t('AMZ.PKCE_OFFEN'), ax_dauer_text(1800 - ax_alter($ax_pkce['seit'])))) ?></div><?php } ?>
+<?php if ($ax_pkce) { ?><div class="sm-small"><?= ax_e(sprintf(ax_t('AMZ.PKCE_OFFEN'), ax_spanne_text(1800 - ax_alter($ax_pkce['seit'])))) ?></div><?php } ?>
 </form>
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="activetab" value="tab-amazon">
@@ -1290,6 +1500,13 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
 <tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/radio/<zone>/laut') ?></span></td><td><?= ax_e(ax_t('MQTT.N_RADIO_LAUT')) ?></td></tr>
 </table>
 <div class="sm-small"><?= ax_e(ax_t('MQTT.BEFEHLE_RETAIN')) ?></div>
+<h2 id="hue_rueck"><?= ax_e(ax_t('MQTT.H_HUE_RUECK')) ?></h2>
+<table class="sm-tbl">
+<tr><th style="width:50%"><?= ax_e(ax_t('MQTT.T_THEMA')) ?></th><th style="width:50%"><?= ax_e(ax_t('MQTT.T_NUTZLAST')) ?></th></tr>
+<tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/hue/<kuerzel>/status') ?></span></td><td><?= ax_e(ax_t('MQTT.N_HUE_STATUS')) ?></td></tr>
+<tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/hue/<kuerzel>/status_helligkeit') ?></span></td><td><?= ax_e(ax_t('MQTT.N_HUE_HELL')) ?></td></tr>
+</table>
+<div class="sm-small"><?= ax_e(ax_t('MQTT.HUE_RUECK_HILFE')) ?></div>
 </div>
 
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
@@ -1326,8 +1543,23 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
 <tr><td>9</td><td><?= ax_e(ax_t('LOX.B4_TYP')) ?></td><td><?= ax_e('Alexa Radio Zone ' . $ax_rz1 . ' Lautstärke') ?></td><td><?= ax_e(ax_t('LOX.B9_PAR')) ?></td><td><?= ax_e(ax_t('LOX.B9_EIN')) ?></td></tr>
 <tr><td>10</td><td><?= ax_e(ax_t('LOX.B4_TYP')) ?></td><td>Alexa Radio alle Zonen Sender</td><td><?= ax_e(ax_t('LOX.B10_PAR')) ?></td><td><?= ax_e(ax_t('LOX.B10_EIN')) ?></td></tr>
 <tr><td>11</td><td><?= ax_e(ax_t('LOX.B11_TYP')) ?></td><td><?= ax_e(sprintf(ax_t('LOX.B11_NAME'), $ax_rz1)) ?></td><td><?= ax_e(ax_t('LOX.B11_PAR')) ?></td><td><?= ax_e(ax_t('LOX.B11_EIN')) ?></td></tr>
+<?php
+// Fassung 2 (alexa6): Baustein-Liste fuer eine Lampe (die erste der Liste, sonst Platzhalter). Logik in
+// Grossbuchstaben wie in Loxone Config (Nr. 39).
+$ax_hl1 = $ax_cfg['hue_lampen'] ? $ax_cfg['hue_lampen'][0] : array('name' => '<Name>', 'kuerzel' => '<kuerzel>', 'art' => 'dimmer');
+$ax_hlt = $ax_cfg['mqtt_praefix'] . '/hue/' . $ax_hl1['kuerzel'] . '/';
+$ax_hudp = ax_mqtt_udpport();
+?>
+<tr><td>12</td><td><?= ax_e(ax_t('LOX.B12_TYP')) ?></td><td><?= ax_e('Alexa ' . $ax_hl1['name'] . ' ein') ?></td><td><?= ax_e(sprintf(ax_t('LOX.B12_PAR'), ax_hue_gateway_name($ax_cfg, $ax_hl1['kuerzel'], 'ein'))) ?></td><td>–</td></tr>
+<tr><td>13</td><td>NICHT</td><td><?= ax_e('Alexa ' . $ax_hl1['name'] . ' aus') ?></td><td>–</td><td><?= ax_e(ax_t('LOX.B13_EIN')) ?></td></tr>
+<tr><td>14</td><td><?= ax_e(ax_t('LOX.B14_TYP')) ?></td><td><?= ax_e(ax_t('LOX.B14_NAME')) ?></td><td><?= ax_e(ax_t('LOX.B14_PAR')) ?></td><td><?= ax_e(ax_t('LOX.B14_EIN')) ?></td></tr>
+<tr><td>15</td><td><?= ax_e(ax_t('LOX.B12_TYP')) ?></td><td><?= ax_e('Alexa ' . $ax_hl1['name'] . ' Helligkeit') ?></td><td><?= ax_e(sprintf(ax_t('LOX.B15_PAR'), ax_hue_gateway_name($ax_cfg, $ax_hl1['kuerzel'], 'helligkeit'))) ?></td><td>–</td></tr>
+<tr><td>16</td><td><?= ax_e(ax_t('LOX.B3_TYP')) ?></td><td>Alexa NG Lampen-Rückmeldung</td><td><?= ax_e(sprintf(ax_t('LOX.B16_PAR'), '/dev/udp/' . ax_hue_udp_host($ax_host) . '/' . ($ax_hudp > 0 ? $ax_hudp : '?'))) ?></td><td>–</td></tr>
+<tr><td>17</td><td><?= ax_e(ax_t('LOX.B4_TYP')) ?></td><td><?= ax_e('Alexa ' . $ax_hl1['name'] . ' Rückmeldung') ?></td><td><?= ax_e(sprintf(ax_t('LOX.B17_PAR'), 'publish ' . $ax_hlt . 'status 1', 'publish ' . $ax_hlt . 'status 0')) ?></td><td><?= ax_e(ax_t('LOX.B17_EIN')) ?></td></tr>
+<tr><td>18</td><td><?= ax_e(ax_t('LOX.B4_TYP')) ?></td><td><?= ax_e('Alexa ' . $ax_hl1['name'] . ' Rückmeldung Helligkeit') ?></td><td><?= ax_e(sprintf(ax_t('LOX.B18_PAR'), 'publish ' . $ax_hlt . 'status_helligkeit <v>')) ?></td><td><?= ax_e(ax_t('LOX.B18_EIN')) ?></td></tr>
 </table>
 <div class="sm-small"><?= ax_e(ax_t('LOX.B_HINWEIS')) ?></div>
+<div class="sm-small"><?= ax_e(ax_t('LOX.B_HUE_HINWEIS')) ?></div>
 <div class="sm-small"><?= ax_e(ax_t('LOX.B_RADIO_HINWEIS')) ?></div></div>
 <div class="sm-step"><b>7.</b> <?= ax_e(ax_t('LOX.S7')) ?></div>
 <div class="sm-step"><b>8.</b> <?= ax_e(ax_t('LOX.S8_SPERRE')) ?><br>
@@ -1366,6 +1598,24 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
 <?php } ?>
 <span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/radio/<zone>') ?></span> <?= ax_e(ax_t('MQTT.N_RADIO')) ?><br>
 <span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/radio/<zone>/laut') ?></span> <?= ax_e(ax_t('MQTT.N_RADIO_LAUT')) ?></div>
+<div class="sm-step" id="hue_loxone"><b>11.</b> <?= ax_e(ax_t('LOX.S11_HUE')) ?>
+<?php if (empty($ax_cfg['hue_ein'])) { ?><div class="sm-hinweis"><?= ax_e(ax_t('LOX.HUE_AUS')) ?> <a href="index.php?form=settings#hue_lampen"><?= ax_e(ax_t('TEST.ZU_HUE')) ?></a></div><?php } ?>
+<?php if ($ax_cfg['hue_lampen']) { ?>
+<div class="sm-breit">
+<table class="sm-tbl" id="hue_lampen_loxone">
+<tr><th style="width:22%"><?= ax_e(ax_t('TEST.T_HUE_LAMPE')) ?></th><th style="width:34%"><?= ax_e(ax_t('LOX.T_HUE_EINGAENGE')) ?></th><th style="width:44%"><?= ax_e(ax_t('LOX.T_HUE_RUECK')) ?></th></tr>
+<?php foreach ($ax_cfg['hue_lampen'] as $ax_l) { $ax_hlt = $ax_cfg['mqtt_praefix'] . '/hue/' . $ax_l['kuerzel'] . '/'; ?>
+<tr><td><?= ax_e($ax_l['name']) ?> (<?= ax_e(ax_t($ax_l['art'] === 'dimmer' ? 'EINST.O_HUE_DIMMER' : ($ax_l['art'] === 'licht' ? 'EINST.O_HUE_LICHT' : 'EINST.O_HUE_SCHALTER'))) ?>)</td>
+<td><span class="sm-mono"><?= ax_e(ax_hue_gateway_name($ax_cfg, $ax_l['kuerzel'], 'ein')) ?></span><?php if ($ax_l['art'] === 'dimmer') { ?><br><span class="sm-mono"><?= ax_e(ax_hue_gateway_name($ax_cfg, $ax_l['kuerzel'], 'helligkeit')) ?></span><?php } ?></td>
+<td><span class="sm-mono"><?= ax_e('publish ' . $ax_hlt . 'status 1') ?></span> / <span class="sm-mono">0</span><?php if ($ax_l['art'] === 'dimmer') { ?><br><span class="sm-mono"><?= ax_e('publish ' . $ax_hlt . 'status_helligkeit <v>') ?></span><?php } ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-small"><?= ax_e(sprintf(ax_t('LOX.HUE_UDP'), '/dev/udp/' . ax_hue_udp_host($ax_host) . '/' . (ax_mqtt_udpport() > 0 ? ax_mqtt_udpport() : '?'))) ?></div>
+<?php } else { ?>
+<div class="sm-hinweis"><?= ax_e(ax_t('LOX.HUE_KEINE_LAMPE')) ?> <a href="index.php?form=settings#hue_lampen"><?= ax_e(ax_t('TEST.ZU_HUE')) ?></a></div>
+<?php } ?>
+</div>
 <h2><?= ax_e(ax_t('LOX.H_VORLAGEN')) ?></h2>
 <div class="sm-small"><?= ax_e(ax_t('LOX.VORLAGEN_TEXT')) ?></div>
 <form action="index.php" method="post">
@@ -1375,6 +1625,8 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="vi"><?= ax_e(ax_t('LOX.K_VI')) ?></button>
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="vo"><?= ax_e(ax_t('LOX.K_VO')) ?></button>
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="vr"<?= $ax_cfg['radio_zonen'] ? '' : ' disabled' ?>><?= ax_e(ax_t('LOX.K_VR')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="vh"<?= $ax_cfg['hue_lampen'] ? '' : ' disabled' ?>><?= ax_e(ax_t('LOX.K_VH')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="vq"<?= ($ax_cfg['hue_lampen'] && ax_mqtt_udpport() > 0) ? '' : ' disabled' ?>><?= ax_e(ax_t('LOX.K_VQH')) ?></button>
 </div>
 </form>
 <div class="sm-warnung"><?= ax_e(ax_t('LOX.VO_VERTRAULICH')) ?></div>
@@ -1441,18 +1693,32 @@ else {
     $ax_zeile($ax_ds === null ? -1 : ($ax_ds ? 1 : 0), ax_t('TEST.F_BEFEHLE'), $ax_ds === null ? ax_t('TEST.A_BEFEHLE_NICHT') : ($ax_ds ? ax_t('TEST.A_BEFEHLE_LAEUFT') : ax_t('TEST.A_BEFEHLE_STEHT')));
 }
 // H2 (alexa4): Laeuft die Hue-Probe? Mit Selbstprobe, wenn dieser Reiter offen ist.
-$ax_hz = ax_hue_lesen();
-$ax_hs = empty($ax_cfg['hue_ein']) ? false : ax_hue_dienst_status();
-if (empty($ax_cfg['hue_ein'])) { $ax_zeile(3, ax_t('TEST.F_HUE'), ax_t('TEST.A_HUE_AUS')); }
-elseif ($ax_hs === null) { $ax_zeile(-1, ax_t('TEST.F_HUE'), ax_t('TEST.A_HUE_NICHT')); }
+// Nr. 41 (alexa5): je Art. Bei eigener Netzadresse wird Docker nur bei offenem Reiter Test gefragt.
+$ax_hart = ax_hue_art($ax_cfg);
+$ax_hz = ax_hue_lesen($ax_hart);
+$ax_hd = null;
+$ax_hs = (empty($ax_cfg['hue_ein']) || $ax_hart === 'docker') ? false : ax_hue_dienst_status();
+if (empty($ax_cfg['hue_ein'])) { $ax_hsatz = ax_t('TEST.A_HUE_AUS'); $ax_zeile(3, ax_t('TEST.F_HUE'), $ax_hsatz); }
+elseif ($ax_hart === 'docker') {
+    $ax_hd = ax_hue_docker_befund($ax_cfg, $ax_tab === 'tab-test');
+    $ax_hsatz = $ax_hd[1];
+    $ax_zeile($ax_hd[0], ax_t('TEST.F_HUE'), $ax_hsatz);
+    if ($ax_hd[0] === 1 && $ax_tab === 'tab-test') {
+        list($ax_s, $ax_a) = ax_hue_selbstprobe_docker($ax_hd[3]);
+        $ax_zeile($ax_s, ax_t('TEST.F_HUE_D_PROBE'), $ax_a);
+    }
+}
+elseif ($ax_hs === null) { $ax_hsatz = ax_t('TEST.A_HUE_NICHT'); $ax_zeile(-1, ax_t('TEST.F_HUE'), $ax_hsatz); }
 elseif ($ax_hs) {
-    $ax_zeile(1, ax_t('TEST.F_HUE'), sprintf(ax_t('TEST.A_HUE_LAEUFT'), (int) $ax_cfg['hue_port'], $ax_zeit($ax_hz['start'])));
+    $ax_hsatz = sprintf(ax_t('TEST.A_HUE_LAEUFT'), (int) $ax_cfg['hue_port'], $ax_zeit($ax_hz['start']));
+    $ax_zeile(1, ax_t('TEST.F_HUE'), $ax_hsatz);
     if ($ax_tab === 'tab-test') {
         list($ax_s, $ax_a) = ax_hue_selbstprobe($ax_cfg);
         $ax_zeile($ax_s, ax_t('TEST.F_HUE_PROBE'), $ax_a);
     }
 } else {
-    $ax_zeile(0, ax_t('TEST.F_HUE'), sprintf(ax_t('TEST.A_HUE_STEHT'), $ax_hz['fehler'] !== '' ? ax_grund_text($ax_hz['fehler']) : '–'));
+    $ax_hsatz = sprintf(ax_t('TEST.A_HUE_STEHT'), $ax_hz['fehler'] !== '' ? ax_grund_text($ax_hz['fehler']) : '–');
+    $ax_zeile(0, ax_t('TEST.F_HUE'), $ax_hsatz);
 }
 // K1: Zustand der Sperre aus Loxone - auch "kein Wert nach dem Update" sichtbar.
 list($ax_s, $ax_a) = $ax_sperre_zeile();
@@ -1717,9 +1983,7 @@ $ax_radio_frei = !empty($ax_cfg['radio_ein']) && $ax_rz_liste;
 $ax_hzs = $ax_hz['suchen'];
 $ax_hue_wann = function ($e) use ($ax_zeit) { return sprintf(ax_t('TEST.HUE_ZULETZT'), (int) $e['anzahl'], $e['ip'] !== '' ? $e['ip'] : '–', $ax_zeit($e['zeit'])); };
 $ax_hue_zeilen = array(
-    array(ax_t('TEST.F_HUE'), empty($ax_cfg['hue_ein']) ? ax_t('TEST.A_HUE_AUS')
-        : ($ax_hs === null ? ax_t('TEST.A_HUE_NICHT') : ($ax_hs ? sprintf(ax_t('TEST.A_HUE_LAEUFT'), (int) $ax_cfg['hue_port'], $ax_zeit($ax_hz['start']))
-        : sprintf(ax_t('TEST.A_HUE_STEHT'), $ax_hz['fehler'] !== '' ? ax_grund_text($ax_hz['fehler']) : '–')))),
+    array(ax_t('TEST.F_HUE'), $ax_hsatz),
     array(ax_t('TEST.F_HUE_SUCHE'), $ax_hzs['anzahl'] > 0
         ? sprintf(ax_t('TEST.A_HUE_SUCHE'), $ax_hzs['ip'], $ax_zeit($ax_hzs['zeit']), $ax_hzs['st'], (int) $ax_hzs['anzahl'], (int) $ax_hzs['beantwortet'])
         : ax_t('TEST.A_HUE_SUCHE_KEINE')),
@@ -1730,6 +1994,24 @@ $ax_hue_zeilen = array(
             (int) $ax_hz['schalten']['mqtt'], (int) $ax_hz['schalten']['mqtt_nicht'], $ax_cfg['mqtt_praefix'] . '/hue_probe/ein')
         : ax_t('TEST.A_HUE_NOCH_NICHT')),
 );
+if ($ax_hd !== null) { foreach ($ax_hd[2] as $ax_z) { $ax_hue_zeilen[] = $ax_z; } }   // Nr. 41: eigene Netzadresse
+// Fassung 2 (alexa6): abgewiesene Echos und die Rueckmeldung aus Loxone.
+$ax_hab = $ax_hz['abgewiesen'];
+$ax_hab_l = array();
+foreach ($ax_hab['absender'] as $ax_hip => $ax_he) { $ax_hab_l[] = $ax_hip . ' (' . (int) $ax_he['anzahl'] . ')'; }
+$ax_hue_zeilen[] = array(ax_t('TEST.F_HUE_ABGEWIESEN'), $ax_hab['anzahl'] > 0
+    ? sprintf(ax_t('TEST.A_HUE_ABGEWIESEN'), (int) $ax_hab['anzahl'], implode(', ', $ax_hab_l), $ax_zeit($ax_hab['zeit']))
+    : ($ax_cfg['hue_echos'] ? sprintf(ax_t('TEST.A_HUE_ABGEWIESEN_KEINE_LISTE'), implode(', ', $ax_cfg['hue_echos'])) : ax_t('TEST.A_HUE_ABGEWIESEN_KEINE')));
+$ax_hmo = $ax_hz['mqtt_abo'];
+if (!$ax_cfg['hue_lampen']) {
+    $ax_hmo_t = ax_t('TEST.A_HUE_ABO_OHNE');
+} elseif ($ax_hmo['verbunden']) {
+    $ax_hmo_t = sprintf(ax_t('TEST.A_HUE_ABO_JA'), $ax_zeit($ax_hmo['seit']), (int) $ax_hmo['empfangen'],
+        $ax_hmo['zeit'] > 0 ? $ax_zeit($ax_hmo['zeit']) : ax_t('ALLG.NIE'), (int) $ax_hmo['ungueltig'], (int) $ax_hmo['unbekannt']);
+} else {
+    $ax_hmo_t = sprintf(ax_t('TEST.A_HUE_ABO_NEIN'), $ax_hmo['fehler'] !== '' ? ax_grund_text('ABO_' . $ax_hmo['fehler']) : '–');
+}
+$ax_hue_zeilen[] = array(ax_t('TEST.F_HUE_ABO'), $ax_hmo_t);
 ?>
 <table class="sm-tbl" id="hue_tabelle">
 <tr><th style="width:40%"><?= ax_e(ax_t('TEST.T_FRAGE')) ?></th><th style="width:60%"><?= ax_e(ax_t('TEST.T_ANTWORT')) ?></th></tr>
@@ -1743,6 +2025,27 @@ $ax_hue_zeilen = array(
 <tr><th><?= ax_e(ax_t('TEST.T_HUE_ABSENDER')) ?></th><th><?= ax_e(ax_t('TEST.T_HUE_SUCHEN')) ?></th><th><?= ax_e(ax_t('TEST.T_ERSTE')) ?></th><th><?= ax_e(ax_t('TEST.T_LETZTE')) ?></th><th>ST</th></tr>
 <?php foreach ($ax_hzs['absender'] as $ax_hip => $ax_he) { ?>
 <tr><td><span class="sm-mono"><?= ax_e($ax_hip) ?></span></td><td><?= (int) $ax_he['anzahl'] ?></td><td><?= ax_e($ax_zeit($ax_he['erste'])) ?></td><td><?= ax_e($ax_zeit($ax_he['zeit'])) ?></td><td><span class="sm-mono"><?= ax_e($ax_he['st']) ?></span></td></tr>
+<?php } ?>
+</table>
+</div>
+<?php } ?>
+<?php if ($ax_cfg['hue_lampen']) { ?>
+<div class="sm-breit">
+<table class="sm-tbl" id="hue_lampen_test">
+<tr><th style="width:20%"><?= ax_e(ax_t('TEST.T_HUE_LAMPE')) ?></th><th style="width:18%"><?= ax_e(ax_t('TEST.T_HUE_ZUSTAND')) ?></th><th style="width:20%"><?= ax_e(ax_t('TEST.T_HUE_ABFRAGE')) ?></th><th style="width:24%"><?= ax_e(ax_t('TEST.T_HUE_SCHALTUNG')) ?></th><th style="width:18%"><?= ax_e(ax_t('TEST.T_HUE_MQTT')) ?></th></tr>
+<?php foreach ($ax_cfg['hue_lampen'] as $ax_l) {
+    $ax_ls = isset($ax_hz['lampen'][(string) $ax_l['id']]) ? $ax_hz['lampen'][(string) $ax_l['id']] : null;
+    if ($ax_ls === null || $ax_ls['zeit'] === 0) {
+        $ax_lz = ax_t('TEST.A_HUE_NOCH_NICHT');
+    } else {
+        $ax_lz = ($ax_ls['ein'] ? ax_t('ALLG.EIN') : ax_t('ALLG.AUS')) . ($ax_l['art'] === 'dimmer' && $ax_ls['ein'] ? ' · ' . ax_hue_bri_prozent($ax_ls['bri']) . ' %' : '')
+            . ' · ' . sprintf(ax_t($ax_ls['quelle'] === 'loxone' ? 'TEST.HUE_QUELLE_LOXONE' : 'TEST.HUE_QUELLE_ALEXA'), $ax_zeit($ax_ls['zeit']));
+    }
+    $ax_lab = ($ax_ls && $ax_ls['abfrage']['anzahl'] > 0) ? $ax_hue_wann($ax_ls['abfrage']) : ax_t('TEST.A_HUE_NOCH_NICHT');
+    $ax_lsc = ($ax_ls && $ax_ls['schalten']['anzahl'] > 0) ? $ax_hue_wann($ax_ls['schalten']) . ($ax_ls['schalten']['wert'] !== '' ? ' · ' . $ax_ls['schalten']['wert'] : '') : ax_t('TEST.A_HUE_NOCH_NICHT');
+    $ax_lmq = $ax_ls ? sprintf(ax_t('TEST.A_HUE_LAMPE_MQTT'), (int) $ax_ls['schalten']['mqtt'], (int) $ax_ls['schalten']['mqtt_nicht'],
+        (int) $ax_ls['schalten']['gleich'], (int) $ax_ls['schalten']['gebremst']) : '–'; ?>
+<tr><td><?= ax_e($ax_l['name']) ?><br><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/hue/' . $ax_l['kuerzel']) ?></span> · ID <?= (int) $ax_l['id'] ?></td><td><?= ax_e($ax_lz) ?></td><td><?= ax_e($ax_lab) ?></td><td><?= ax_e($ax_lsc) ?></td><td><?= ax_e($ax_lmq) ?></td></tr>
 <?php } ?>
 </table>
 </div>

@@ -70,6 +70,20 @@ if [ -f "$HUEDIENST" ]; then
     fi
 fi
 
+# Nr. 41: Container und Netz der Hue-Probe auf eigener Netzadresse entfernen. Der
+# Container haengt mit Dateien aus bin/ und data/ - beides tauscht das Update
+# aus; der Takt der neuen Fassung legt ihn danach neu an, wenn er eingeschaltet ist.
+PHP=$(command -v php 2>/dev/null)
+TAKT="$BASE/bin/plugins/$PFOLDER/ax_takt.php"
+if [ -n "$PHP" ] && [ -f "$TAKT" ] && grep -q -- '--hue-entfernen' "$TAKT" 2>/dev/null; then
+    AX_AUS=$(LBHOMEDIR="$BASE" LBPPLUGINDIR="$PFOLDER" timeout 150 "$PHP" "$TAKT" --hue-entfernen 2>/dev/null)
+    case "$AX_AUS" in
+        HUE_ENTFERNT*) echo "<OK> Hue-Probe auf eigener Netzadresse fuer das Update entfernt (${AX_AUS}); der Takt legt sie danach neu an, wenn sie eingeschaltet ist." ;;
+        HUE_NICHTS*|HUE_KEIN_DOCKER*) ;;
+        *) echo "<WARNING> Hue-Probe auf eigener Netzadresse: Container oder Netz nicht entfernt (${AX_AUS:-keine Antwort}). Von Hand: docker rm -f lb-$PFOLDER-hue; docker network rm lb-$PFOLDER-macvlan" ;;
+    esac
+fi
+
 BESTAND="$BASE/data/plugins/$PFOLDER.upgrade_bestand"
 case "$BESTAND" in
     "$BASE"/data/plugins/*.upgrade_bestand) ;;

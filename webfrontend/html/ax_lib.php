@@ -52,6 +52,11 @@ define('AX_RADIO_ZONEN_MAX', 24);    // Radio je Zone: Zonen 1..24 (Bauliste ale
 define('AX_RADIO_GLEICH_S', 60);     // gleicher Sollwert je Zone binnen 60 s -> UNVERAENDERT (X-7, Z4)
 define('AX_RADIO_PAUSE_S', 60);      // nach AMAZON_RATE: Musik-Pause (Radio und Musik-Probe), kein Wiederholen (Z4, alexa4 N3)
 define('AX_HUE_PORT', 8380);         // Hue-Probe: HTTP-Port ab Werk - nicht 80, Apache bleibt unberuehrt (alexa4 H1)
+define('AX_HUE_D_BAU_S', 1800);      // Hue-Probe auf eigener Netzadresse: so lange darf docker build dauern (Nr. 41)
+define('AX_HUE_D_WARTE_S', 20);      // so lange wartet die Seite nach dem Speichern auf den Vorgang (Nr. 41)
+define('AX_HUE_LAMPEN_MAX', 50);     // Fassung 2: hoechstens 50 Lampen in der Freigabeliste
+define('AX_HUE_NAME_MAX', 32);       // Fassung 2: Zeichen je Lampenname
+define('AX_HUE_ECHOS_MAX', 20);      // Fassung 2: freigegebene Echo-Adressen
 
 /* ==================================================================
  * Pfade
@@ -287,6 +292,24 @@ function ax_vorgaben()
         // laeuft nur mit Haken. Schalten geht nur fluechtig an MQTT.
         'hue_ein' => 0,
         'hue_port' => AX_HUE_PORT,
+        // Hue-Probe auf eigener Netzadresse (Entscheidung Nr. 41, alexa5):
+        // 'loxberry' = Dienst auf dem LoxBerry wie bisher, 'docker' = eigener
+        // Container mit eigener IP im Heimnetz (macvlan) auf Port 80. Ab Werk
+        // 'loxberry', IP leer, Schnittstelle eth0. Eine alte Konfiguration
+        // ohne diese Schluessel bleibt gueltig.
+        'hue_art' => 'loxberry',
+        'hue_ip' => '',
+        'hue_schnittstelle' => 'eth0',
+        // Fassung 2 (alexa6): Lampen fuer Alexa. Die Probe-Lampe "Loxone
+        // Probe" (Hue-ID 1) bleibt ab Werk sichtbar, damit ein Update von
+        // 0.9.5 nichts wegnimmt; die Freigabeliste ist ab Werk leer, die
+        // Echo-Liste auch (leer = alle im Heimnetz). Die naechste freie
+        // Lampen-ID zaehlt nur hoch - eine geloeschte Lampe gibt ihre ID nie
+        // an eine neue weiter (Alexa ordnet nach ID).
+        'hue_probe_lampe' => 1,
+        'hue_lampen' => array(),
+        'hue_lampe_naechste' => 2,
+        'hue_echos' => array(),
         // MQTT ab Werk an (Hausstandard); der Befehlseingang ab Werk aus.
         'mqtt_ein' => 1,
         'mqtt_praefix' => 'alexang',
@@ -391,12 +414,82 @@ function ax_wert_pruefen($schluessel, $wert, &$grund = '')
         case 'musik_ein':
         case 'radio_ein':
         case 'hue_ein':
+        case 'hue_probe_lampe':
             return $schalter($wert);
         case 'bremse_fenster_s': return $zahl($wert, 0, 3600);
         case 'mindestabstand_s': return $zahl($wert, 0, 600);
         case 'stundengrenze':    return $zahl($wert, 10, 240);
         case 'musik_stundengrenze': return $zahl($wert, 10, 240);
         case 'hue_port':         return $zahl($wert, 1024, 65535);   // ohne root kein Port unter 1024
+        case 'hue_art':
+            if (!is_string($wert) || !in_array($wert, array('loxberry', 'docker'), true)) { $grund = 'HUE_ART'; return null; }
+            return $wert;
+        case 'hue_ip':
+            /* Nur die Form; ob sie ins Netz der Schnittstelle passt, pruefen
+             * Formular und Sicherung (ax_hue_ip_pruefen) - Nr. 19. */
+            if (!is_string($wert)) { $grund = 'KEIN_TEXT'; return null; }
+            if ($wert !== '' && ax_ipv4_zahl($wert) === null) { $grund = 'IP_FORM'; return null; }
+            return $wert;
+        case 'hue_schnittstelle':
+            if (!is_string($wert) || !preg_match('/^[A-Za-z0-9][A-Za-z0-9_.\-]{0,14}\z/', $wert)) { $grund = 'SCHNITTSTELLE_FORM'; return null; }
+            return $wert;
+        case 'hue_lampe_naechste': return $zahl($wert, 2, 10000);
+        case 'hue_echos':
+            /* Fassung 2 (alexa6): nur diese Echos duerfen die Nachbildung
+             * benutzen; leer = alle im Heimnetz. Ob sie im Netz der
+             * Schnittstelle liegen, pruefen Formular und Sicherung. */
+            if (!is_array($wert)) { $grund = 'KEINE_LISTE'; return null; }
+            if (count($wert) > AX_HUE_ECHOS_MAX) { $grund = 'MEHR_ZEILEN|' . AX_HUE_ECHOS_MAX; return null; }
+            $aus = array();
+            foreach (array_values($wert) as $e) {
+                if (!is_string($e) || ax_ipv4_zahl($e) === null) { $grund = 'ECHO_FORM|' . (is_string($e) ? str_replace('|', '/', substr($e, 0, 40)) : '?'); return null; }
+                if (in_array($e, $aus, true)) { $grund = 'ECHO_DOPPELT|' . $e; return null; }
+                $aus[] = $e;
+            }
+            return $aus;
+        case 'hue_lampen':
+            /* Fassung 2 (alexa6): die Freigabeliste. Je Lampe genau id
+             * (2..9999, eindeutig, bleibt beim Umbenennen), name (1..32
+             * Zeichen, eindeutig), art (schalter|licht|dimmer; licht
+             * seit alexa7, Nr. 42), kuerzel
+             * (a-z/0-9/_, eindeutig) und frei (Haken "bewusst freigeben",
+             * Pflicht bei Tuer/Tor/Garage/Alarm/Schloss). Hoechstens 50. */
+            if (!is_array($wert)) { $grund = 'KEINE_LISTE'; return null; }
+            if (count($wert) > AX_HUE_LAMPEN_MAX) { $grund = 'MEHR_ZEILEN|' . AX_HUE_LAMPEN_MAX; return null; }
+            $aus = array();
+            $ids = array();
+            $namen = array();
+            $kz = array();
+            foreach (array_values($wert) as $i => $z) {
+                if (!is_array($z) || count($z) !== 5 || !isset($z['id'], $z['name'], $z['art'], $z['kuerzel'])
+                    || !array_key_exists('frei', $z)) {
+                    $grund = 'LAMPE_ZEILE|' . ($i + 1); return null;
+                }
+                if (!is_int($z['id']) || $z['id'] < 2 || $z['id'] > 9999 || isset($ids[$z['id']])) { $grund = 'LAMPE_ID|' . ($i + 1); return null; }
+                $g = ax_hue_name_grund($z['name']);
+                if ($g !== '') { $grund = $g; return null; }
+                $nn = ax_name_normal($z['name']);
+                if (isset($namen[$nn])) { $grund = 'LAMPE_NAME_DOPPELT|' . str_replace('|', '/', $z['name']); return null; }
+                if (!is_string($z['art']) || !in_array($z['art'], array('schalter', 'licht', 'dimmer'), true)) { $grund = 'LAMPE_ART|' . str_replace('|', '/', $z['name']); return null; }
+                if (!is_string($z['kuerzel']) || !preg_match('/^[a-z0-9_]{1,32}\z/', $z['kuerzel'])) {
+                    $grund = 'LAMPE_KUERZEL|' . str_replace('|', '/', $z['name']) . '|' . ax_hue_kuerzel_vorschlag($z['name'], $z['id']); return null;
+                }
+                if (isset($kz[$z['kuerzel']])) { $grund = 'LAMPE_KUERZEL_DOPPELT|' . $z['kuerzel']; return null; }
+                if ($z['frei'] === true || $z['frei'] === 1 || $z['frei'] === '1') {
+                    $frei = 1;
+                } elseif ($z['frei'] === false || $z['frei'] === 0 || $z['frei'] === '0') {
+                    $frei = 0;
+                } else {
+                    $grund = 'LAMPE_ZEILE|' . ($i + 1); return null;
+                }
+                $gw = ax_hue_gefahr($z['name']);
+                if (!$frei && $gw !== '') { $grund = 'LAMPE_GEFAHR|' . str_replace('|', '/', $z['name']) . '|' . $gw; return null; }
+                $ids[$z['id']] = 1;
+                $namen[$nn] = 1;
+                $kz[$z['kuerzel']] = 1;
+                $aus[] = array('id' => $z['id'], 'name' => $z['name'], 'art' => $z['art'], 'kuerzel' => $z['kuerzel'], 'frei' => $frei);
+            }
+            return $aus;
         case 'ruhe_von':
         case 'ruhe_bis':         return $zeit($wert);
         case 'standardgeraet':
@@ -2971,7 +3064,7 @@ function ax_takt_lesen()
     $t = ax_json_lesen($p['datadir'] . '/takt.json');
     if (!is_array($t)) { $t = array(); }
     return $t + array('ts' => 0, 'zaehler' => -1, 'ok' => 0, 'status_ts' => 0, 'geraete_ts' => 0,
-                      'dienst_versuch' => 0, 'voll_ts' => 0, 'hue_versuch' => 0);
+                      'dienst_versuch' => 0, 'voll_ts' => 0, 'hue_versuch' => 0, 'hue_d_versuch' => 0);
 }
 
 /** Alter zur Lesezeit; -1 = noch nie (Regeln/03). */
@@ -3043,6 +3136,8 @@ function ax_mqtt_themen()
         'radio/<zone>/sender'       => array(false, 'THEMA.RADIO_SENDER'),
         'radio/<zone>/zustand'      => array(false, 'THEMA.RADIO_ZUSTAND'),
         'hue_probe/ein'             => array(false, 'THEMA.HUE_EIN'),
+        'hue/<kuerzel>/ein'         => array(false, 'THEMA.HUE_LAMPE_EIN'),
+        'hue/<kuerzel>/helligkeit'  => array(false, 'THEMA.HUE_LAMPE_HELL'),
     );
 }
 
@@ -3051,6 +3146,7 @@ function ax_mqtt_retain($thema)
 {
     $muster = preg_replace('#^geraet/[a-z0-9_]{1,40}/#', 'geraet/<name>/', $thema);
     $muster = preg_replace('#^radio/[0-9]{1,2}/#', 'radio/<zone>/', $muster);
+    $muster = preg_replace('#^hue/[a-z0-9_]{1,32}/#', 'hue/<kuerzel>/', $muster);
     $t = ax_mqtt_themen();
     return isset($t[$muster]) ? $t[$muster][0] : false;
 }
@@ -3361,10 +3457,9 @@ function ax_hue_dienst($was)
  * abfragen (/api/<user>/lights), schalten (PUT .../state mit on), eigene
  * (Selbstprobe aus dem Reiter Test), andere (Suchen nach anderen Geraeten).
  */
-function ax_hue_lesen()
+function ax_hue_lesen($art = null)
 {
-    $p = ax_paths();
-    $d = ax_json_lesen($p['datadir'] . '/hue_probe.json');
+    $d = ax_json_lesen(ax_hue_messdatei($art));
     if (!is_array($d)) { $d = array(); }
     $zahl = function ($a, $k) { return (is_array($a) && isset($a[$k]) && is_int($a[$k]) && $a[$k] >= 0) ? $a[$k] : 0; };
     $ip = function ($a, $k) {
@@ -3386,6 +3481,8 @@ function ax_hue_lesen()
                'st' => $st($x, 'st'), 'absender' => array());
     if (is_array($x) && isset($x['absender']) && is_array($x['absender'])) {
         foreach ($x['absender'] as $a => $e) {
+            // B3 (alexa6): auch die Listenform [{"ip": ...}] einer aelteren Datei
+            if (is_int($a) && is_array($e) && isset($e['ip']) && is_string($e['ip'])) { $a = $e['ip']; }
             if (!is_string($a) || !preg_match('/^\d{1,3}(\.\d{1,3}){3}\z/', $a) || !is_array($e)) { continue; }
             $s['absender'][$a] = array('anzahl' => $zahl($e, 'anzahl'), 'erste' => $zahl($e, 'erste'), 'zeit' => $zahl($e, 'zeit'), 'st' => $st($e, 'st'));
             if (count($s['absender']) >= 10) { break; }
@@ -3395,6 +3492,39 @@ function ax_hue_lesen()
     $x = isset($d['lampe']) ? $d['lampe'] : null;
     $bri = $zahl($x, 'bri');
     $aus['lampe'] = array('ein' => $zahl($x, 'ein') === 1 ? 1 : 0, 'bri' => ($bri >= 1 && $bri <= 254) ? $bri : 254);
+    // Fassung 2 (alexa6): je Lampe der Liste Zustand, letzte Abfrage und Schaltung;
+    // abgewiesene Anfragen; Lage des MQTT-Lesers fuer die Rueckmeldung aus Loxone.
+    $aus['lampen'] = array();
+    if (isset($d['lampen']) && is_array($d['lampen'])) {
+        foreach ($d['lampen'] as $id => $e) {
+            if (!preg_match('/^[0-9]{1,4}\z/', (string) $id) || !is_array($e)) { continue; }
+            $a = isset($e['abfrage']) ? $e['abfrage'] : null;
+            $sc = isset($e['schalten']) ? $e['schalten'] : null;
+            $lb = $zahl($e, 'bri');
+            $aus['lampen'][(string) $id] = array('ein' => $zahl($e, 'ein') === 1 ? 1 : 0, 'bri' => ($lb >= 1 && $lb <= 254) ? $lb : 254,
+                'quelle' => (isset($e['quelle']) && in_array($e['quelle'], array('alexa', 'loxone'), true)) ? $e['quelle'] : '',
+                'zeit' => $zahl($e, 'zeit'),
+                'abfrage' => array('anzahl' => $zahl($a, 'anzahl'), 'ip' => $ip($a, 'ip'), 'zeit' => $zahl($a, 'zeit')),
+                'schalten' => array('anzahl' => $zahl($sc, 'anzahl'), 'ip' => $ip($sc, 'ip'), 'zeit' => $zahl($sc, 'zeit'),
+                    'wert' => (is_array($sc) && isset($sc['wert']) && is_string($sc['wert']) && preg_match('/^ein=[01]( helligkeit=[0-9]{1,3})?\z/', $sc['wert'])) ? $sc['wert'] : '',
+                    'mqtt' => $zahl($sc, 'mqtt'), 'mqtt_nicht' => $zahl($sc, 'mqtt_nicht'), 'gleich' => $zahl($sc, 'gleich'), 'gebremst' => $zahl($sc, 'gebremst')));
+            if (count($aus['lampen']) >= 60) { break; }
+        }
+    }
+    $x = isset($d['abgewiesen']) ? $d['abgewiesen'] : null;
+    $aus['abgewiesen'] = array('anzahl' => $zahl($x, 'anzahl'), 'ip' => $ip($x, 'ip'), 'zeit' => $zahl($x, 'zeit'), 'absender' => array());
+    if (is_array($x) && isset($x['absender']) && is_array($x['absender'])) {
+        foreach ($x['absender'] as $a => $e) {
+            if (is_int($a) && is_array($e) && isset($e['ip']) && is_string($e['ip'])) { $a = $e['ip']; }
+            if (!is_string($a) || !preg_match('/^\d{1,3}(\.\d{1,3}){3}\z/', $a) || !is_array($e)) { continue; }
+            $aus['abgewiesen']['absender'][$a] = array('anzahl' => $zahl($e, 'anzahl'), 'zeit' => $zahl($e, 'zeit'));
+            if (count($aus['abgewiesen']['absender']) >= 10) { break; }
+        }
+    }
+    $x = isset($d['mqtt_abo']) ? $d['mqtt_abo'] : null;
+    $aus['mqtt_abo'] = array('verbunden' => $zahl($x, 'verbunden') === 1 ? 1 : 0, 'seit' => $zahl($x, 'seit'),
+        'fehler' => (is_array($x) && isset($x['fehler']) && is_string($x['fehler']) && preg_match('/^[A-Z_]{0,20}\z/', $x['fehler'])) ? $x['fehler'] : '',
+        'empfangen' => $zahl($x, 'empfangen'), 'zeit' => $zahl($x, 'zeit'), 'ungueltig' => $zahl($x, 'ungueltig'), 'unbekannt' => $zahl($x, 'unbekannt'));
     return $aus;
 }
 
@@ -3404,6 +3534,289 @@ function ax_hue_melden($ein, array $cfg)
     return ax_mqtt_senden(array('hue_probe/ein' => $ein ? 1 : 0), $cfg);
 }
 
+/* ==================================================================
+ * Fassung 2 (alexa6): Lampen fuer Alexa (Hue-Nachbildung). Die
+ * Nachbildung (bin/ax_hue.php) zeigt die Lampen der Freigabeliste; ein
+ * Schalten geht fluechtig an MQTT (<praefix>/hue/<kuerzel>/ein, beim Dimmer
+ * dazu .../helligkeit, wenn Alexa eine setzt; Schalter und Licht (an/aus,
+ * alexa7) nur .../ein); Loxone meldet den Zustand ueber .../status und
+ * .../status_helligkeit zurueck. Ab Werk aus, Liste ab Werk leer.
+ * ================================================================== */
+
+/** Eine Zeitspanne ohne "vor"/"ago" - fuer Saetze mit "seit", "fuer etwa", "fertig vor" (B1, alexa6). */
+function ax_spanne_text($sek)
+{
+    $sek = (int) $sek;
+    if ($sek < 0) { return ax_t('ALLG.NIE'); }
+    if ($sek < 90) { return sprintf(ax_t('ALLG.SPANNE_S'), $sek); }
+    if ($sek < 5400) { return sprintf(ax_t('ALLG.SPANNE_MIN'), (int) round($sek / 60)); }
+    if ($sek < 172800) { return sprintf(ax_t('ALLG.SPANNE_H'), (int) round($sek / 3600)); }
+    return sprintf(ax_t('ALLG.SPANNE_D'), (int) round($sek / 86400));
+}
+
+/** Der Schritt eines Hintergrundvorgangs als Wort der Oberflaechensprache (B1). */
+function ax_hue_schritt_wort($s)
+{
+    $w = array('beginn' => 'TEST.SCHRITT_BEGINN', 'docker' => 'TEST.SCHRITT_DOCKER', 'ip' => 'TEST.SCHRITT_IP', 'abbild' => 'TEST.SCHRITT_ABBILD',
+               'netz' => 'TEST.SCHRITT_NETZ', 'container' => 'TEST.SCHRITT_CONTAINER', 'nachsehen' => 'TEST.SCHRITT_NACHSEHEN');
+    return isset($w[$s]) ? ax_t($w[$s]) : '–';
+}
+
+/** Der Vorgang als Wort (Anlegen/Entfernen). */
+function ax_hue_vorgang_wort($v)
+{
+    return $v === 'anlegen' ? ax_t('MELDUNG.HUE_D_V_ANLEGEN') : ax_t('MELDUNG.HUE_D_V_ENTFERNEN');
+}
+
+/** Befehl einer Lampe an Loxone (Dienst auf dem LoxBerry): fluechtig ueber mosquitto_pub. Rueckgabe array(versucht, gescheitert). */
+function ax_hue_lampe_melden($kuerzel, array $paare, array $cfg)
+{
+    $senden = array();
+    if (array_key_exists('ein', $paare)) { $senden['hue/' . $kuerzel . '/ein'] = (int) $paare['ein']; }
+    if (array_key_exists('helligkeit', $paare)) { $senden['hue/' . $kuerzel . '/helligkeit'] = (int) $paare['helligkeit']; }
+    return ax_mqtt_senden($senden, $cfg);
+}
+
+/** Die Lampen der Liste in der Kurzform fuer die Nachbildung (ohne den Haken "bewusst freigeben"). */
+function ax_hue_lampen_kurz(array $cfg)
+{
+    $aus = array();
+    foreach ((isset($cfg['hue_lampen']) && is_array($cfg['hue_lampen'])) ? $cfg['hue_lampen'] : array() as $l) {
+        $aus[] = array('id' => (int) $l['id'], 'name' => (string) $l['name'], 'art' => (string) $l['art'], 'kuerzel' => (string) $l['kuerzel']);
+    }
+    return $aus;
+}
+
+/**
+ * Die IPv4-Netze, an denen der LoxBerry selbst haengt (ohne lo und ohne
+ * Docker-, Bruecken- und Tunnel-Schnittstellen) - das "Heimnetz" fuer den
+ * Dienst auf dem LoxBerry. Liste array(netz, maske); 60 s gemerkt.
+ */
+function ax_hue_lokale_netze()
+{
+    static $netze = null;
+    static $zeit = 0;
+    if ($netze !== null && time() - $zeit < 60) { return $netze; }
+    $netze = array();
+    $zeit = time();
+    list($rc, $out, ) = ax_aufruf(array('ip', '-4', '-o', 'addr', 'show'), 5);
+    if ($rc !== 0) { return $netze; }
+    foreach (preg_split('/\r?\n/', $out) as $z) {
+        if (!preg_match('#^\d+:\s+([A-Za-z0-9][A-Za-z0-9_.@\-]{0,30})\s+inet ([0-9.]{7,15})/([0-9]{1,2})\b#', $z, $m)) { continue; }
+        if ($m[1] === 'lo' || preg_match('/^(docker|veth|br-|virbr|tun|tap|wg|dummy)/', $m[1])) { continue; }
+        $ip = ax_ipv4_zahl($m[2]);
+        $pf = (int) $m[3];
+        if ($ip === null || $pf < 8 || $pf > 30) { continue; }
+        $maske = (0xFFFFFFFF << (32 - $pf)) & 0xFFFFFFFF;
+        $netze[] = array($ip & $maske, $maske);
+    }
+    return $netze;
+}
+
+/** Die Lage fuer den Dienst auf dem LoxBerry (gleiche Form wie ax_hue_container_lage() im Container). */
+function ax_hue_lb_lage(array $cfg)
+{
+    return array('lampen' => ax_hue_lampen_kurz($cfg), 'probe' => empty($cfg['hue_probe_lampe']) ? 0 : 1,
+                 'echos' => (isset($cfg['hue_echos']) && is_array($cfg['hue_echos'])) ? array_values($cfg['hue_echos']) : array(),
+                 'netze' => ax_hue_lokale_netze(), 'wirt' => '', 'mqtt_ein' => empty($cfg['mqtt_ein']) ? 0 : 1,
+                 'praefix' => $cfg['mqtt_praefix'], 'broker' => ax_broker());
+}
+
+/** Die Zeitzone, in der dieses Plugin protokolliert - der Container bekommt dieselbe (B2). */
+function ax_hue_zeitzone()
+{
+    $z = date_default_timezone_get();
+    return in_array($z, timezone_identifiers_list(), true) ? $z : 'UTC';
+}
+
+/** Zeichen eines Namens (UTF-8), oder -1. */
+function ax_hue_zeichenzahl($s)
+{
+    if (!is_string($s) || preg_match('//u', $s) !== 1) { return -1; }
+    return (int) preg_match_all('/./us', $s);
+}
+
+/** Grund, warum dieser Lampenname nicht geht ('' = gut). Nr. 19: beanstanden, nie aendern. */
+function ax_hue_name_grund($name)
+{
+    if (!is_string($name) || $name === '') { return 'LAMPE_NAME_FEHLT'; }
+    $n = ax_hue_zeichenzahl($name);
+    if ($n < 0 || preg_match('/[\x00-\x1F\x7F]/', $name)) { return 'LAMPE_NAME_ZEICHEN|' . str_replace('|', '/', substr($name, 0, 40)); }
+    if (trim($name) !== $name) { return 'LAMPE_NAME_ZEICHEN|' . $name; }
+    if ($n > AX_HUE_NAME_MAX) { return 'LAMPE_NAME_LAENGE|' . str_replace('|', '/', $name) . '|' . $n; }
+    if (preg_match('/[=";<>|\\\\%]/', $name)) { return 'LAMPE_NAME_ZEICHEN|' . str_replace('|', '/', $name); }
+    if (ax_name_normal($name) === 'loxone_probe') { return 'LAMPE_NAME_PROBE'; }
+    return '';
+}
+
+/**
+ * Traegt der Name ein Wort, das eine Tuer, ein Tor, eine Garage, einen Alarm
+ * oder ein Schloss meint (de/en, R05)? Rueckgabe das Wort oder ''. Bewusst
+ * weit: auch "Monitor" enthaelt "tor" - dann genuegt der Haken.
+ */
+function ax_hue_gefahr($name)
+{
+    $n = ax_name_normal($name);
+    foreach (array('tuer', 'tor', 'garage', 'alarm', 'schloss', 'door', 'gate', 'lock') as $w) {
+        if (strpos($n, $w) !== false) { return $w; }
+    }
+    return '';
+}
+
+/** Ein Kuerzel aus dem Namen vorschlagen (klein, a-z/0-9/_, hoechstens 32 Zeichen). */
+function ax_hue_kuerzel_vorschlag($name, $id = 0)
+{
+    $k = trim((string) preg_replace('/_+/', '_', ax_name_normal((string) $name)), '_');
+    $k = rtrim(substr($k, 0, 32), '_');
+    return $k !== '' ? $k : 'lampe_' . (int) $id;
+}
+
+/** Die Lampen, die die Nachbildung zeigen soll: Hue-ID => Name (Probe-Lampe ID 1). */
+function ax_hue_erwartete_lampen(array $cfg)
+{
+    $s = array();
+    if (!empty($cfg['hue_probe_lampe'])) { $s['1'] = 'Loxone Probe'; }
+    foreach ((isset($cfg['hue_lampen']) && is_array($cfg['hue_lampen'])) ? $cfg['hue_lampen'] : array() as $l) { $s[(string) $l['id']] = $l['name']; }
+    return $s;
+}
+
+/** Zeigt die Antwort von /api/<u>/lights genau diese Lampen? */
+function ax_hue_lichter_passen($j, array $soll)
+{
+    if (!is_array($j) || count($j) !== count($soll)) { return false; }
+    foreach ($soll as $id => $n) {
+        if (!isset($j[$id]['name']) || $j[$id]['name'] !== $n) { return false; }
+    }
+    return true;
+}
+
+/** bri 1..254 als Prozent (Anzeige). */
+function ax_hue_bri_prozent($bri)
+{
+    return max(1, min(100, (int) round(((int) $bri) * 100 / 254)));
+}
+
+/** Die freigegebenen Echos pruefen: jede Adresse im Netz der Schnittstelle. Rueckgabe Grund ('' = gut). */
+function ax_hue_echos_pruefen(array $liste, $schnittstelle)
+{
+    if (!$liste) { return ''; }
+    list($ok, $g, $n) = ax_hue_netz($schnittstelle);
+    if (!$ok) { return $g; }
+    $maske = (0xFFFFFFFF << (32 - $n['praefix'])) & 0xFFFFFFFF;
+    foreach ($liste as $ip) {
+        $z = ax_ipv4_zahl($ip);
+        if ($z === null || ($z & $maske) !== ax_ipv4_zahl($n['netzadresse'])) {
+            return 'ECHO_NETZ|' . $ip . '|' . $n['netzadresse'] . '/' . $n['praefix'] . '|' . $n['schnittstelle'];
+        }
+    }
+    return '';
+}
+
+/** Der UDP-Eingang des MQTT-Gateways (Mqtt.Udpinport aus general.json), 0 = unbekannt. */
+function ax_mqtt_udpport()
+{
+    $p = ax_paths();
+    if ($p['general'] === '' || !is_file($p['general'])) { return 0; }
+    $g = json_decode((string) @file_get_contents($p['general']), true);
+    $v = (is_array($g) && isset($g['Mqtt']['Udpinport']) && is_scalar($g['Mqtt']['Udpinport'])) ? (string) $g['Mqtt']['Udpinport'] : '';
+    return (preg_match('/^[0-9]{1,5}\z/', $v) && (int) $v > 0 && (int) $v < 65536) ? (int) $v : 0;
+}
+
+/** Der Name, unter dem das MQTT-Gateway ein Thema als virtuellen Eingang anlegt (/ und % werden _, Regeln/07). */
+function ax_hue_gateway_name(array $cfg, $kuerzel, $feld)
+{
+    return str_replace(array('/', '%'), '_', $cfg['mqtt_praefix'] . '/hue/' . $kuerzel . '/' . $feld);
+}
+
+/**
+ * [Dateiname, Inhalt] der Eingangsvorlage fuer die Lampen: Gateway-Eingaenge
+ * als VirtualInHttp mit Dummy-Adresse (Kunstgriff Regeln/07), Titel = Name des
+ * Gateways, Check leer. Je Lampe "ein" (digital), beim Dimmer "helligkeit" (0..100).
+ */
+function ax_vorlage_hue_ein($host, array $cfg)
+{
+    $cmds = array();
+    foreach ($cfg['hue_lampen'] as $l) {
+        $cmds[] = array('title' => ax_hue_gateway_name($cfg, $l['kuerzel'], 'ein'), 'comment' => 'Alexa ' . $l['name'] . ' ein',
+                        'check' => ' ', 'analog' => false, 'min' => 0, 'max' => 1, 'unit' => '<v>');
+        if ($l['art'] === 'dimmer') {
+            $cmds[] = array('title' => ax_hue_gateway_name($cfg, $l['kuerzel'], 'helligkeit'), 'comment' => 'Alexa ' . $l['name'] . ' Helligkeit',
+                            'check' => ' ', 'analog' => true, 'min' => 0, 'max' => 100, 'unit' => '<v> %');
+        }
+    }
+    return array('VI_alexang_hue.xml', ax_xml_virtual_in_http(array('title' => 'Alexa NG Lampen',
+        'comment' => ax_t('LOX.VH_KOMMENTAR') . ' (' . date('d.m.Y') . ')', 'address' => 'http://localhost', 'polling' => '604800'), $cmds));
+}
+
+/** Die Adresse des LoxBerry fuer /dev/udp/... (aus der Anfrage; ohne Port). */
+function ax_hue_udp_host($host)
+{
+    $h = (string) preg_replace('/:\d+$/', '', (string) preg_replace('/[^A-Za-z0-9.\-:\[\]]/', '', (string) $host));
+    if ($h === '' || in_array(strtolower($h), array('127.0.0.1', 'localhost', '[::1]', '::1'), true)) { $h = gethostname() ?: 'loxberry'; }
+    return $h;
+}
+
+/**
+ * [Dateiname, Inhalt] der Ausgangsvorlage fuer die Rueckmeldung: ein
+ * virtueller Ausgang an den UDP-Eingang des MQTT-Gateways
+ * (/dev/udp/<LoxBerry>/<Udpinport>); je Lampe "Rueckmeldung" (digital:
+ * publish .../status 1 bzw. 0), beim Dimmer "Rueckmeldung Helligkeit"
+ * (publish .../status_helligkeit <v>). publish, nie retain.
+ */
+function ax_vorlage_hue_aus($host, array $cfg)
+{
+    $port = ax_mqtt_udpport();
+    $cmds = array();
+    foreach ($cfg['hue_lampen'] as $l) {
+        $t = $cfg['mqtt_praefix'] . '/hue/' . $l['kuerzel'] . '/';
+        $cmds[] = array('title' => 'Alexa ' . $l['name'] . ' Rückmeldung', 'comment' => 'Rückmeldung ' . $l['kuerzel'], 'analog' => false,
+                        'on' => 'publish ' . $t . 'status 1', 'off' => 'publish ' . $t . 'status 0');
+        if ($l['art'] === 'dimmer') {
+            $cmds[] = array('title' => 'Alexa ' . $l['name'] . ' Rückmeldung Helligkeit', 'comment' => 'Helligkeit ' . $l['kuerzel'] . ' %',
+                            'on' => 'publish ' . $t . 'status_helligkeit <v>');
+        }
+    }
+    return array('VQ_alexang_hue.xml', ax_xml_virtual_out(array('title' => 'Alexa NG Lampen-Rückmeldung',
+        'comment' => ax_t('LOX.VQH_KOMMENTAR') . ' (' . date('d.m.Y') . ')',
+        'address' => '/dev/udp/' . ax_hue_udp_host($host) . '/' . ($port > 0 ? $port : 11884)), $cmds));
+}
+
+/**
+ * B4 (alexa6): alte eigene Abbilder entfernen - nur lb-<ordner>-hue-php:*
+ * mit BEIDEN eigenen Labels, nie das aktuelle, nie eines, das ein Container
+ * noch benutzt (docker image rm ohne -f weigert sich dann). Nachgesehen.
+ * Rueckgabe array(entfernt, geblieben).
+ */
+function ax_hue_docker_abbilder_raeumen($aktuell)
+{
+    $p = ax_paths();
+    $nm = ax_hue_docker_namen();
+    list($rc, $out, ) = ax_docker(array('image', 'ls', '--filter', 'label=de.loxberry.plugin.name=' . $nm['label'], '--format', '{{.Repository}}:{{.Tag}}'), 20);
+    if ($rc !== 0) {
+        ax_log_wenn_neu('hue_d_abbilder', 'INFO', 'Hue-Probe (eigene Netzadresse): die Abbilder liessen sich nicht auflisten (rc ' . $rc . ') - kein altes entfernt.', 86400);
+        return array(0, 0);
+    }
+    $muster = '#^' . preg_quote('lb-' . strtolower($p['plugin']) . '-hue-php', '#') . ':[A-Za-z0-9._\-]{1,40}\z#';
+    $weg = 0;
+    $bleibt = 0;
+    foreach (preg_split('/\s+/', trim($out)) as $b) {
+        if ($b === '' || $b === $aktuell || !preg_match($muster, $b)) { continue; }
+        list($rc2, $o2, ) = ax_docker(array('image', 'inspect', $b), 15);
+        $info = $rc2 === 0 ? ax_docker_json($o2) : null;
+        if (!ax_hue_docker_eigen($info)) { $bleibt++; continue; }
+        list(, , $e3) = ax_docker(array('image', 'rm', $b), 60);
+        list($rc4, , ) = ax_docker(array('image', 'inspect', $b), 15);
+        if ($rc4 !== 0) {
+            $weg++;
+            ax_log('INFO', 'Hue-Probe (eigene Netzadresse): altes Abbild ' . $b . ' entfernt (nachgesehen).');
+        } else {
+            $bleibt++;
+            ax_log('WARN', 'Hue-Probe (eigene Netzadresse): altes Abbild ' . $b . ' blieb (' . ax_letzte_zeile($e3) . ').');
+        }
+    }
+    return array($weg, $bleibt);
+}
+
 /**
  * Die Hue-Probe nach einer Aenderung nachziehen (Speichern, Zurueckspielen):
  * starten, anhalten oder - anderer Port - neu starten. Rueckgabe: Satz fuer
@@ -3411,16 +3824,25 @@ function ax_hue_melden($ein, array $cfg)
  */
 function ax_hue_nachziehen(array $neu, array $alt)
 {
-    $soll = ax_hue_soll($neu);
+    // Nr. 41: der Container (eigene Netzadresse) - ab Werk und bei Art "loxberry" ohne Anfrage an Docker.
+    $lb = ax_hue_nachziehen_lb($neu, $alt);
+    $d = ax_hue_docker_nachziehen($neu, $alt);
+    return trim($lb . ($lb !== '' && $d !== '' ? ' ' : '') . $d);
+}
+
+/** Der Dienst auf dem LoxBerry (alexa4 H1): laeuft nur bei Art "loxberry". */
+function ax_hue_nachziehen_lb(array $neu, array $alt)
+{
+    $soll = ax_hue_soll_lb($neu);
     $laeuft = ax_hue_dienst_status();
-    if ($laeuft === null) { return $soll ? ax_t('MELDUNG.HUE_NICHT_PRUEFBAR') : ''; }
+    if ($laeuft === null) { return ax_hue_soll($neu) ? ax_t('MELDUNG.HUE_NICHT_PRUEFBAR') : ''; }
     if ($soll) {
         $port_neu = isset($alt['hue_port']) && (int) $alt['hue_port'] !== (int) $neu['hue_port'];
         if ($laeuft && !$port_neu) { return ''; }
         if ($laeuft) { ax_hue_dienst('stop'); }
         list($ok, $text) = ax_hue_dienst('start');
         if ($ok && ax_hue_dienst_status()) { return sprintf(ax_t('MELDUNG.HUE_GESTARTET'), (int) $neu['hue_port']); }
-        $z = ax_hue_lesen();
+        $z = ax_hue_lesen('loxberry');
         return sprintf(ax_t('MELDUNG.HUE_FEHL'), trim($text . ' ' . ($z['fehler'] !== '' ? ax_grund_text($z['fehler']) : '')));
     }
     if ($laeuft) {
@@ -3429,7 +3851,7 @@ function ax_hue_nachziehen(array $neu, array $alt)
     }
     // Der Haken ging weg und der Dienst endete schon selbst (er prueft alle 5 s):
     // auch das wird gesagt - nachgesehen ist es mit dem status oben.
-    return ax_hue_soll($alt) ? ax_t('MELDUNG.HUE_ANGEHALTEN') : '';
+    return ax_hue_soll_lb($alt) ? ax_t('MELDUNG.HUE_ANGEHALTEN') : '';
 }
 
 /**
@@ -3452,10 +3874,954 @@ function ax_hue_selbstprobe(array $cfg)
     }
     if ($erg[0][0] === 0) { return array(0, sprintf(ax_t('TEST.A_HUE_PROBE_FEHL'), (int) $cfg['hue_port'], '-')); }
     $j = json_decode($erg[1][1], true);
+    // Fassung 2 (alexa6): genau die eingestellten Lampen (Probe-Lampe und Liste)
+    $soll = ax_hue_erwartete_lampen($cfg);
     $gut = $erg[0][0] === 200 && strpos($erg[0][1], '<modelName>Philips hue bridge 2012</modelName>') !== false
-        && $erg[1][0] === 200 && is_array($j) && isset($j['1']['name']) && $j['1']['name'] === 'Loxone Probe' && count($j) === 1;
-    if ($gut) { return array(1, sprintf(ax_t('TEST.A_HUE_PROBE_OK'), (int) $cfg['hue_port'])); }
+        && $erg[1][0] === 200 && ax_hue_lichter_passen($j, $soll);
+    if ($gut && $soll === array('1' => 'Loxone Probe')) { return array(1, sprintf(ax_t('TEST.A_HUE_PROBE_OK'), (int) $cfg['hue_port'])); }
+    if ($gut) { return array(1, sprintf(ax_t('TEST.A_HUE_PROBE_OK_N'), (int) $cfg['hue_port'], count($soll))); }
     return array(0, sprintf(ax_t('TEST.A_HUE_PROBE_FEHL'), (int) $cfg['hue_port'], $erg[0][0] . '/' . $erg[1][0]));
+}
+
+/* ==================================================================
+ * Hue-Probe auf eigener Netzadresse (Entscheidung Nr. 41, alexa5;
+ * Vorabfassung, nicht am Geraet erprobt). Gemessen am 02.10.2026: das Echo
+ * suchte, bekam Antwort und holte description.xml auf Port 8380, fragte die
+ * Lampen aber nie ab - es braucht die Bridge auf Port 80, und den haelt
+ * Apache. Deshalb bekommt die Nachbildung ueber Docker eine EIGENE IP im
+ * Heimnetz (macvlan an der Schnittstelle, ab Werk eth0) und lauscht dort auf
+ * Port 80 und 1900. Zusaetzlich haengt der Container am Standard-Bridge-Netz:
+ * ein macvlan-Kind erreicht seinen eigenen Wirt nicht, den Broker aber ueber
+ * die Bruecke. Apache, Webport, Loxone-Adressen und die Kerndateien des
+ * LoxBerry bleiben unberuehrt.
+ *
+ * Grundsaetze (Bauart MGiSmart 1.1.23, mg_gw_*):
+ *   - Nur EIGENES wird angefasst: Container, Netz und Abbild tragen die
+ *     Labels de.loxberry.plugin.folder=<ordner> und de.loxberry.plugin.name=
+ *     <ordner>-hue. Ein gleichnamiges fremdes Objekt bleibt unberuehrt und
+ *     ist ein Grund (CONTAINER_FREMD, NETZ_FREMD).
+ *   - Jeder Aufruf argumentweise (proc_open mit Liste, keine Schale), mit
+ *     timeout. Docker wird nur gefragt, wenn die Art "docker" eingeschaltet
+ *     ist oder ein Container dieses Plugins angelegt wurde - ab Werk nie.
+ *   - Anlegen und Entfernen laufen im Hintergrund (bin/hue_vorgang.php).
+ *   - Im Container laeuft nur eigener Code (bin/ax_hue.php mit
+ *     bin/ax_hue_container.php, nur lesend eingehaengt) auf dem offiziellen
+ *     Abbild php:8.4-cli mit sockets und pcntl (bin/hue_docker/Dockerfile,
+ *     am Geraet gebaut). Er laeuft als Benutzer des Plugins, ohne
+ *     Faehigkeiten, mit nur lesendem Dateisystem; Port 80 bindet er ueber
+ *     net.ipv4.ip_unprivileged_port_start=80 in seinem Netz-Namensraum.
+ * ================================================================== */
+
+/** Die Art der Hue-Probe: 'loxberry' (Dienst auf dem LoxBerry, alexa4) oder 'docker' (eigene Netzadresse). */
+function ax_hue_art(array $cfg)
+{
+    return (isset($cfg['hue_art']) && $cfg['hue_art'] === 'docker') ? 'docker' : 'loxberry';
+}
+
+function ax_hue_soll_lb(array $cfg)
+{
+    return ax_hue_soll($cfg) && ax_hue_art($cfg) === 'loxberry';
+}
+
+function ax_hue_soll_docker(array $cfg)
+{
+    return ax_hue_soll($cfg) && ax_hue_art($cfg) === 'docker';
+}
+
+/** Der Ordner, den der Container als /hue sieht: sein Messstand und seine Konfiguration. */
+function ax_hue_dockerdir()
+{
+    $p = ax_paths();
+    return $p['datadir'] . '/hue';
+}
+
+/** Der Messstand je Art: der Dienst auf dem LoxBerry schreibt data/hue_probe.json, der Container data/hue/hue_probe.json. */
+function ax_hue_messdatei($art = null)
+{
+    $p = ax_paths();
+    if ($art === null) { $art = ax_hue_art(ax_config()); }
+    return $art === 'docker' ? ax_hue_dockerdir() . '/hue_probe.json' : $p['datadir'] . '/hue_probe.json';
+}
+
+/** Eine IPv4 in Punktschreibweise als Zahl, sonst null. Keine fuehrenden Nullen, kein Leerraum (Nr. 19). */
+function ax_ipv4_zahl($s)
+{
+    if (!is_string($s) || !preg_match('/^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}\z/', $s)) {
+        return null;
+    }
+    $t = explode('.', $s);
+    return (((int) $t[0] * 256 + (int) $t[1]) * 256 + (int) $t[2]) * 256 + (int) $t[3];
+}
+
+function ax_ipv4_text($z)
+{
+    return implode('.', array(($z >> 24) & 255, ($z >> 16) & 255, ($z >> 8) & 255, $z & 255));
+}
+
+/** Fremde Ausgabe fuer Protokoll und Oberflaeche: eine Zeile, ohne Steuerzeichen, gekuerzt. */
+function ax_kurztext($s, $max = 200)
+{
+    $s = trim((string) preg_replace('/\s+/', ' ', (string) preg_replace('/[\x00-\x1F\x7F]+/', ' ', (string) $s)));
+    if (strlen($s) > $max) {
+        $s = substr($s, 0, $max - 3);
+        if (preg_match('//u', $s) !== 1) { $s = (string) preg_replace('/[\x80-\xFF]+\z/', '', $s); }
+        $s .= '...';
+    }
+    return $s;
+}
+
+/** Die letzte nicht leere Zeile einer Ausgabe (die Fehlermeldung von docker steht zuletzt). */
+function ax_letzte_zeile($s)
+{
+    $z = array_values(array_filter(array_map('trim', preg_split('/\r?\n/', (string) $s)), 'strlen'));
+    return $z ? ax_kurztext($z[count($z) - 1], 200) : '';
+}
+
+/**
+ * Einen Befehl argumentweise ausfuehren (proc_open mit Liste - keine Schale,
+ * kein Argument wird als Befehl gelesen), begrenzt durch timeout. Rueckgabe
+ * array(rc, stdout, stderr); rc 124 Zeitablauf, 127 nicht ausfuehrbar.
+ * $env: die Umgebung dieses einen Aufrufs (null = die eigene).
+ */
+function ax_aufruf(array $cmd, $sekunden, $env = null)
+{
+    if (DIRECTORY_SEPARATOR === '\\' || !function_exists('proc_open')) { return array(127, '', 'nicht moeglich'); }
+    $voll = array('timeout', (string) max(1, (int) $sekunden));
+    foreach ($cmd as $a) { $voll[] = (string) $a; }
+    $desk = array(0 => array('file', '/dev/null', 'r'), 1 => array('pipe', 'w'), 2 => array('pipe', 'w'));
+    $pipes = array();
+    $proc = @proc_open($voll, $desk, $pipes, null, $env);
+    if (!is_resource($proc)) { return array(127, '', 'proc_open gescheitert'); }
+    stream_set_blocking($pipes[1], false);
+    stream_set_blocking($pipes[2], false);
+    $aus = array(1 => '', 2 => '');
+    $offen = array(1 => $pipes[1], 2 => $pipes[2]);
+    $ende = time() + (int) $sekunden + 15;
+    while ($offen && time() < $ende) {
+        $lesen = array_values($offen);
+        $w = null;
+        $e = null;
+        if (@stream_select($lesen, $w, $e, 1) === false) { break; }
+        foreach ($offen as $n => $h) {
+            $t = fread($h, 65536);
+            if ($t !== false && $t !== '' && strlen($aus[$n]) < 1048576) { $aus[$n] .= $t; }
+            if (feof($h)) { fclose($h); unset($offen[$n]); }
+        }
+    }
+    foreach ($offen as $h) { fclose($h); }
+    $rc = proc_close($proc);
+    return array((int) $rc, $aus[1], $aus[2]);
+}
+
+/* ---------------- Netz der Schnittstelle und die eigene IP ---------------- */
+
+/** Die Netzwerkschnittstellen dieses LoxBerry fuer die Auswahl (ohne lo und ohne Docker- und Tunnel-Schnittstellen). */
+function ax_hue_schnittstellen()
+{
+    if (DIRECTORY_SEPARATOR === '\\') { return array(); }
+    list($rc, $out, ) = ax_aufruf(array('ip', '-o', 'link', 'show'), 5);
+    $aus = array();
+    if ($rc !== 0) { return $aus; }
+    foreach (preg_split('/\r?\n/', $out) as $z) {
+        if (!preg_match('/^\d+:\s+([A-Za-z0-9][A-Za-z0-9_.\-]{0,14})(@[^:\s]+)?:/', $z, $m)) { continue; }
+        if ($m[1] === 'lo' || preg_match('/^(docker|veth|br-|virbr|tun|tap|wg|dummy)/', $m[1])) { continue; }
+        $aus[] = $m[1];
+    }
+    return array_values(array_unique($aus));
+}
+
+/**
+ * Das IPv4-Netz einer Schnittstelle: array(ok, grund, netz) mit netz =
+ * array(schnittstelle, ip, praefix, netzadresse, broadcast, gateway). Gelesen
+ * mit "ip -4 -o addr show dev <s>" und "ip -4 route show default"
+ * (argumentweise). Nur ein Netz mit /16 bis /30 und einem Router an DERSELBEN
+ * Schnittstelle gilt - sonst ist nichts sicher zu pruefen, und der Schutz
+ * faellt geschlossen aus.
+ */
+function ax_hue_netz($schnittstelle)
+{
+    $leer = array('schnittstelle' => (string) $schnittstelle, 'ip' => '', 'praefix' => 0, 'netzadresse' => '', 'broadcast' => '', 'gateway' => '');
+    if (!is_string($schnittstelle) || !preg_match('/^[A-Za-z0-9][A-Za-z0-9_.\-]{0,14}\z/', $schnittstelle)) {
+        return array(false, 'SCHNITTSTELLE_FORM', $leer);
+    }
+    if (DIRECTORY_SEPARATOR === '\\') { return array(false, 'NETZ_LESEN', $leer); }
+    list($rc, $out, $err) = ax_aufruf(array('ip', '-4', '-o', 'addr', 'show', 'dev', $schnittstelle), 5);
+    if ($rc === 127 || $rc === 124) { return array(false, 'NETZ_LESEN', $leer); }
+    if ($rc !== 0) { return array(false, 'SCHNITTSTELLE_FEHLT|' . $schnittstelle, $leer); }
+    if (!preg_match('#\binet ([0-9.]{7,15})/([0-9]{1,2})\b#', $out, $m) || ax_ipv4_zahl($m[1]) === null) {
+        return array(false, 'SCHNITTSTELLE_OHNE_IP|' . $schnittstelle, $leer);
+    }
+    $pf = (int) $m[2];
+    if ($pf < 16 || $pf > 30) { return array(false, 'NETZ_GROESSE|' . $pf, $leer); }
+    $maske = (0xFFFFFFFF << (32 - $pf)) & 0xFFFFFFFF;
+    $netz = ax_ipv4_zahl($m[1]) & $maske;
+    $bc = $netz | (~$maske & 0xFFFFFFFF);
+    list($rc2, $out2, ) = ax_aufruf(array('ip', '-4', 'route', 'show', 'default'), 5);
+    $gw = '';
+    if ($rc2 === 0) {
+        foreach (preg_split('/\r?\n/', $out2) as $z) {
+            if (preg_match('#^default via ([0-9.]{7,15}) dev (\S+)#', trim($z), $mm) && $mm[2] === $schnittstelle
+                && ax_ipv4_zahl($mm[1]) !== null && (ax_ipv4_zahl($mm[1]) & $maske) === $netz) {
+                $gw = $mm[1];
+                break;
+            }
+        }
+    }
+    if ($gw === '') { return array(false, 'GATEWAY_FEHLT|' . $schnittstelle, $leer); }
+    return array(true, '', array('schnittstelle' => $schnittstelle, 'ip' => $m[1], 'praefix' => $pf,
+                                 'netzadresse' => ax_ipv4_text($netz), 'broadcast' => ax_ipv4_text($bc), 'gateway' => $gw));
+}
+
+/** Benutzt schon ein Geraet diese Adresse? Erst ping (1 s), dann der ARP-Eintrag (antwortet auch ohne ICMP). */
+function ax_hue_ip_belegt($ip, $schnittstelle)
+{
+    list($rc, , ) = ax_aufruf(array('ping', '-c', '1', '-W', '1', $ip), 4);
+    if ($rc === 0) { return true; }
+    list($rc2, $out2, ) = ax_aufruf(array('ip', 'neigh', 'show', $ip, 'dev', $schnittstelle), 3);
+    return $rc2 === 0 && preg_match('/\blladdr\s+[0-9a-fA-F:]{17}\b.*\b(REACHABLE|STALE|DELAY|PROBE|PERMANENT)\b/', $out2) === 1;
+}
+
+/**
+ * Die eigene IP der Hue-Probe pruefen (Nr. 19: beanstanden, nie aendern).
+ * Rueckgabe der Grund ('' = gut): Pflicht, Form, im Netz der Schnittstelle,
+ * nicht Netz- oder Rundsendeadresse, nicht der LoxBerry selbst, nicht der
+ * Router; mit $belegt zusaetzlich, ob schon ein Geraet sie benutzt.
+ */
+function ax_hue_ip_pruefen($ip, $schnittstelle, $belegt = true)
+{
+    if (!is_string($ip) || $ip === '') { return 'IP_PFLICHT'; }
+    $z = ax_ipv4_zahl($ip);
+    if ($z === null) { return 'IP_FORM'; }
+    list($ok, $g, $n) = ax_hue_netz($schnittstelle);
+    if (!$ok) { return $g; }
+    $maske = (0xFFFFFFFF << (32 - $n['praefix'])) & 0xFFFFFFFF;
+    if (($z & $maske) !== ax_ipv4_zahl($n['netzadresse'])) {
+        return 'IP_NETZ|' . $n['netzadresse'] . '/' . $n['praefix'] . '|' . $n['schnittstelle'];
+    }
+    if ($ip === $n['netzadresse']) { return 'IP_NETZADRESSE'; }
+    if ($ip === $n['broadcast']) { return 'IP_BROADCAST'; }
+    if ($ip === $n['ip']) { return 'IP_LOXBERRY'; }
+    if ($ip === $n['gateway']) { return 'IP_GATEWAY'; }
+    if ($belegt && ax_hue_ip_belegt($ip, $n['schnittstelle'])) { return 'IP_BELEGT|' . $ip; }
+    return '';
+}
+
+/** Welches Feld traegt diesen Grund? (Markierung im Formular, X-2) */
+function ax_hue_ip_feld($grund)
+{
+    $k = explode('|', (string) $grund);
+    return in_array($k[0], array('SCHNITTSTELLE_FORM', 'SCHNITTSTELLE_FEHLT', 'SCHNITTSTELLE_OHNE_IP', 'NETZ_LESEN', 'NETZ_GROESSE',
+                                 'GATEWAY_FEHLT'), true) ? 'hue_schnittstelle' : 'hue_ip';
+}
+
+/* ---------------- Docker ---------------- */
+
+/** Pfad zum docker-Programm, oder ''. */
+function ax_docker_bin()
+{
+    static $pfad = null;
+    if ($pfad === null) {
+        $pfad = '';
+        if (DIRECTORY_SEPARATOR !== '\\' && function_exists('exec')) {
+            $out = array();
+            @exec('command -v docker 2>/dev/null', $out);
+            $k = isset($out[0]) ? trim($out[0]) : '';
+            if ($k !== '' && is_file($k) && is_executable($k)) { $pfad = $k; }
+        }
+    }
+    return $pfad;
+}
+
+function ax_docker(array $args, $sekunden, $env = null)
+{
+    $bin = ax_docker_bin();
+    if ($bin === '') { return array(127, '', 'docker fehlt'); }
+    return ax_aufruf(array_merge(array($bin), $args), $sekunden, $env);
+}
+
+/** Das erste Objekt einer docker-inspect-Ausgabe, oder null. */
+function ax_docker_json($out)
+{
+    $d = json_decode((string) $out, true);
+    return (is_array($d) && isset($d[0]) && is_array($d[0])) ? $d[0] : null;
+}
+
+/**
+ * Ist Docker erreichbar? Rueckgabe array(lage, grund, fassung) mit lage
+ * ok | nicht | fehlt | kein_zugriff | dienst_aus | haengt | fehler
+ * (Bauart mg_docker_lage, MGiSmart 1.1.23).
+ */
+function ax_docker_lage($sekunden = 10)
+{
+    if (DIRECTORY_SEPARATOR === '\\') { return array('nicht', 'NICHT_MOEGLICH', ''); }
+    if (ax_docker_bin() === '') { return array('fehlt', 'DOCKER_FEHLT', ''); }
+    list($rc, $out, $err) = ax_docker(array('info', '--format', '{{.ServerVersion}}'), $sekunden);
+    $fassung = trim($out);
+    if ($rc === 0 && preg_match('/^[0-9A-Za-z.+\-~]{1,40}\z/', $fassung)) { return array('ok', '', $fassung); }
+    if ($rc === 124) { return array('haengt', 'DOCKER_HAENGT|' . (int) $sekunden, ''); }
+    $t = strtolower($err . ' ' . $out);
+    if (strpos($t, 'permission denied') !== false) { return array('kein_zugriff', 'DOCKER_KEIN_ZUGRIFF', ''); }
+    if (strpos($t, 'cannot connect') !== false || strpos($t, 'daemon running') !== false) { return array('dienst_aus', 'DOCKER_DIENST_AUS', ''); }
+    return array('fehler', 'DOCKER_FEHLER|' . (int) $rc, '');
+}
+
+/** Die Namen dieses Plugins: Container, Netz, Label, Abbild (Tag aus dem Inhalt der Dockerfile). */
+function ax_hue_docker_namen()
+{
+    $p = ax_paths();
+    $o = strtolower($p['plugin']);
+    $df = $p['bindir'] . '/hue_docker/Dockerfile';
+    $roh = is_file($df) ? (string) @file_get_contents($df) : '';
+    return array('container' => 'lb-' . $o . '-hue', 'netz' => 'lb-' . $o . '-macvlan', 'label' => $o . '-hue',
+                 'bild' => 'lb-' . $o . '-hue-php:' . ($roh !== '' ? substr(sha1($roh), 0, 12) : 'ohne-dockerfile'),
+                 'dockerfile' => $roh !== '' ? $df : '', 'kontext' => dirname($df));
+}
+
+/** Traegt dieses Docker-Objekt (inspect eines Containers oder Netzes) BEIDE eigenen Labels? */
+function ax_hue_docker_eigen($info)
+{
+    $p = ax_paths();
+    $n = ax_hue_docker_namen();
+    $l = array();
+    if (is_array($info) && isset($info['Config']['Labels']) && is_array($info['Config']['Labels'])) {
+        $l = $info['Config']['Labels'];
+    } elseif (is_array($info) && isset($info['Labels']) && is_array($info['Labels'])) {
+        $l = $info['Labels'];
+    }
+    return isset($l['de.loxberry.plugin.folder'], $l['de.loxberry.plugin.name'])
+        && $l['de.loxberry.plugin.folder'] === $p['plugin'] && $l['de.loxberry.plugin.name'] === $n['label'];
+}
+
+/**
+ * Die Kennung der Nachbildung auf eigener Adresse - stabil je Anlage UND je
+ * Adresse (eine andere IP ist fuer ein Echo eine andere Bridge). Die MAC ist
+ * lokal verwaltet (zweites Bit des ersten Bytes gesetzt), damit sie keinem
+ * Hersteller gehoert; der Container bekommt genau diese MAC.
+ */
+function ax_hue_docker_kennung($ip)
+{
+    $p = ax_paths();
+    $h = sha1('alexang-hue-docker|' . (string) gethostname() . '|' . $p['lbhome'] . '|' . $ip);
+    $mac = sprintf('%02x', (hexdec(substr($h, 0, 2)) & 0xFC) | 0x02) . substr($h, 2, 10);
+    return array('mac' => $mac, 'bridgeid' => strtoupper(substr($mac, 0, 6) . 'fffe' . substr($mac, 6, 6)),
+                 'uuid' => '2f402f80-da50-11e1-9b23-' . $mac, 'lampe' => implode(':', str_split(substr($h, 12, 16), 2)) . '-0b',
+                 'nutzer' => substr(sha1('alexang-hue-nutzer|' . $h), 0, 32));
+}
+
+/** Benutzer und Gruppe, als die der Container laufen soll: die des Plugins (am Geraet loxberry). */
+function ax_hue_docker_benutzer()
+{
+    if (function_exists('posix_geteuid') && function_exists('posix_getegid')) { return array(posix_geteuid(), posix_getegid()); }
+    $p = ax_paths();
+    $u = @fileowner($p['datadir']);
+    $g = @filegroup($p['datadir']);
+    return array($u === false ? -1 : (int) $u, $g === false ? -1 : (int) $g);
+}
+
+/**
+ * Was angelegt sein soll - aus der Konfiguration und dem Netz der
+ * Schnittstelle. Rueckgabe array(ok, grund, def). def['hash'] steht als Label
+ * am Container; weicht er ab, legt der Vorgang neu an.
+ */
+function ax_hue_docker_soll(array $cfg)
+{
+    if (ax_ipv4_zahl(isset($cfg['hue_ip']) ? $cfg['hue_ip'] : '') === null) { return array(false, 'IP_PFLICHT', null); }
+    list($ok, $g, $n) = ax_hue_netz($cfg['hue_schnittstelle']);
+    if (!$ok) { return array(false, $g, null); }
+    $p = ax_paths();
+    $nm = ax_hue_docker_namen();
+    list($uid, $gid) = ax_hue_docker_benutzer();
+    $k = ax_hue_docker_kennung($cfg['hue_ip']);
+    $def = array('container' => $nm['container'], 'netz' => $nm['netz'], 'bild' => $nm['bild'], 'ip' => $cfg['hue_ip'],
+                 'mac' => implode(':', str_split($k['mac'], 2)), 'parent' => $n['schnittstelle'],
+                 'subnetz' => $n['netzadresse'] . '/' . $n['praefix'], 'gateway' => $n['gateway'], 'uid' => $uid, 'gid' => $gid,
+                 'hue' => ax_hue_dockerdir(), 'log' => $p['logdir'], 'skript' => $p['bindir'] . '/ax_hue.php',
+                 'helfer' => $p['bindir'] . '/ax_hue_container.php');
+    $def['hash'] = substr(sha1((string) json_encode($def)), 0, 16);
+    $def['kennung'] = $k;
+    return array(true, '', $def);
+}
+
+/** Die Adresse des Wirts am Standard-Bridge-Netz (dort erreicht der Container den Broker), oder ''. */
+function ax_hue_docker_wirt()
+{
+    list($rc, $out, ) = ax_docker(array('network', 'inspect', 'bridge'), 15);
+    $d = $rc === 0 ? ax_docker_json($out) : null;
+    if (is_array($d) && isset($d['IPAM']['Config']) && is_array($d['IPAM']['Config'])) {
+        foreach ($d['IPAM']['Config'] as $c) {
+            if (is_array($c) && isset($c['Gateway']) && ax_ipv4_zahl($c['Gateway']) !== null) { return $c['Gateway']; }
+        }
+    }
+    return '';
+}
+
+/**
+ * Die Konfiguration des Containers schreiben (data/hue/hue_container.json,
+ * 0600): eigene IP, Kennung, MQTT. Der Broker steht in general.json meist als
+ * localhost - fuer den Container ist das der Wirt am Bridge-Netz. Geschrieben
+ * wird nur, wenn sich etwas aendert. Rueckgabe true = die Datei gilt.
+ */
+function ax_hue_docker_datei(array $cfg, array $def, $wirt)
+{
+    $b = ax_broker();
+    $host = $b['host'];
+    if (in_array(strtolower($host), array('localhost', '127.0.0.1', '::1', 'ip6-localhost'), true)) {
+        if ($wirt === '') { return false; }
+        $host = $wirt;
+    }
+    $k = $def['kennung'];
+    $d = array('_hinweis' => 'Alexa NG - vom Plugin geschrieben, im Container der Hue-Probe gelesen. Enthaelt den Broker-Zugang.',
+               'ip' => $def['ip'], 'port' => 80, 'mac' => $k['mac'], 'bridgeid' => $k['bridgeid'], 'uuid' => $k['uuid'],
+               'lampe' => $k['lampe'], 'nutzer' => $k['nutzer'], 'mqtt_ein' => empty($cfg['mqtt_ein']) ? 0 : 1,
+               'mqtt_praefix' => $cfg['mqtt_praefix'], 'mqtt_host' => $host, 'mqtt_port' => (int) $b['port'],
+               'mqtt_user' => $b['user'], 'mqtt_pass' => $b['pass'],
+               // alexa6: Fassung 2 und B2 (die Zeitzone, in der dieses Plugin protokolliert)
+               'zeitzone' => ax_hue_zeitzone(), 'netz' => $def['subnetz'], 'wirt' => (string) $wirt,
+               'probe_lampe' => empty($cfg['hue_probe_lampe']) ? 0 : 1, 'lampen' => ax_hue_lampen_kurz($cfg),
+               'echos' => (isset($cfg['hue_echos']) && is_array($cfg['hue_echos'])) ? array_values($cfg['hue_echos']) : array());
+    $dir = ax_hue_dockerdir();
+    if (!is_dir($dir)) { @mkdir($dir, 0750, true); }
+    if (!is_dir($dir)) { return false; }
+    $f = $dir . '/hue_container.json';
+    if (ax_json_lesen($f) === $d) { return true; }
+    return ax_write_json($f, $d, 0600);
+}
+
+/** Merker "angelegt" neben dem Messstand (data/hue_docker.json): sagt dem Takt, ob er Docker fragen muss. */
+function ax_hue_docker_merk()
+{
+    $p = ax_paths();
+    $d = ax_json_lesen($p['datadir'] . '/hue_docker.json');
+    $d = is_array($d) ? $d : array();
+    return array(
+        'angelegt' => (isset($d['angelegt']) && $d['angelegt'] === 1) ? 1 : 0,
+        'id' => (isset($d['id']) && is_string($d['id']) && preg_match('/^[0-9a-f]{12,64}\z/', $d['id'])) ? $d['id'] : '',
+        'def' => (isset($d['def']) && is_string($d['def']) && preg_match('/^[0-9a-f]{16}\z/', $d['def'])) ? $d['def'] : '',
+        'ip' => (isset($d['ip']) && ax_ipv4_zahl($d['ip']) !== null) ? $d['ip'] : '',
+        'wirt' => (isset($d['wirt']) && ax_ipv4_zahl($d['wirt']) !== null) ? $d['wirt'] : '',
+        'bild' => (isset($d['bild']) && is_string($d['bild']) && preg_match('#^[a-z0-9._\-]{1,80}:[A-Za-z0-9._\-]{1,40}\z#', $d['bild'])) ? $d['bild'] : '',
+        'zeit' => (isset($d['zeit']) && is_int($d['zeit'])) ? $d['zeit'] : 0,
+    );
+}
+
+function ax_hue_docker_merk_schreiben(array $m)
+{
+    $p = ax_paths();
+    $m['zeit'] = time();
+    return ax_write_json($p['datadir'] . '/hue_docker.json', $m, 0600);
+}
+
+/** Kurzfassung eines Containers aus docker inspect. */
+function ax_hue_docker_kurz(array $info)
+{
+    $nm = ax_hue_docker_namen();
+    $s = (isset($info['State']) && is_array($info['State'])) ? $info['State'] : array();
+    $l = (isset($info['Config']['Labels']) && is_array($info['Config']['Labels'])) ? $info['Config']['Labels'] : array();
+    $netze = (isset($info['NetworkSettings']['Networks']) && is_array($info['NetworkSettings']['Networks'])) ? $info['NetworkSettings']['Networks'] : array();
+    $ip = function ($n) use ($netze) {
+        return (isset($netze[$n]['IPAddress']) && ax_ipv4_zahl($netze[$n]['IPAddress']) !== null) ? $netze[$n]['IPAddress'] : '';
+    };
+    $start = isset($s['StartedAt']) && is_string($s['StartedAt']) ? strtotime($s['StartedAt']) : false;
+    return array(
+        'id' => (isset($info['Id']) && is_string($info['Id'])) ? substr($info['Id'], 0, 12) : '',
+        'laeuft' => !empty($s['Running']) && empty($s['Restarting']),
+        'status' => (isset($s['Status']) && is_string($s['Status'])) ? ax_kurztext($s['Status'], 40) : '',
+        'fehler' => (isset($s['Error']) && is_string($s['Error'])) ? ax_kurztext($s['Error'], 160) : '',
+        'neustarts' => isset($info['RestartCount']) ? (int) $info['RestartCount'] : 0,
+        'seit' => ($start !== false && $start > 0) ? max(0, time() - $start) : -1,
+        'def' => (isset($l['de.loxberry.plugin.def']) && is_string($l['de.loxberry.plugin.def'])) ? $l['de.loxberry.plugin.def'] : '',
+        'bild' => (isset($info['Config']['Image']) && is_string($info['Config']['Image'])) ? $info['Config']['Image'] : '',
+        'ip' => $ip($nm['netz']),
+        'mac' => (isset($netze[$nm['netz']]['MacAddress']) && is_string($netze[$nm['netz']]['MacAddress'])
+                  && preg_match('/^[0-9a-f]{2}(:[0-9a-f]{2}){5}\z/', $netze[$nm['netz']]['MacAddress'])) ? $netze[$nm['netz']]['MacAddress'] : '',
+        'ip_bruecke' => $ip('bridge'),
+    );
+}
+
+/**
+ * Der eigene Container. Rueckgabe array(gefunden, eigen, kurz): gefunden ist
+ * null, wenn Docker nicht zu fragen war; eigen false bei einem fremden
+ * Container gleichen Namens (der bleibt unberuehrt).
+ */
+function ax_hue_docker_container($sekunden = 15)
+{
+    $nm = ax_hue_docker_namen();
+    list($rc, $out, $err) = ax_docker(array('inspect', '--type', 'container', $nm['container']), $sekunden);
+    if ($rc !== 0) {
+        return (stripos($err . $out, 'no such') !== false) ? array(false, false, null) : array(null, false, null);
+    }
+    $info = ax_docker_json($out);
+    if ($info === null) { return array(null, false, null); }
+    return array(true, ax_hue_docker_eigen($info), ax_hue_docker_kurz($info));
+}
+
+/** Einen eigenen Container anhalten und entfernen - nachgesehen. Rueckgabe array(ok, grund, text). */
+function ax_hue_docker_weg($ref)
+{
+    ax_docker(array('stop', '-t', '10', $ref), 40);
+    list($rc, , $err) = ax_docker(array('rm', '-f', $ref), 30);
+    list($rc2, , $err2) = ax_docker(array('inspect', '--type', 'container', $ref), 15);
+    if ($rc2 === 0) { return array(false, 'CONTAINER_ENTFERNEN|' . $rc, ax_letzte_zeile($err)); }
+    if (stripos($err2, 'no such') === false) { return array(false, 'DOCKER_FEHLER|' . $rc2, ax_letzte_zeile($err2)); }
+    return array(true, '', '');
+}
+
+/**
+ * Den Container anlegen - vom Hintergrundvorgang gerufen; $schritt($name)
+ * schreibt den Stand. Rueckgabe array(ok, grund, text, ergebnis).
+ * Reihenfolge: Docker erreichbar -> Netz der Schnittstelle und eigene IP ->
+ * fremder Container gleichen Namens? -> Konfiguration des Containers ->
+ * unveraendert und laeuft: fertig -> IP belegt? -> Abbild (bauen, wenn es
+ * fehlt) -> Netz (das eigene benutzen oder anlegen) -> alten Container
+ * entfernen -> anlegen, an die Bruecke haengen, starten -> nachsehen.
+ */
+function ax_hue_docker_anlegen($schritt)
+{
+    $cfg = ax_config();
+    if (!ax_hue_soll_docker($cfg)) { return array(true, '', '', 'NICHT_EINGESCHALTET'); }
+    $p = ax_paths();
+    $nm = ax_hue_docker_namen();
+    $schritt('docker');
+    list($lage, $g) = ax_docker_lage();
+    if ($lage !== 'ok') { return array(false, $g, '', 'DOCKER'); }
+    $schritt('ip');
+    list($ok, $g, $def) = ax_hue_docker_soll($cfg);
+    if (!$ok) { return array(false, $g, '', 'IP'); }
+    if ($def['uid'] <= 0 || $def['gid'] < 0) { return array(false, 'ALS_ROOT', '', 'IP'); }
+    list($da, $eigen, $kurz) = ax_hue_docker_container();
+    if ($da === null) { return array(false, 'DOCKER_FEHLER|0', '', 'CONTAINER'); }
+    if ($da && !$eigen) { return array(false, 'CONTAINER_FREMD|' . $def['container'], '', 'CONTAINER'); }
+    $wirt = ax_hue_docker_wirt();
+    if ($wirt === '') { return array(false, 'WIRT_UNBEKANNT', '', 'NETZ'); }
+    if (!is_dir($p['logdir'])) { @mkdir($p['logdir'], 0775, true); }
+    if (!ax_hue_docker_datei($cfg, $def, $wirt)) { return array(false, 'SCHREIBEN', ax_hue_dockerdir() . '/hue_container.json', 'DATEI'); }
+    $merk = array('angelegt' => 0, 'id' => '', 'def' => '', 'ip' => $def['ip'], 'wirt' => $wirt, 'bild' => $def['bild']);
+    if ($da && $kurz['def'] === $def['hash'] && $kurz['laeuft']) {
+        ax_hue_docker_merk_schreiben(array('angelegt' => 1, 'id' => $kurz['id'], 'def' => $def['hash']) + $merk);
+        return array(true, '', '', 'UNVERAENDERT');
+    }
+    // Belegt? Nur wenn nicht schon unser Container die Adresse traegt (vom
+    // LoxBerry aus ist er ohnehin nicht zu sehen - macvlan).
+    if (!($da && $kurz['ip'] === $def['ip']) && ax_hue_ip_belegt($def['ip'], $def['parent'])) {
+        return array(false, 'IP_BELEGT|' . $def['ip'], '', 'IP');
+    }
+    if ($nm['dockerfile'] === '') { return array(false, 'DOCKERFILE_FEHLT', '', 'ABBILD'); }
+
+    $schritt('abbild');
+    list($rc, , ) = ax_docker(array('image', 'inspect', $def['bild']), 30);
+    if ($rc !== 0) {
+        ax_log('INFO', 'Hue-Probe (eigene Netzadresse): Abbild ' . $def['bild'] . ' fehlt - wird gebaut (php:8.4-cli mit sockets und pcntl, beim ersten Mal einige Minuten).');
+        $bau = array('build', '-t', $def['bild'], '--label', 'de.loxberry.plugin.folder=' . $p['plugin'],
+                     '--label', 'de.loxberry.plugin.name=' . $nm['label'], $nm['kontext']);
+        list($rc, $out, $err) = ax_docker($bau, AX_HUE_D_BAU_S);
+        if ($rc !== 0 && preg_match('/buildx|buildkit/i', $err . ' ' . $out)) {
+            // Docker ohne buildx: einmal auf dem alten Bauweg (DOCKER_BUILDKIT=0, nur fuer diesen Aufruf).
+            $env = getenv();
+            $env = is_array($env) ? $env : array();
+            $env['DOCKER_BUILDKIT'] = '0';
+            ax_log('INFO', 'Hue-Probe (eigene Netzadresse): docker build ohne buildx - zweiter Versuch mit DOCKER_BUILDKIT=0.');
+            list($rc, $out, $err) = ax_docker($bau, AX_HUE_D_BAU_S, $env);
+        }
+        if ($rc !== 0) { return array(false, 'ABBILD_BAUEN|' . $rc, ax_letzte_zeile($err . "\n" . $out), 'ABBILD'); }
+    }
+
+    $schritt('netz');
+    list($rc, $out, $err) = ax_docker(array('network', 'inspect', $def['netz']), 15);
+    $netz = $rc === 0 ? ax_docker_json($out) : null;
+    if ($rc !== 0 && stripos($err, 'not found') === false && stripos($err, 'no such') === false) {
+        return array(false, 'DOCKER_FEHLER|' . $rc, ax_letzte_zeile($err), 'NETZ');
+    }
+    if ($netz !== null) {
+        if (!ax_hue_docker_eigen($netz)) { return array(false, 'NETZ_FREMD|' . $def['netz'], '', 'NETZ'); }
+        $c0 = (isset($netz['IPAM']['Config'][0]) && is_array($netz['IPAM']['Config'][0])) ? $netz['IPAM']['Config'][0] : array();
+        $passt = isset($netz['Driver'], $netz['Options']['parent'], $c0['Subnet'], $c0['Gateway']) && $netz['Driver'] === 'macvlan'
+            && $netz['Options']['parent'] === $def['parent'] && $c0['Subnet'] === $def['subnetz'] && $c0['Gateway'] === $def['gateway'];
+        if (!$passt) {
+            // Das eigene Netz passt nicht mehr (andere Schnittstelle oder anderes Heimnetz): erst der Container, dann das Netz.
+            if ($da) {
+                list($ok, $g, $t) = ax_hue_docker_weg($nm['container']);
+                if (!$ok) { return array(false, $g, $t, 'CONTAINER'); }
+                $da = false;
+            }
+            list($rc, , $err) = ax_docker(array('network', 'rm', $def['netz']), 30);
+            if ($rc !== 0) { return array(false, 'NETZ_ENTFERNEN|' . $rc, ax_letzte_zeile($err), 'NETZ'); }
+            $netz = null;
+        }
+    }
+    if ($netz === null) {
+        list($rc, , $err) = ax_docker(array('network', 'create', '-d', 'macvlan', '--subnet', $def['subnetz'], '--gateway', $def['gateway'],
+                                            '-o', 'parent=' . $def['parent'], '--label', 'de.loxberry.plugin.folder=' . $p['plugin'],
+                                            '--label', 'de.loxberry.plugin.name=' . $nm['label'], $def['netz']), 30);
+        if ($rc !== 0) { return array(false, 'NETZ_ANLEGEN|' . $rc, ax_letzte_zeile($err), 'NETZ'); }
+    }
+
+    $schritt('container');
+    if ($da) {
+        list($ok, $g, $t) = ax_hue_docker_weg($nm['container']);
+        if (!$ok) { return array(false, $g, $t, 'CONTAINER'); }
+    }
+    $anlegen = array('create', '--name', $def['container'],
+        '--label', 'de.loxberry.plugin.folder=' . $p['plugin'], '--label', 'de.loxberry.plugin.name=' . $nm['label'],
+        '--label', 'de.loxberry.plugin.def=' . $def['hash'],
+        '--restart', 'unless-stopped', '--user', $def['uid'] . ':' . $def['gid'],
+        '--network', $def['netz'], '--ip', $def['ip'], '--mac-address', $def['mac'],
+        '--sysctl', 'net.ipv4.ip_unprivileged_port_start=80',
+        '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges', '--read-only',
+        '-v', $def['hue'] . ':/hue', '-v', $def['log'] . ':/log',
+        '-v', $def['skript'] . ':/app/ax_hue.php:ro', '-v', $def['helfer'] . ':/app/ax_hue_container.php:ro',
+        $def['bild'], 'php', '/app/ax_hue.php', '--container=/hue', '--log=/log');
+    list($rc, $out, $err) = ax_docker($anlegen, 60);
+    $id = trim($out);
+    if ($rc !== 0 || !preg_match('/^[0-9a-f]{64}\z/', $id)) { return array(false, 'CONTAINER_ANLEGEN|' . $rc, ax_letzte_zeile($err), 'CONTAINER'); }
+    ax_hue_docker_merk_schreiben(array('angelegt' => 1, 'id' => $id, 'def' => '') + $merk);
+    // Zweites Netz: die Bruecke zum Wirt (Broker). Ohne sie kein MQTT - dann nicht starten.
+    list($rc, , $err) = ax_docker(array('network', 'connect', 'bridge', $id), 30);
+    if ($rc !== 0) {
+        $t = ax_letzte_zeile($err);
+        ax_hue_docker_weg($id);
+        return array(false, 'CONTAINER_ANLEGEN|' . $rc, 'bridge: ' . $t, 'CONTAINER');
+    }
+    $t0 = time() - 1;
+    list($rc, , $err) = ax_docker(array('start', $id), 60);
+    if ($rc !== 0) { return array(false, 'CONTAINER_START|' . $rc, ax_letzte_zeile($err), 'CONTAINER'); }
+    ax_hue_docker_merk_schreiben(array('angelegt' => 1, 'id' => substr($id, 0, 12), 'def' => $def['hash']) + $merk);
+
+    // Nachsehen: laeuft er, und hat die Nachbildung ihre Sockel offen (Messstand
+    // mit neuem Start und ohne Grund)? Hoechstens 15 s.
+    $schritt('nachsehen');
+    $k2 = null;
+    for ($i = 0; $i < 30; $i++) {
+        usleep(500000);
+        $z = ax_hue_lesen('docker');
+        list(, , $k2) = ax_hue_docker_container();
+        if ($z['start'] >= $t0 && $z['pid'] > 0) {
+            if ($z['fehler'] !== '') { return array(false, $z['fehler'], $k2 ? $k2['fehler'] : '', 'NACHSEHEN'); }
+            if ($k2 && $k2['laeuft']) {
+                ax_hue_docker_abbilder_raeumen($def['bild']);   // B4 (alexa6): nur eigene, nie das aktuelle
+                return array(true, '', '', 'ANGELEGT');
+            }
+        }
+    }
+    return array(false, 'CONTAINER_START|0', $k2 ? trim($k2['status'] . ' ' . $k2['fehler']) : '', 'NACHSEHEN');
+}
+
+/**
+ * Container und Netz dieses Plugins entfernen - nachgesehen (Vorgang,
+ * Deinstallation, preupgrade). Das Abbild bleibt (es kostet nur Platz und
+ * spart beim naechsten Mal das Bauen); der Befehl dazu steht in der Meldung.
+ * Rueckgabe array(ok, grund, text, ergebnis) - ergebnis ENTFERNT|<c>|<n>,
+ * NICHTS oder KEIN_DOCKER.
+ */
+function ax_hue_docker_entfernen($schritt)
+{
+    $schritt('docker');
+    $m = ax_hue_docker_merk();
+    $nm = ax_hue_docker_namen();
+    list($lage, $g) = ax_docker_lage();
+    if ($lage === 'fehlt' && empty($m['angelegt'])) { return array(true, '', '', 'KEIN_DOCKER'); }
+    if ($lage !== 'ok') { return array(false, $g, '', 'DOCKER'); }
+    $schritt('container');
+    $weg_c = 0;
+    list($rc, $out, $err) = ax_docker(array('ps', '-a', '-q', '--no-trunc', '--filter', 'label=de.loxberry.plugin.name=' . $nm['label']), 20);
+    if ($rc !== 0) { return array(false, 'DOCKER_FEHLER|' . $rc, ax_letzte_zeile($err), 'CONTAINER'); }
+    foreach (preg_split('/\s+/', trim($out)) as $id) {
+        if (!preg_match('/^[0-9a-f]{12,64}\z/', $id)) { continue; }
+        list($rc, $o2, ) = ax_docker(array('inspect', '--type', 'container', $id), 15);
+        $info = $rc === 0 ? ax_docker_json($o2) : null;
+        if ($info === null || !ax_hue_docker_eigen($info)) { continue; }
+        list($ok, $g, $t) = ax_hue_docker_weg($id);
+        if (!$ok) { return array(false, $g, $t, 'CONTAINER'); }
+        $weg_c++;
+    }
+    $schritt('netz');
+    $weg_n = 0;
+    list($rc, $out, $err) = ax_docker(array('network', 'inspect', $nm['netz']), 15);
+    $netz = $rc === 0 ? ax_docker_json($out) : null;
+    if ($rc !== 0 && stripos($err, 'not found') === false && stripos($err, 'no such') === false) {
+        return array(false, 'DOCKER_FEHLER|' . $rc, ax_letzte_zeile($err), 'NETZ');
+    }
+    if ($netz !== null && ax_hue_docker_eigen($netz)) {
+        list($rc, , $err) = ax_docker(array('network', 'rm', $nm['netz']), 30);
+        list($rc2, , ) = ax_docker(array('network', 'inspect', $nm['netz']), 15);
+        if ($rc2 === 0) { return array(false, 'NETZ_ENTFERNEN|' . $rc, ax_letzte_zeile($err), 'NETZ'); }
+        $weg_n = 1;
+    }
+    ax_hue_docker_merk_schreiben(array('angelegt' => 0, 'id' => '', 'def' => '', 'ip' => '', 'wirt' => $m['wirt'],
+                                       'bild' => $m['bild'] !== '' ? $m['bild'] : $nm['bild']));
+    return array(true, '', '', ($weg_c + $weg_n) > 0 ? 'ENTFERNT|' . $weg_c . '|' . $weg_n : 'NICHTS');
+}
+
+/* ---------------- Der Hintergrundvorgang (bin/hue_vorgang.php) ---------------- */
+
+function ax_hue_vorgang_programm()
+{
+    $p = ax_paths();
+    return $p['bindir'] . '/hue_vorgang.php';
+}
+
+function ax_hue_vorgang_schreiben(array $d)
+{
+    $p = ax_paths();
+    return ax_write_json($p['datadir'] . '/hue_vorgang.json', $d, 0644);
+}
+
+/** Laeuft unter dieser Nummer der eigene Vorgang? Argumentweise: argv[1] ist genau unser Skript. */
+function ax_hue_vorgang_prozess($pid)
+{
+    $pid = (int) $pid;
+    if ($pid <= 0 || DIRECTORY_SEPARATOR === '\\') { return false; }
+    $c = @file_get_contents('/proc/' . $pid . '/cmdline');
+    if ($c === false || $c === '') { return false; }
+    $a = explode("\0", $c);
+    $soll = ax_hue_vorgang_programm();
+    return isset($a[1]) && ($a[1] === $soll || (@realpath($a[1]) !== false && @realpath($a[1]) === @realpath($soll)));
+}
+
+/** Der Stand des Vorgangs, jeder Wert geprueft. Zustand "abgebrochen", wenn der Prozess nicht mehr lebt. */
+function ax_hue_vorgang()
+{
+    $p = ax_paths();
+    $d = ax_json_lesen($p['datadir'] . '/hue_vorgang.json');
+    $d = is_array($d) ? $d : array();
+    $wahl = function ($k, array $liste) use ($d) { return (isset($d[$k]) && in_array($d[$k], $liste, true)) ? $d[$k] : ''; };
+    $zahl = function ($k) use ($d) { return (isset($d[$k]) && is_int($d[$k]) && $d[$k] >= 0) ? $d[$k] : 0; };
+    $v = array(
+        'vorgang' => $wahl('vorgang', array('anlegen', 'entfernen')),
+        'zustand' => $wahl('zustand', array('gestartet', 'laeuft', 'fertig', 'fehler')),
+        'pid' => $zahl('pid'), 'start' => $zahl('start'), 'ende' => $zahl('ende'),
+        'schritt' => $wahl('schritt', array('beginn', 'docker', 'ip', 'abbild', 'netz', 'container', 'nachsehen')),
+        'grund' => (isset($d['grund']) && is_string($d['grund']) && preg_match('#^[A-Z_]{1,30}(\|[A-Za-z0-9_.:/\-]{1,64}){0,3}\z#', $d['grund'])) ? $d['grund'] : '',
+        'text' => (isset($d['text']) && is_string($d['text'])) ? ax_kurztext($d['text'], 200) : '',
+        'ergebnis' => (isset($d['ergebnis']) && is_string($d['ergebnis']) && preg_match('/^[A-Z_]{1,30}(\|[0-9]{1,3}){0,2}\z/', $d['ergebnis'])) ? $d['ergebnis'] : '',
+    );
+    if ($v['zustand'] === 'laeuft' && !ax_hue_vorgang_prozess($v['pid'])) { $v['zustand'] = 'abgebrochen'; }
+    if ($v['zustand'] === 'gestartet' && (time() - $v['start'] > 60 || $v['start'] > time() + 60)) { $v['zustand'] = 'abgebrochen'; }
+    return $v;
+}
+
+/**
+ * Den Vorgang im Hintergrund starten (Bauart mg_gw_vorgang_starten). Ein
+ * laufender Vorgang verhindert jeden zweiten. Rueckgabe array(ok, grund).
+ */
+function ax_hue_vorgang_starten($auftrag)
+{
+    if (!in_array($auftrag, array('anlegen', 'entfernen'), true)) { return array(false, 'VORGANG'); }
+    if (DIRECTORY_SEPARATOR === '\\' || !function_exists('proc_open')) { return array(false, 'NICHT_MOEGLICH'); }
+    $v = ax_hue_vorgang();
+    if (in_array($v['zustand'], array('gestartet', 'laeuft'), true)) { return array(false, 'VORGANG_LAEUFT|' . $v['vorgang']); }
+    $prog = ax_hue_vorgang_programm();
+    if (!is_file($prog)) { return array(false, 'VORGANG'); }
+    if (!ax_hue_vorgang_schreiben(array('vorgang' => $auftrag, 'zustand' => 'gestartet', 'pid' => 0, 'start' => time(), 'ende' => 0,
+                                        'schritt' => '', 'grund' => '', 'text' => '', 'ergebnis' => ''))) {
+        return array(false, 'SCHREIBEN');
+    }
+    $desk = array(0 => array('file', '/dev/null', 'r'), 1 => array('file', '/dev/null', 'w'), 2 => array('file', '/dev/null', 'w'));
+    $pipes = array();
+    // setsid loest den Vorgang von Apache; "&" laesst die Schale sofort enden.
+    $proc = @proc_open(array('sh', '-c', 'setsid "$0" "$@" </dev/null >/dev/null 2>&1 &', 'php', $prog, $auftrag), $desk, $pipes);
+    if (!is_resource($proc)) { return array(false, 'VORGANG'); }
+    proc_close($proc);
+    return array(true, '');
+}
+
+/** Der Satz zu einem beendeten Vorgang (fuer Meldung und Reiter Test). */
+function ax_hue_vorgang_satz(array $v)
+{
+    $nm = ax_hue_docker_namen();
+    $m = ax_hue_docker_merk();
+    $cfg = ax_config();
+    if ($v['zustand'] === 'fertig') {
+        $e = explode('|', $v['ergebnis']);
+        if ($e[0] === 'ANGELEGT') { return sprintf(ax_t('MELDUNG.HUE_D_GESTARTET'), $cfg['hue_ip'], $nm['container']); }
+        if ($e[0] === 'UNVERAENDERT') { return sprintf(ax_t('MELDUNG.HUE_D_UNVERAENDERT'), $cfg['hue_ip'], $nm['container']); }
+        if ($e[0] === 'ENTFERNT') { return sprintf(ax_t('MELDUNG.HUE_D_ENTFERNT'), $nm['container'], $nm['netz'], $m['bild'] !== '' ? $m['bild'] : $nm['bild']); }
+        if ($e[0] === 'NICHTS' || $e[0] === 'KEIN_DOCKER') { return ax_t('MELDUNG.HUE_D_NICHTS'); }
+        return '';
+    }
+    if ($v['zustand'] === 'abgebrochen') { return sprintf(ax_t('MELDUNG.HUE_D_FEHL'), ax_t('MELDUNG.HUE_D_ABGEBROCHEN')); }
+    return sprintf(ax_t('MELDUNG.HUE_D_FEHL'), ax_grund_text($v['grund']) . ($v['text'] !== '' ? ' (' . $v['text'] . ')' : ''));
+}
+
+/**
+ * Den Vorgang starten und kurz warten: ohne Bauen ist er in Sekunden fertig -
+ * dann wird gesagt, was nachgesehen wurde. Baut er das Abbild, sagt die
+ * Meldung, dass er im Hintergrund weiterlaeuft.
+ */
+function ax_hue_vorgang_melden($auftrag)
+{
+    list($ok, $g) = ax_hue_vorgang_starten($auftrag);
+    if (!$ok) { return sprintf(ax_t('MELDUNG.HUE_D_FEHL'), ax_grund_text($g)); }
+    $ende = microtime(true) + AX_HUE_D_WARTE_S;
+    $bauen_seit = 0.0;
+    while (microtime(true) < $ende) {
+        usleep(250000);
+        $v = ax_hue_vorgang();
+        if (in_array($v['zustand'], array('fertig', 'fehler', 'abgebrochen'), true)) { return ax_hue_vorgang_satz($v); }
+        if ($v['schritt'] === 'abbild') {
+            if ($bauen_seit === 0.0) { $bauen_seit = microtime(true); }
+            if (microtime(true) - $bauen_seit > 3) { break; }
+        }
+    }
+    return sprintf(ax_t('MELDUNG.HUE_D_LAEUFT'), $auftrag === 'anlegen' ? ax_t('MELDUNG.HUE_D_V_ANLEGEN') : ax_t('MELDUNG.HUE_D_V_ENTFERNEN'));
+}
+
+/**
+ * Nach Speichern und Zurueckspielen: den Container nachziehen. Docker wird
+ * nur gefragt, wenn die Art "docker" eingeschaltet ist oder war oder ein
+ * Container angelegt ist - ab Werk und bei Art "loxberry" nie. Rueckgabe:
+ * Satz fuer die Meldung ('' = nichts zu tun).
+ */
+function ax_hue_docker_nachziehen(array $neu, array $alt)
+{
+    if (DIRECTORY_SEPARATOR === '\\') { return ''; }
+    $soll = ax_hue_soll_docker($neu);
+    $m = ax_hue_docker_merk();
+    if (!$soll && !ax_hue_soll_docker($alt) && empty($m['angelegt'])) { return ''; }
+    if ($soll) {
+        list($ok, $g, $def) = ax_hue_docker_soll($neu);
+        if (!$ok) { return sprintf(ax_t('MELDUNG.HUE_D_FEHL'), ax_grund_text($g)); }
+        if (!empty($m['angelegt']) && $m['def'] === $def['hash'] && ax_hue_soll_docker($alt)) {
+            // Unveraendert angelegt: nur die Konfiguration des Containers frisch (MQTT); ob er laeuft, sieht der Takt nach.
+            ax_hue_docker_datei($neu, $def, $m['wirt']);
+            return '';
+        }
+        return ax_hue_vorgang_melden('anlegen');
+    }
+    return ax_hue_vorgang_melden('entfernen');
+}
+
+/** Nach dem MQTT-Speichern: nur die Konfiguration des Containers nachziehen (kein Docker-Aufruf). */
+function ax_hue_docker_datei_nachziehen(array $cfg)
+{
+    $m = ax_hue_docker_merk();
+    if (!ax_hue_soll_docker($cfg) || empty($m['angelegt']) || $m['wirt'] === '') { return false; }
+    list($ok, , $def) = ax_hue_docker_soll($cfg);
+    return $ok ? ax_hue_docker_datei($cfg, $def, $m['wirt']) : false;
+}
+
+/**
+ * Fuer den Takt: was ist zu tun? '' nichts, 'anlegen' oder 'entfernen'.
+ * Docker wird nur gefragt, wenn die Art "docker" eingeschaltet ist; sonst
+ * entscheidet der Merker (ein angelegter Container wird entfernt).
+ */
+function ax_hue_docker_takt_auftrag(array $cfg)
+{
+    $m = ax_hue_docker_merk();
+    if (!ax_hue_soll_docker($cfg)) { return !empty($m['angelegt']) ? 'entfernen' : ''; }
+    list($da, $eigen, $k) = ax_hue_docker_container();
+    if ($da && !$eigen) { return ''; }         // fremder Container gleichen Namens: nie anfassen, der Reiter Test sagt es
+    if ($da === null || !$da || !$k['laeuft']) { return 'anlegen'; }
+    list($ok, , $def) = ax_hue_docker_soll($cfg);
+    if ($ok && $k['def'] !== $def['hash']) { return 'anlegen'; }
+    if ($ok && $m['wirt'] !== '') { ax_hue_docker_datei($cfg, $def, $m['wirt']); }
+    return '';
+}
+
+/** Eine Zeile "letzter Vorgang" fuer den Reiter Test. */
+function ax_hue_vorgang_zeile(array $v)
+{
+    if ($v['vorgang'] === '' || $v['zustand'] === '') { return ax_t('TEST.A_HUE_D_VORGANG_KEINER'); }
+    $art = ax_hue_vorgang_wort($v['vorgang']);
+    if (in_array($v['zustand'], array('gestartet', 'laeuft'), true)) {
+        // B1 (alexa6): "seit 33 s (Schritt: Abbild)", nicht "seit vor 33 s (Schritt abbild)"
+        return sprintf(ax_t('TEST.A_HUE_D_VORGANG_LAEUFT'), $art, ax_spanne_text(max(0, time() - $v['start'])), ax_hue_schritt_wort($v['schritt']));
+    }
+    if ($v['zustand'] === 'abgebrochen') { return sprintf(ax_t('TEST.A_HUE_D_VORGANG_ABGEBROCHEN'), $art); }
+    $vor = ax_spanne_text(max(0, time() - ($v['ende'] > 0 ? $v['ende'] : $v['start'])));
+    if ($v['zustand'] === 'fertig') { return sprintf(ax_t('TEST.A_HUE_D_VORGANG_FERTIG'), $art, $vor, ax_hue_vorgang_satz($v)); }
+    return sprintf(ax_t('TEST.A_HUE_D_VORGANG_FEHLER'), $art, $vor,
+                   ax_grund_text($v['grund']) . ($v['text'] !== '' ? ' (' . $v['text'] . ')' : ''));
+}
+
+/**
+ * Lage der Hue-Probe auf eigener Netzadresse fuer den Reiter Test. Docker wird
+ * nur gefragt, wenn $fragen (Reiter Test offen). Rueckgabe array(stand, satz,
+ * zeilen, kurz) - stand wie im Reiter Test (1 ja, 0 nein, -1 nicht
+ * feststellbar, 2 Hinweis); zeilen fuer den Abschnitt Hue-Probe.
+ */
+function ax_hue_docker_befund(array $cfg, $fragen)
+{
+    $nm = ax_hue_docker_namen();
+    $v = ax_hue_vorgang();
+    $zeilen = array(
+        array(ax_t('TEST.F_HUE_D_ADRESSE'), sprintf(ax_t('TEST.A_HUE_D_ADRESSE'), $cfg['hue_ip'], $cfg['hue_schnittstelle'], $nm['container'], $nm['netz'])),
+        array(ax_t('TEST.F_HUE_D_VORGANG'), ax_hue_vorgang_zeile($v)),
+    );
+    if (DIRECTORY_SEPARATOR === '\\') { return array(-1, ax_t('TEST.A_HUE_NICHT'), $zeilen, null); }
+    if (in_array($v['zustand'], array('gestartet', 'laeuft'), true)) { return array(2, ax_hue_vorgang_zeile($v), $zeilen, null); }
+    if (!$fragen) { return array(-1, ax_t('TEST.A_HUE_D_NUR_REITER'), $zeilen, null); }
+    list($lage, $g, $fassung) = ax_docker_lage();
+    if ($lage !== 'ok') {
+        $zeilen[] = array(ax_t('TEST.F_HUE_D_DOCKER'), ax_grund_text($g));
+        return array(0, sprintf(ax_t('TEST.A_HUE_STEHT'), ax_grund_text($g)), $zeilen, null);
+    }
+    $zeilen[] = array(ax_t('TEST.F_HUE_D_DOCKER'), sprintf(ax_t('TEST.A_HUE_D_DOCKER'), $fassung));
+    list($rc, , ) = ax_docker(array('image', 'inspect', $nm['bild']), 15);
+    $zeilen[] = array(ax_t('TEST.F_HUE_D_ABBILD'), $rc === 0 ? sprintf(ax_t('TEST.A_HUE_D_ABBILD_DA'), $nm['bild'])
+                                                           : sprintf(ax_t('TEST.A_HUE_D_ABBILD_FEHLT'), $nm['bild']));
+    list($rc, $out, ) = ax_docker(array('network', 'inspect', $nm['netz']), 15);
+    $netz = $rc === 0 ? ax_docker_json($out) : null;
+    if ($netz === null) {
+        $zeilen[] = array(ax_t('TEST.F_HUE_D_NETZ'), sprintf(ax_t('TEST.A_HUE_D_NETZ_FEHLT'), $nm['netz']));
+    } elseif (!ax_hue_docker_eigen($netz)) {
+        $zeilen[] = array(ax_t('TEST.F_HUE_D_NETZ'), ax_grund_text('NETZ_FREMD|' . $nm['netz']));
+    } else {
+        $c0 = (isset($netz['IPAM']['Config'][0]) && is_array($netz['IPAM']['Config'][0])) ? $netz['IPAM']['Config'][0] : array();
+        $zeilen[] = array(ax_t('TEST.F_HUE_D_NETZ'), sprintf(ax_t('TEST.A_HUE_D_NETZ'), $nm['netz'],
+            isset($netz['Options']['parent']) && is_string($netz['Options']['parent']) ? ax_kurztext($netz['Options']['parent'], 15) : '–',
+            isset($c0['Subnet']) && is_string($c0['Subnet']) ? ax_kurztext($c0['Subnet'], 20) : '–',
+            isset($c0['Gateway']) && is_string($c0['Gateway']) ? ax_kurztext($c0['Gateway'], 15) : '–'));
+    }
+    list($da, $eigen, $k) = ax_hue_docker_container();
+    $hz = ax_hue_lesen('docker');
+    if ($da === null) { return array(0, sprintf(ax_t('TEST.A_HUE_STEHT'), ax_grund_text('DOCKER_FEHLER|0')), $zeilen, null); }
+    if (!$da) {
+        $zeilen[] = array(ax_t('TEST.F_HUE_D_CONTAINER'), sprintf(ax_t('TEST.A_HUE_D_CONTAINER_FEHLT'), $nm['container']));
+        $warum = ($v['zustand'] === 'fehler' && $v['grund'] !== '') ? ax_grund_text($v['grund']) : ax_t('TEST.A_HUE_D_OHNE_CONTAINER');
+        return array(0, sprintf(ax_t('TEST.A_HUE_STEHT'), $warum), $zeilen, null);
+    }
+    if (!$eigen) {
+        $zeilen[] = array(ax_t('TEST.F_HUE_D_CONTAINER'), ax_grund_text('CONTAINER_FREMD|' . $nm['container']));
+        return array(0, sprintf(ax_t('TEST.A_HUE_STEHT'), ax_grund_text('CONTAINER_FREMD|' . $nm['container'])), $zeilen, null);
+    }
+    $zeilen[] = array(ax_t('TEST.F_HUE_D_CONTAINER'), sprintf(ax_t('TEST.A_HUE_D_CONTAINER'), $k['id'], $k['status'], $k['neustarts'],
+        $k['ip'] !== '' ? $k['ip'] : '–', $k['mac'] !== '' ? $k['mac'] : '–', $k['ip_bruecke'] !== '' ? $k['ip_bruecke'] : '–'));
+    if (!$k['laeuft']) {
+        $warum = $hz['fehler'] !== '' ? ax_grund_text($hz['fehler']) : ($k['fehler'] !== '' ? $k['fehler'] : $k['status']);
+        return array(0, sprintf(ax_t('TEST.A_HUE_STEHT'), $warum), $zeilen, $k);
+    }
+    list($ok, , $def) = ax_hue_docker_soll($cfg);
+    if ($ok && $k['def'] !== $def['hash']) { return array(2, ax_t('TEST.A_HUE_D_ALT'), $zeilen, $k); }
+    return array(1, sprintf(ax_t('TEST.A_HUE_D_LAEUFT'), $k['ip'] !== '' ? $k['ip'] : $cfg['hue_ip'], $nm['container'],
+                            ax_spanne_text($k['seit'])), $zeilen, $k);
+}
+
+/**
+ * Selbstprobe aus dem Reiter Test fuer den Container: description.xml und
+ * Lampenliste ueber die Brueckenadresse des Containers (die eigene Adresse im
+ * Heimnetz ist vom LoxBerry aus nicht erreichbar - macvlan). Rueckgabe
+ * array(stand, text) wie ax_hue_selbstprobe().
+ */
+function ax_hue_selbstprobe_docker($k)
+{
+    if (!function_exists('curl_init')) { return array(-1, ax_t('TEST.A_HUE_PROBE_NICHT')); }
+    if (!is_array($k) || $k['ip_bruecke'] === '') { return array(-1, ax_t('TEST.A_HUE_D_PROBE_OHNE')); }
+    $erg = array();
+    foreach (array('/description.xml', '/api/selbstprobe/lights') as $pfad) {
+        $ch = curl_init('http://' . $k['ip_bruecke'] . ':80' . $pfad);
+        curl_setopt_array($ch, array(CURLOPT_RETURNTRANSFER => true, CURLOPT_CONNECTTIMEOUT => 3, CURLOPT_TIMEOUT => 3,
+                                     CURLOPT_FOLLOWLOCATION => false, CURLOPT_PROXY => '', CURLOPT_USERAGENT => 'AlexaNG-Selbstprobe/1'));
+        $r = curl_exec($ch);
+        $erg[] = array((int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE), (string) $r);
+        if (PHP_VERSION_ID < 80000) { curl_close($ch); }
+    }
+    $j = json_decode($erg[1][1], true);
+    $soll = ax_hue_erwartete_lampen(ax_config());
+    $gut = $erg[0][0] === 200 && strpos($erg[0][1], '<modelName>Philips hue bridge 2012</modelName>') !== false
+        && $erg[1][0] === 200 && ax_hue_lichter_passen($j, $soll);
+    if ($gut && $soll === array('1' => 'Loxone Probe')) { return array(1, sprintf(ax_t('TEST.A_HUE_D_PROBE_OK'), $k['ip_bruecke'])); }
+    if ($gut) { return array(1, sprintf(ax_t('TEST.A_HUE_D_PROBE_OK_N'), $k['ip_bruecke'], count($soll))); }
+    return array(0, sprintf(ax_t('TEST.A_HUE_D_PROBE_FEHL'), $k['ip_bruecke'], $erg[0][0] . '/' . $erg[1][0]));
 }
 
 /* ==================================================================
@@ -3688,7 +5054,7 @@ function ax_xml_virtual_out(array $kopf, array $cmds)
         $digital = isset($c['analog']) && $c['analog'] === false;
         $o .= "\t" . '<VirtualOutCmd Title="' . ax_x($c['title']) . '" Comment="' . ax_x($c['comment'])
             . '" CmdOnMethod="GET" CmdOffMethod="GET" CmdOn="' . ax_x($c['on'])
-            . '" CmdOnHTTP="" CmdOnPost="" CmdOff="" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="' . ($digital ? 'false' : 'true') . '"'
+            . '" CmdOnHTTP="" CmdOnPost="" CmdOff="' . (isset($c['off']) ? ax_x($c['off']) : '') . '" CmdOffHTTP="" CmdOffPost="" CmdAnswer="" Analog="' . ($digital ? 'false' : 'true') . '"'
             . ' Repeat="0" RepeatRate="0"' . ($digital ? '' : ' SourceValLow="0" DestValLow="0" SourceValHigh="10" DestValHigh="10"')
             . ' HintText=""/>' . $crlf;
     }
@@ -3857,6 +5223,25 @@ function ax_sicherung_lesen($roh)
     // Sicherung oder, fehlt sie dort, aus dem jetzigen Stand).
     $fg = ax_radio_gruppen_fehlen($neu['radio_zonen'], $neu['gruppen']);
     if ($fg) { $mangel[] = sprintf(ax_t('SICH.RADIO_GRUPPE'), implode(', ', $fg)); }
+    // Nr. 41: eigene Netzadresse - dieselbe Pruefung wie beim Speichern, wenn die
+    // Sicherung einen der drei Werte traegt (ohne Belegt-Probe: die macht der
+    // Vorgang vor dem Anlegen). Eine Sicherung von 0.9.4 traegt keinen.
+    if (ax_hue_art($neu) === 'docker' && (isset($gesehen['hue_art']) || isset($gesehen['hue_ip']) || isset($gesehen['hue_schnittstelle']))) {
+        $hg = ax_hue_ip_pruefen($neu['hue_ip'], $neu['hue_schnittstelle'], false);
+        if ($hg !== '') { $mangel[] = sprintf(ax_t('SICH.WERT'), ax_hue_ip_feld($hg), ax_grund_text($hg)); }
+    }
+    // Fassung 2 (alexa6): die freigegebenen Echos im Netz der Schnittstelle (wie beim Speichern) und
+    // die naechste Lampen-ID ueber jeder vergebenen (sonst erbte eine neue Lampe die Kennung einer alten).
+    if (isset($gesehen['hue_echos']) && $neu['hue_echos']) {
+        $eg = ax_hue_echos_pruefen($neu['hue_echos'], $neu['hue_schnittstelle']);
+        if ($eg !== '') { $mangel[] = sprintf(ax_t('SICH.WERT'), 'hue_echos', ax_grund_text($eg)); }
+    }
+    foreach ($neu['hue_lampen'] as $hl) {
+        if ($hl['id'] >= $neu['hue_lampe_naechste']) {
+            $mangel[] = sprintf(ax_t('SICH.WERT'), 'hue_lampe_naechste', ax_grund_text('LAMPE_NAECHSTE|' . $hl['id']));
+            break;
+        }
+    }
     if ($mangel) { return array(null, $mangel, $anzahl, null); }
     $fehlend = array_values(array_diff(array_keys($vorgaben), array_keys($gesehen)));
     if ($fehlend) { $hinweise[] = sprintf(ax_t('SICH.FEHLEND'), count($fehlend), implode(', ', $fehlend)); }
@@ -3968,6 +5353,8 @@ function ax_pruef_themen()
     foreach (array_merge($m2[1], $m3[1]) as $s) { $gesendet[] = 'geraet/<name>/' . $s; }
     preg_match_all("/'radio\/' \. \\\$zn \. '\/([a-z]+)'/", $q, $m4);
     foreach ($m4[1] as $s) { $gesendet[] = 'radio/<zone>/' . $s; }
+    preg_match_all("/'hue\/' \. \\\$kuerzel \. '\/([a-z]+)'/", $q, $m5);
+    foreach ($m5[1] as $s) { $gesendet[] = 'hue/<kuerzel>/' . $s; }
     $gesendet = array_values(array_unique($gesendet));
     $tabelle = array_keys(ax_mqtt_themen());
     if (!$gesendet) { return array(0, ax_t('TEST.A_THEMEN_LEER')); }
@@ -3985,7 +5372,8 @@ function ax_pruef_vorlagen(array $cfg)
     if (!function_exists('simplexml_load_string')) { return array(-1, ax_t('TEST.A_XML_NICHT')); }
     $fehl = array();
     $alt = libxml_use_internal_errors(true);
-    foreach (array(ax_vorlage_ein('loxberry'), ax_vorlage_aus('loxberry', $cfg), ax_vorlage_radio('loxberry', $cfg)) as $v) {
+    foreach (array(ax_vorlage_ein('loxberry'), ax_vorlage_aus('loxberry', $cfg), ax_vorlage_radio('loxberry', $cfg),
+                   ax_vorlage_hue_ein('loxberry', $cfg), ax_vorlage_hue_aus('loxberry', $cfg)) as $v) {
         if (@simplexml_load_string($v[1]) === false) { $fehl[] = $v[0]; }
     }
     libxml_clear_errors();

@@ -21,7 +21,7 @@ ini_set('display_errors', '0');
 $ax_schalter = array();
 foreach ($argv as $ax_i => $ax_a) {
     if ($ax_i === 0) { continue; }
-    if (!in_array($ax_a, array('--abmelden', '--mqtt-raeumen'), true)) {
+    if (!in_array($ax_a, array('--abmelden', '--mqtt-raeumen', '--hue-entfernen'), true)) {
         fwrite(STDERR, 'Unbekannter Schalter: ' . $ax_a . "\n");
         exit(2);
     }
@@ -63,6 +63,21 @@ if (in_array('--mqtt-raeumen', $ax_schalter, true)) {
     list($ax_n, $ax_ger, $ax_uebrig) = ax_mqtt_raeumen($ax_cfg['mqtt_praefix']);
     echo 'PRAEFIX=' . $ax_cfg['mqtt_praefix'] . ';GEFUNDEN=' . $ax_n . ';GERAEUMT=' . $ax_ger . ';UEBRIG=' . $ax_uebrig . "\n";
     exit(($ax_n >= 0 && $ax_uebrig === 0) ? 0 : 1);
+}
+
+/* Nr. 41: Container und Netz der Hue-Probe entfernen (Deinstallation, preupgrade).
+ * Ausgabe HUE_ENTFERNT;CONTAINER=n;NETZ=n;BILD=<abbild> | HUE_NICHTS |
+ * HUE_KEIN_DOCKER | HUE_FEHL;GRUND=<grund> (rc 1). */
+if (in_array('--hue-entfernen', $ax_schalter, true)) {
+    list($ax_ok, $ax_g, $ax_txt, $ax_erg) = ax_hue_docker_entfernen(function ($s) { });
+    $ax_e = explode('|', $ax_erg);
+    if (!$ax_ok) { echo 'HUE_FEHL;GRUND=' . $ax_g . "\n"; exit(1); }
+    if ($ax_e[0] === 'KEIN_DOCKER') { echo "HUE_KEIN_DOCKER\n"; exit(0); }
+    if ($ax_e[0] === 'NICHTS') { echo "HUE_NICHTS\n"; exit(0); }
+    $ax_nm = ax_hue_docker_namen();
+    ax_log('INFO', 'Hue-Probe (eigene Netzadresse): Container und Netz entfernt (' . $ax_erg . ').');
+    echo 'HUE_ENTFERNT;CONTAINER=' . (int) $ax_e[1] . ';NETZ=' . (int) $ax_e[2] . ';BILD=' . $ax_nm['bild'] . "\n";
+    exit(0);
 }
 
 /* ---------------- Ein Takt ---------------- */
@@ -135,7 +150,7 @@ if ($ax_status !== null) {
  * nicht, ein Startversuch hoechstens alle 10 Minuten. */
 $ax_hs = ax_hue_dienst_status();
 if ($ax_hs !== null) {
-    $ax_hsoll = ax_hue_soll($ax_cfg);
+    $ax_hsoll = ax_hue_soll_lb($ax_cfg);   // Nr. 41: nur bei Art loxberry
     if ($ax_hsoll && !$ax_hs && time() - (int) $ax_t['hue_versuch'] >= 600 && !is_file($ax_p['marke'])) {
         $ax_t['hue_versuch'] = time();
         list($ax_d_ok, $ax_d_text) = ax_hue_dienst('start');
@@ -143,6 +158,25 @@ if ($ax_hs !== null) {
     } elseif (!$ax_hsoll && $ax_hs) {
         ax_hue_dienst('stop');
         ax_log('INFO', 'Takt: Hue-Probe angehalten (ausgeschaltet).');
+    }
+}
+
+/* ---------------- Waechter der Hue-Probe auf eigener Netzadresse (Nr. 41) ----------------
+ * Docker wird nur gefragt, wenn die Art "docker" eingeschaltet ist oder ein
+ * Container angelegt wurde (Merker) - ab Werk nie. Laeuft er nicht, passt er
+ * nicht mehr zur Einstellung oder ist er ausgeschaltet: hoechstens alle 10
+ * Minuten ein Vorgang (anlegen bzw. entfernen), nie waehrend eines Updates. */
+$ax_hm = ax_hue_docker_merk();
+if (DIRECTORY_SEPARATOR !== '\\' && (ax_hue_soll_docker($ax_cfg) || !empty($ax_hm['angelegt'])) && !is_file($ax_p['marke'])) {
+    $ax_hv = ax_hue_vorgang();
+    if (!in_array($ax_hv['zustand'], array('gestartet', 'laeuft'), true) && time() - (int) $ax_t['hue_d_versuch'] >= 600) {
+        $ax_hauftrag = ax_hue_docker_takt_auftrag($ax_cfg);
+        if ($ax_hauftrag !== '') {
+            $ax_t['hue_d_versuch'] = time();
+            list($ax_d_ok, $ax_d_g) = ax_hue_vorgang_starten($ax_hauftrag);
+            ax_log_wenn_neu('hue_d_takt_' . $ax_hauftrag, $ax_d_ok ? 'INFO' : 'WARN', 'Takt: Hue-Probe (eigene Netzadresse) - Vorgang ' . $ax_hauftrag
+                . ($ax_d_ok ? ' gestartet.' : ' liess sich nicht starten: ' . $ax_d_g), 3600);
+        }
     }
 }
 

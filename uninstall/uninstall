@@ -8,7 +8,8 @@
 # Fail closed: sieht die Lage nicht wie ein LoxBerry aus, wird nichts
 # geloescht. Jeder Schritt mit timeout; gemeldet wird, was nachgesehen wurde.
 #   1. Befehlsabo und Hue-Probe anhalten (dienst.sh bzw. hue_dienst.sh status,
-#      dann stop; PID-Datei ist kein Beleg)
+#      dann stop; PID-Datei ist kein Beleg); Container und Netz der Hue-Probe
+#      auf eigener Netzadresse entfernen (ax_takt.php --hue-entfernen, Nr. 41)
 #   2. Bei Amazon abmelden (/auth/deregister, 15 s) [ungemessen]; scheitert
 #      es: WARNING, das Geraet im Amazon-Konto von Hand entfernen
 #   3. Eigene retained Themen unter dem eingestellten Praefix abraeumen
@@ -71,6 +72,24 @@ if [ -f "$BIN/hue_dienst.sh" ]; then
     else
         echo "<INFO> Die Hue-Probe lief nicht."
     fi
+fi
+
+# 1b. Hue-Probe auf eigener Netzadresse (Nr. 41): Container und Netz entfernen,
+#     nachgesehen; das Abbild bleibt (Befehl zum Entfernen in der Meldung).
+if [ -n "$PHP" ] && [ -f "$BIN/ax_takt.php" ]; then
+    AX_AUS=$(LBHOMEDIR="$BASE" LBPPLUGINDIR="$PFOLDER" timeout 150 "$PHP" "$BIN/ax_takt.php" --hue-entfernen 2>/dev/null)
+    AX_RC=$?
+    case "$AX_AUS" in
+        HUE_KEIN_DOCKER*) echo "<INFO> Hue-Probe auf eigener Netzadresse: Docker ist nicht installiert - kein Container von diesem Plugin." ;;
+        HUE_NICHTS*) echo "<INFO> Hue-Probe auf eigener Netzadresse: kein Container und kein Netz dieses Plugins (nachgesehen)." ;;
+        HUE_ENTFERNT*)
+            echo "<OK> Hue-Probe auf eigener Netzadresse: Container und Netz entfernt und nachgesehen (${AX_AUS})."
+            echo "<INFO> Das Abbild bleibt (es kann geteilt sein). Von Hand: docker image rm ${AX_AUS##*BILD=}" ;;
+        *)
+            [ "$AX_RC" = 124 ] && AX_AUS="keine Antwort nach 150 s"
+            echo "<WARNING> Hue-Probe auf eigener Netzadresse: Container oder Netz nicht entfernt (${AX_AUS:-rc $AX_RC})."
+            echo "<WARNING> Von Hand: docker rm -f lb-$PFOLDER-hue; docker network rm lb-$PFOLDER-macvlan" ;;
+    esac
 fi
 
 # 2. Amazon-Abmeldung

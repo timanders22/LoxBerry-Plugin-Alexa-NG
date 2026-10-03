@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 0.9.4
+Version 1.0.0
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -8,12 +8,130 @@ setzen, freigegebene Routinen starten. Dazu eine Statuszeile und eine
 Geräteliste für Loxone und ein MQTT-Anschluss.
 
 Kompatibel mit LoxBerry 3.x und **LoxBerry 4** (reines PHP, PHP 7.4 und 8.x,
-mit der curl-Erweiterung). Kein Node, kein Python, kein Docker.
+mit der curl-Erweiterung). Kein Node, kein Python; Docker nur für die
+Hue-Probe auf eigener Netzadresse (ab Werk aus).
 
-> **Am Gerät teilweise erprobt (01.10.2026).** Die Anmeldung im eigenen Browser
-> (Weg b) hat am echten Amazon-Konto funktioniert: Token, Cookies und
-> Geräteliste kamen, und eine Testansage an einen Echo kam an. Die übrigen
-> Punkte unter „Noch am Gerät zu messen“ stehen noch aus.
+> **Erste normale Fassung (1.0.0).** Am Echo gemessen sind Anmeldung, Ansage,
+> Routinen, Musik-Probe, Radio je Zone an einem Echo und die Hue-Nachbildung
+> mit den Lampen für Alexa – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
+> Was noch aussteht, steht unter „Noch am Gerät zu messen“.
+
+## Fassung 1.0.0
+
+Erste normale Fassung – keine Vorabfassung mehr. Am Verhalten ändert sich gegenüber 0.9.7 nichts; neu sind nur
+Texte: der Hinweis zum Wechsel der Lampenart (Einstellungen, Hilfe, README), die Messstände in Einstellungen und
+Hilfe und dieser Abschnitt. Zusammengefasst aus 0.9.5 bis 0.9.7:
+
+* **Hue-Nachbildung auf eigener Netzadresse** (0.9.5, Entscheidung Nr. 41): Mit der Art „eigene Netzadresse
+  (Docker)“ legt das Plugin einen Container mit eigener IP im Heimnetz an, der auf Port 80 und 1900 lauscht – für
+  Echos, die eine Bridge nur dort abfragen. Apache, Webport und Loxone-Adressen des LoxBerry bleiben unberührt.
+  Ab Werk aus.
+* **Fassung 2 „Alexa → Loxone“** (0.9.6, 0.9.7): Lampen für Alexa aus einer Freigabeliste, in drei Arten –
+  **Schalter** (Steckdosen, Pumpen), **Licht (an/aus)** (Lampen ohne Dimmen) und **Dimmer**. Ein Echo schaltet sie
+  lokal, ohne Cloud und ohne Skill; das Plugin sendet flüchtig `alexang/hue/<kürzel>/ein` und beim Dimmer
+  `…/helligkeit` über MQTT. Liste ab Werk leer, Nachbildung ab Werk aus.
+* **Dimmer einschalten** (0.9.7): „Alexa, schalte … ein“ sendet beim Dimmer nur `ein` = `1`; `helligkeit` geht
+  nur hinaus, wenn Alexa eine Helligkeit nennt.
+* **Art einer Lampe ändern:** Wird die Art einer Lampe geändert (Schalter, Licht, Dimmer), die Lampe in der
+  Alexa-App löschen und danach „Geräte suchen“. Alexa merkt sich die Art je Gerät, in der App lässt sie sich nicht
+  ändern (gemessen 03.10.2026 am Echo).
+* Konfigurationen und Sicherungen von 0.9.4 bis 0.9.7 bleiben gültig.
+
+### Am Echo gemessen
+
+* **Anmeldung** am echten Amazon-Konto (01.10.2026).
+* **Ansage** an einen Echo (01.10.2026).
+* **Routinen** aus der Freigabeliste (02.10.2026).
+* **Musik-Probe:** ein Sender nach Nummer spielt am Echo (02.10.2026).
+* **Radio je Zone** an einem Echo: Start, Senderwechsel und Stopp (02./03.10.2026).
+* **Hue-Nachbildung auf eigener IP, Port 80:** der Echo findet sie, fragt sie ab und schaltet (03.10.2026).
+* **Lampenarten** in der Alexa-App (03.10.2026): Schalter = An-/Ausschalter, Licht (an/aus) = Lampe (nach Löschen
+  und neuem „Geräte suchen“), Dimmer = Lampe mit Helligkeit. Dimmer „ein“ sendet nur `ein` = `1`.
+
+**Nicht gemessen:** zwei Sender in zwei Zonen gleichzeitig, die Rückmeldung aus Loxone (`…/status`,
+`…/status_helligkeit`), die NICHT-Flanke (Baustein-Liste Zeile 13) beim Start des Miniservers und der Wechsel des
+Docker-Abbilds bei einem Update.
+
+## Fassung 0.9.7
+
+Zwei Änderungen an den Lampen für Alexa (Entscheidung Nr. 42, Vorabfassung) nach der Gerätemessung vom 03.10.2026.
+Gemessen mit Attrappen für Amazon, Docker, `ip` und den MQTT-Broker unter PHP 7.4, 8.3 (WSL) und 8.5; die
+Nachbildung lief dabei in einem eigenen Netz-Namensraum, nie im Heimnetz.
+
+* **Gemessen am Gerät (03.10.2026, mit 0.9.6):** Ein, aus und dimmen kamen als MQTT an. Die Art „Schalter“ zeigt
+  die Alexa-App als An-/Ausschalter, „Dimmer“ als Licht.
+* **Neue Art „Licht (an/aus)“** für Lampen ohne Dimmen: Die Nachbildung meldet sie als Licht ohne Helligkeit, damit
+  Raumbefehle wie „Alexa, Licht aus“ sie einschließen. Sie sendet wie ein Schalter nur
+  `alexang/hue/<kürzel>/ein`. „Schalter“ bleibt für Steckdosen, Pumpen und Ähnliches. Ob die Alexa-App die neue Art
+  als Licht zeigt, ist am Echo noch nicht gemessen.
+* **Dimmer einschalten ohne Helligkeit:** „Alexa, schalte … ein“ sendet beim Dimmer nur noch `ein` = `1`, keine
+  Helligkeit. `helligkeit` geht nur hinaus, wenn Alexa eine Helligkeit nennt. Vorher schickte das Plugin beim
+  Einschalten die zuletzt bekannte Helligkeit mit, und bei „auf 40 Prozent“ sprang der Loxone-Dimmer kurz auf 100 %,
+  bevor `40` kam. Aus bleibt `ein` = `0` und `helligkeit` = `0`.
+* Bestehende Lampen behalten ihre Art. Konfigurationen und Sicherungen von 0.9.4 bis 0.9.6 bleiben gültig.
+
+## Fassung 0.9.6
+
+Fassung 2 „Alexa → Loxone“ (Vorabfassung, ab Werk aus, Liste ab Werk leer) und vier Korrekturen aus der
+Gerätemessung vom 03.10.2026. Gemessen mit Attrappen für Amazon, Docker, `ip`, `ping` und den MQTT-Broker unter
+PHP 7.4, 8.3 (WSL) und 8.5; die Nachbildung lief dabei in einem eigenen Netz-Namensraum, nie im Heimnetz.
+
+* **Gemessen am Gerät (03.10.2026, mit 0.9.5):** Auf eigener Netzadresse (Port 80) fand ein Echo die Nachbildung,
+  die Alexa-App fand „Loxone Probe“, der Echo fragte die Lampe ab und schaltete sie; `alexang/hue_probe/ein` kam
+  über MQTT an. Damit trägt der Weg, und Fassung 2 ist gebaut.
+* **Lampen für Alexa** (Reiter **Einstellungen**, Abschnitt „Alexa → Loxone“): eine Freigabeliste mit höchstens
+  50 Lampen, je Zeile Name (wie Alexa ihn nennt, höchstens 32 Zeichen, eindeutig), Art **Schalter** oder **Dimmer**
+  und ein Kürzel für das MQTT-Thema. Ein fehlendes oder ungültiges Kürzel wird beanstandet; ein Vorschlag aus dem
+  Namen steht danach im Feld, gespeichert wird erst nach dem nächsten Speichern. Jede Lampe hat eine feste ID, die
+  beim Umbenennen bleibt – Alexa ordnet nach ihr. Namen mit Tür, Tor, Garage, Alarm oder Schloss (auch englisch)
+  brauchen den Haken „bewusst freigeben“.
+* **Befehl an Loxone** über MQTT, flüchtig: `alexang/hue/<kürzel>/ein` = `1`/`0`, beim Dimmer zusätzlich
+  `alexang/hue/<kürzel>/helligkeit` = `1`–`100` (aus der Hue-Helligkeit 1–254, gerundet; `0` nur bei aus).
+* **Zustand zurück:** Loxone darf `alexang/hue/<kürzel>/status` (`0`/`1`) und `…/status_helligkeit` (`0`–`100`)
+  melden; die Nachbildung abonniert beide selbst und zeigt Alexa dann den echten Zustand. Ohne Rückmeldung gilt
+  der zuletzt von Alexa gesetzte Wert.
+* **Nur freigegebene Echos:** ein neues Feld nimmt die IP-Adressen der Echos, die schalten dürfen; leer (ab Werk)
+  heißt alle Geräte im Heimnetz. Anfragen anderer Adressen bekommen eine Fehlerantwort und werden im Reiter Test
+  gezählt.
+* **Schutz:** derselbe Wert binnen 2 s geht nur einmal hinaus; mehr als 10 Schaltbefehle je Lampe und Minute
+  bekommen eine Fehlerantwort und stehen im Protokoll.
+* **Probe-Lampe** „Loxone Probe“: bleibt mit eigenem Haken (ab Werk an, damit ein Update nichts wegnimmt).
+* **Einbindung in Loxone:** Baustein-Liste und zwei Vorlagen – die Eingänge des MQTT-Gateways je Lampe und ein
+  virtueller Ausgang an den UDP-Eingang des Gateways für die Rückmeldung.
+* **Reiter Test:** je Lampe Zustand, letzte Abfrage und Schaltung (Zeit, Echo-Adresse, Wert, MQTT gesendet oder
+  nicht), abgewiesene Echos, Lage der Rückmeldung.
+* Die Lampenliste steht in der Sicherung; Sicherungen von 0.9.4 und 0.9.5 bleiben gültig.
+* **Korrekturen:** Der Reiter Test schreibt „„Anlegen“ läuft seit 33 s (Schritt: Abbild)“ statt „seit vor 33 s
+  (Schritt abbild)“, ebenso alle Sätze dieser Art (auch „noch gültig für etwa …“ bei der Amazon-Anmeldung). Der
+  Container protokolliert in der Zeitzone des Plugins statt in UTC. Der Messstand schreibt die Absender immer in
+  derselben Form. Nach einem neu gebauten Abbild entfernt das Plugin seine alten eigenen Abbilder
+  (`lb-alexang-hue-php:*`, nie ein fremdes, nie eines, das ein Container noch benutzt).
+
+## Fassung 0.9.5
+
+Hue-Probe auf eigener Netzadresse (Vorabfassung, ab Werk aus; nie einzeln veröffentlicht, enthalten in 0.9.6).
+
+* **Warum:** Am 02.10.2026 suchte ein Echo die Hue-Probe von 0.9.4, bekam Antwort und holte `description.xml` auf
+  Port 8380 – die Lampen fragte es aber nie ab. Es braucht die Bridge auf Port 80, und den hält der Webserver des
+  LoxBerry.
+* **Neue Art „eigene Netzadresse (Docker)“** im Reiter Einstellungen: das Plugin legt einen Container
+  `lb-alexang-hue` mit eigener IP im Heimnetz an (Netz `lb-alexang-macvlan`, macvlan an `eth0` oder einer anderen
+  gewählten Schnittstelle) und hängt ihn zusätzlich an das Docker-Netz `bridge`, damit er den MQTT-Broker auf dem
+  LoxBerry erreicht. Die Nachbildung lauscht dort auf Port 80 und 1900. Apache, Webport und Loxone-Adressen bleiben
+  unberührt; keine Datei des LoxBerry wird geändert.
+* **Eigene IP:** Pflicht bei dieser Art, ab Werk leer. Sie muss im Netz der Schnittstelle liegen, darf nicht `.0`,
+  `.255`, die Adresse des LoxBerry oder die des Routers sein und muss frei sein (beim Speichern mit ping und ARP
+  nachgesehen); sonst wird sie beanstandet, und nichts wird gespeichert. In der Fritzbox außerhalb des DHCP-Bereichs
+  wählen oder reservieren. Vom LoxBerry selbst ist die eigene Adresse nicht erreichbar (macvlan) – das ist normal.
+* **Im Container** läuft nur der eigene Dienst des Plugins auf dem offiziellen Abbild `php:8.4-cli` (mit sockets und
+  pcntl, beim ersten Mal am LoxBerry gebaut – Internet nötig, einige Minuten), als Benutzer des Plugins, ohne
+  Fähigkeiten, mit nur lesendem Dateisystem und `--restart unless-stopped`.
+* Anlegen, Neuanlegen und Entfernen laufen nach dem Speichern im Hintergrund; der Takt sieht alle 5 Minuten nach und
+  legt höchstens alle 10 Minuten neu an. Ohne Haken oder bei Art „auf dem LoxBerry“ werden Container und Netz
+  entfernt; das Abbild bleibt.
+* Reiter Test: Docker, Abbild, Netz, Container, letzter Vorgang und eine Selbstprobe über die Brückenadresse des
+  Containers; jeder Fehler mit eigenem Grund.
+* Deinstallation und Update entfernen Container und Netz und sagen es im Installationsprotokoll.
 
 ## Fassung 0.9.4
 
@@ -345,12 +463,12 @@ Kennungen; die Spalte „freigegeben“ sagt, was schon eingetragen ist. Im Reit
 Liste auf einem gewählten Gerät; die Antwortzeile steht in der Meldung, ein
 Neuladen der Seite löst nichts aus.
 
-### Musik-Probe (Stufe 3, nicht am Gerät erprobt)
+### Musik-Probe (Stufe 3)
 
-Ab Werk aus (Reiter **Einstellungen**, Haken „Musik-Probe erlauben (nicht am
-Gerät erprobt)“). Sie spielt einen Sender über die Suche des Echos
-(`Alexa.Music.PlaySearchPhrase`) — eine **inoffizielle** Schnittstelle, an
-keinem Echo gemessen. Gespielt wird nur, was Amazon selbst bei TuneIn oder
+Ab Werk aus (Reiter **Einstellungen**, Haken „Musik-Probe erlauben (an einem
+Echo gemessen)“). Sie spielt einen Sender über die Suche des Echos
+(`Alexa.Music.PlaySearchPhrase`) — eine **inoffizielle** Schnittstelle; an
+einem Echo gemessen (02.10.2026, TuneIn, Ton nach etwa 3 s). Gespielt wird nur, was Amazon selbst bei TuneIn oder
 Amazon Music findet: **kein beliebiger Stream, keine Adresse, keine eigene
 MP3**.
 
@@ -428,13 +546,13 @@ MP3.
 * Im Reiter **Test**: Knöpfe **„Zone abspielen“** und **„Zone stoppen“** mit
   Auswahl von Zone und Sender.
 
-### Hue-Probe (Fassung 2, nicht am Gerät erprobt)
+### Hue-Probe (Fassung 2)
 
 Fassung 2 „Steuerung“ (Alexa schaltet Loxone, lokal ohne Cloud) soll eine
 Hue-Bridge nachbilden. Gebaut wird sie erst, wenn gemessen ist, dass ein Echo
 die Nachbildung erkennt. Diese Probe misst genau das. Ab Werk aus (Reiter
-**Einstellungen**, Abschnitt Hue-Probe, Haken „Hue-Probe (nicht am Gerät
-erprobt)“).
+**Einstellungen**, Abschnitt Hue-Probe, Haken „Hue-Nachbildung
+einschalten“).
 
 * Mit Haken läuft ein eigener Dienst (`bin/ax_hue.php`, gestartet über
   `bin/hue_dienst.sh`; der Takt hält ihn ohne Haken an). Er beantwortet die
@@ -458,6 +576,107 @@ erprobt)“).
   Plugins.
 * Braucht die PHP-Erweiterung **sockets** (für den Beitritt zur SSDP-Gruppe);
   fehlt sie, endet der Dienst mit `SOCKETS_FEHLT`, und der Reiter Test zeigt es.
+
+#### Eigene Netzadresse (Docker, Entscheidung Nr. 41)
+
+Gemessen am 02.10.2026: das Echo suchte, bekam Antwort und holte
+`description.xml` auf Port 8380 – die Lampen fragte es aber nie ab. Es braucht
+die Bridge auf **Port 80**, und den hält der Webserver des LoxBerry. Deshalb
+gibt es im Abschnitt Hue-Probe die **Art**:
+
+* **auf dem LoxBerry (Port wie bisher)** – ab Werk, wie in 0.9.4;
+* **eigene Netzadresse (Docker)** – das Plugin legt einen Container
+  `lb-alexang-hue` an, mit **eigener IP im Heimnetz** (Netz
+  `lb-alexang-macvlan`, macvlan an der gewählten Schnittstelle, ab Werk
+  `eth0`) und zusätzlich am Docker-Netz `bridge`, damit er den MQTT-Broker auf
+  dem LoxBerry erreicht. Dort lauscht die Nachbildung auf **Port 80** (HTTP)
+  und **1900** (SSDP); `LOCATION` und `URLBase` nennen die eigene IP. Apache,
+  Webport, Loxone-Adressen und die Dateien des LoxBerry bleiben unberührt.
+
+Einrichten: Haken „Hue-Probe“, Art „eigene Netzadresse (Docker)“, **eigene IP**
+eintragen (Muster `192.168.178.x`), Speichern. Die IP muss im Netz der
+Schnittstelle liegen, darf nicht `.0`/`.255`, nicht die Adresse des LoxBerry
+und nicht die des Routers sein und muss frei sein (beim Speichern mit ping
+und ARP nachgesehen); sonst wird sie beanstandet, und nichts wird gespeichert.
+In der Fritzbox muss sie **außerhalb des DHCP-Bereichs** liegen oder dort
+reserviert sein. **Vom LoxBerry selbst ist die eigene Adresse nicht erreichbar
+(macvlan) – das ist normal**; der Reiter Test fragt den Container über seine
+Brückenadresse.
+
+* Im Container läuft nur der eigene Dienst dieses Plugins (`bin/ax_hue.php`
+  mit `bin/ax_hue_container.php`, nur lesend eingehängt) auf dem offiziellen
+  Abbild `php:8.4-cli` mit den Erweiterungen sockets und pcntl. Das Abbild
+  `lb-alexang-hue-php:<prüfsumme>` baut das Plugin beim ersten Mal am LoxBerry
+  aus `bin/hue_docker/Dockerfile` – dafür braucht es Internet und einige
+  Minuten; die Meldung sagt dann, dass der Vorgang im Hintergrund weiterläuft.
+* Der Container läuft als Benutzer des Plugins, ohne Fähigkeiten
+  (`--cap-drop ALL`), mit nur lesendem Dateisystem und `--restart
+  unless-stopped`. Messstand und seine Konfiguration liegen unter
+  `data/plugins/alexang/hue/`, die Protokollzeilen im Protokoll des Plugins.
+* Anlegen, Neuanlegen (andere IP oder Schnittstelle) und Entfernen laufen nach
+  dem Speichern im Hintergrund; der Takt sieht alle 5 Minuten nach und legt
+  höchstens alle 10 Minuten neu an. Ohne Haken oder bei Art „auf dem
+  LoxBerry“ werden Container und Netz entfernt; das Abbild bleibt (von Hand:
+  `docker image rm lb-alexang-hue-php:<prüfsumme>`, der Name steht in der
+  Meldung).
+* Gründe im Reiter Test, je mit eigenem Text: Docker fehlt, kein Zugriff auf
+  Docker, Docker-Dienst aus, IP belegt, Netz anlegen gescheitert (zum Beispiel
+  weil schon ein anderes macvlan-Netz an derselben Schnittstelle hängt), Abbild
+  bauen gescheitert, fremder Container oder fremdes Netz gleichen Namens (bleibt
+  unberührt).
+* Deinstallation und Update entfernen Container und Netz (nachgesehen, mit
+  Meldung im Installationsprotokoll).
+
+#### Lampen für Alexa (Fassung 2)
+
+Alexa schaltet Lampen, die Loxone steuert – lokal, ohne Cloud und ohne Skill. Die Nachbildung zeigt einem Echo
+die Lampen der **Freigabeliste** (Reiter **Einstellungen**, Abschnitt „Alexa → Loxone“); ab Werk ist die Liste leer
+und die Nachbildung aus. Am Echo gemessen (03.10.2026, eigene Netzadresse): die Probe-Lampe und Lampen der Liste
+in allen drei Arten – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
+
+* **Je Lampe:** Name, wie Alexa ihn nennt (höchstens 32 Zeichen, eindeutig – Groß- und Kleinschreibung und Umlaute
+  zählen gleich), Art **Schalter** (Steckdosen, Pumpen; die Alexa-App zeigt einen An-/Ausschalter), **Licht
+  (an/aus)** (seit 0.9.7, für Lampen ohne Dimmen, damit Raumbefehle sie einschließen; die Alexa-App zeigt sie als
+  Lampe, der Raumbefehl selbst ist nicht gemessen)
+  oder **Dimmer**, Kürzel für das MQTT-Thema (`a`–`z`, `0`–`9`, `_`). Fehlt das
+  Kürzel oder passt es nicht, wird es beanstandet, und ein Vorschlag aus dem Namen steht danach im Feld. Höchstens
+  50 Lampen.
+* **Tür, Tor, Garage, Alarm, Schloss** (auch `door`, `gate`, `lock`): solche Namen brauchen den Haken „bewusst
+  freigeben“. Die Prüfung ist bewusst weit – auch „Monitor“ enthält „tor“; dann genügt der Haken.
+* **Feste ID:** Jede Lampe behält ihre ID, auch beim Umbenennen; Alexa ordnet nach ihr. Umbenennen deshalb hier,
+  speichern, in der Alexa-App „Geräte suchen“ – erst danach, falls nötig, den Namen in der Alexa-App ändern. Eine
+  gelöschte ID wird nie wieder vergeben. ID 1 gehört der Probe-Lampe.
+* **Art ändern:** Wird die Art einer Lampe geändert (Schalter, Licht, Dimmer), die Lampe in der Alexa-App löschen
+  und danach „Geräte suchen“. Alexa merkt sich die Art je Gerät, in der App lässt sie sich nicht ändern (gemessen
+  03.10.2026 am Echo).
+* **Befehl an Loxone** (MQTT, flüchtig, nie retained):
+
+  | Thema | Wert |
+  |---|---|
+  | `alexang/hue/<kürzel>/ein` | `1` ein, `0` aus |
+  | `alexang/hue/<kürzel>/helligkeit` | nur Dimmer und nur, wenn Alexa eine Helligkeit setzt: `1`–`100` (Hue-Helligkeit 1–254, gerundet); `0` bei aus |
+
+  „Alexa, Küche auf 50 Prozent“ sendet `ein` = `1` und `helligkeit` = `50`; „Alexa, schalte Küche ein“ sendet
+  beim Dimmer nur `ein` = `1` (seit 0.9.7 – die Helligkeit wählt dann Loxone). Derselbe Wert binnen 2 s geht nur
+  einmal hinaus; mehr als 10 Schaltbefehle je Lampe und Minute bekommen eine Fehlerantwort der Hue-Schnittstelle
+  und stehen im Protokoll (mit Namen und Wert).
+* **Zustand zurück:** Meldet Loxone `alexang/hue/<kürzel>/status` (`0`/`1`) und beim Dimmer
+  `…/status_helligkeit` (`0`–`100`), zeigt Alexa den echten Zustand. Die Nachbildung abonniert beide Themen selbst
+  (im Container über die Docker-Brücke). Ohne Rückmeldung gilt der zuletzt von Alexa gesetzte Wert.
+* **Nur freigegebene Echos:** Im Feld „Nur diese Echos dürfen schalten“ stehen die IP-Adressen der Echos (Muster
+  `192.168.178.x`, höchstens 20); leer heißt alle Geräte im Heimnetz. Anfragen anderer Adressen bekommen eine
+  Fehlerantwort und werden im Reiter Test gezählt. `description.xml` und die Suche bleiben für alle offen – sie
+  verraten keine Lampe.
+* **Probe-Lampe** „Loxone Probe“ (eigener Haken, ab Werk an): bleibt neben den eigenen Lampen sichtbar, bis der
+  Haken weg ist; sie schaltet weiter nur `alexang/hue_probe/ein`.
+* **Einbindung in Loxone:** Die Eingänge legt das MQTT-Gateway beim ersten Schalten selbst an
+  (`alexang_hue_<kürzel>_ein`, `…_helligkeit`; Abo `alexang/#`), oder die Vorlage **VI_alexang_hue.xml** legt sie
+  an. Die Rückmeldung geht über einen virtuellen Ausgang an den UDP-Eingang des MQTT-Gateways
+  (`/dev/udp/<LoxBerry>/<UDP-Eingang>`, Befehl `publish alexang/hue/<kürzel>/status 1`), Vorlage
+  **VQ_alexang_hue.xml**. Die Baustein-Liste steht im Reiter „Einbindung in Loxone“.
+* **Reiter Test:** je Lampe Zustand (mit Quelle Alexa oder Loxone), letzte Abfrage und letzte Schaltung (Zeit,
+  Echo-Adresse, Wert), MQTT gesendet, nicht gesendet, wegen gleichen Werts unterdrückt oder gebremst; dazu die
+  abgewiesenen Absender und die Lage des Abos für die Rückmeldung.
 
 ### Aus anderen Plugins
 
@@ -523,6 +742,8 @@ Broker aus der LoxBerry-Konfiguration, nicht über den UDP-Eingang.
 | `alexang/radio/<zone>/sender` | Sendernummer, zuletzt bestätigt gesendet; `0` nach Stopp | nie |
 | `alexang/radio/<zone>/zustand` | `1` Start, `0` Stopp, zuletzt bestätigt gesendet | nie |
 | `alexang/hue_probe/ein` | `1`/`0`: ein Echo hat die Lampe „Loxone Probe“ der Hue-Probe geschaltet | nie |
+| `alexang/hue/<kürzel>/ein` | `1`/`0`: Alexa schaltet eine Lampe der Freigabeliste (Befehl an Loxone) | nie |
+| `alexang/hue/<kürzel>/helligkeit` | nur Dimmer, wenn Alexa eine Helligkeit setzt: `1`–`100`; `0` bei aus (Befehl an Loxone) | nie |
 
 Kein Thema geht leer hinaus. Ein Gerät, das aus der Amazon-Liste
 verschwindet, bekommt einmal `-1` und bleibt im Reiter **Geräte** als
@@ -544,6 +765,9 @@ sagt, welche Fassung läuft.
 | `alexang/befehl/sperre` | `1` sperren, `0` öffnen (nur mit Haken „Sperre aus Loxone annehmen“) |
 | `alexang/befehl/radio/<zone>` | Sendernummer; `0` oder `stopp` hält an; `<zone>` ist `1`–`24` oder `alle` (nur mit Haken „Radio je Zone erlauben“) |
 | `alexang/befehl/radio/<zone>/laut` | 0–100 |
+
+**Rückmeldung der Lampen** (Fassung 2): die Nachbildung selbst abonniert `alexang/hue/<kürzel>/status`
+(`0`/`1`) und `alexang/hue/<kürzel>/status_helligkeit` (`0`–`100`); dafür braucht es den Befehlseingang nicht.
 
 Zurückbehaltene (retained) Befehle werden **verworfen**, nicht ausgeführt.
 Es gelten dieselbe Prüfung und Bremse wie am Endpunkt; das Ergebnis steht in
@@ -575,7 +799,9 @@ Es gelten dieselbe Prüfung und Bremse wie am Endpunkt; das Ergebnis steht in
 * **Hue-Probe** (ab Werk aus): wie eine echte Hue-Bridge ohne Anmeldung im
   Heimnetz erreichbar — jeder im Netz kann die Probe-Lampe schalten. Das
   bewirkt nur die flüchtige MQTT-Meldung `alexang/hue_probe/ein`, nichts an
-  Loxone.
+  Loxone. Mit eigener Netzadresse liegt der Broker-Zugang aus `general.json`
+  zusätzlich in `data/plugins/alexang/hue/hue_container.json` (0600), den der
+  Container liest.
 * Die Schnittstelle ist **inoffiziell**; Amazon kann sie jederzeit ändern.
 
 ### Wo Zugangsdaten liegen
@@ -588,7 +814,7 @@ Es gelten dieselbe Prüfung und Bremse wie am Endpunkt; das Ergebnis steht in
 | `data/plugins/alexang/sitzung.json` | Sitzungscookies, csrf | 0600 |
 | `data/plugins/alexang/pkce.json` | offene Anmeldung, höchstens 30 min | 0600 |
 
-Die Deinstallation hält das Befehlsabo und die Hue-Probe an, meldet das Gerät bei Amazon ab
+Die Deinstallation hält das Befehlsabo und die Hue-Probe an, entfernt Container und Netz der Hue-Probe auf eigener Netzadresse, meldet das Gerät bei Amazon ab
 (scheitert das, steht eine Warnung im Installationsprotokoll), räumt die
 zurückbehaltenen MQTT-Themen ab und löscht die Zweitschriften.
 
@@ -601,6 +827,13 @@ zurückbehaltenen MQTT-Themen ab und löscht die Zweitschriften.
   `SPRECHEN;OK=1;GERAETE=1;TEILE=1;UNVERAENDERT=0;OFFLINE=0`, die Ansage kam an.
 - Damit auch: die curl-Erweiterung ist vorhanden, der Cookie-Tausch
   und der csrf-Weg funktionieren.
+- **Hue-Probe auf eigener Netzadresse** (03.10.2026, Fassung 0.9.5): Abbild am
+  Gerät gebaut (etwa 2,5 Minuten), Container lief, ein Echo suchte, holte
+  `description.xml`, fragte die Lampe 7-mal ab und schaltete sie 2-mal; die
+  Alexa-App fand „Loxone Probe“, `alexang/hue_probe/ein` wurde 2-mal gesendet.
+- **Lampen für Alexa** (03.10.2026, Fassung 0.9.6): die Alexa-App fand einen
+  Schalter und einen Dimmer der Liste; ein, aus und dimmen kamen als MQTT an.
+  Den Schalter zeigt die App als An-/Ausschalter, den Dimmer als Licht.
 
 ## Noch am Gerät zu messen
 
@@ -635,6 +868,23 @@ zurückbehaltenen MQTT-Themen ab und löscht die Zweitschriften.
     `description.xml`, findet die Alexa-App „Loxone Probe“, schaltet „Alexa,
     schalte Loxone Probe ein“ die Lampe (Zähler, MQTT `hue_probe/ein`)? Ist
     Port 8380 am Gerät frei, und reicht er dem Echo, oder braucht er Port 80?
+    (Gemessen 02.10.2026: Suche und `description.xml` ja, Abfrage nein.)
+17. Hue-Probe auf eigener Netzadresse: baut das Plugin das Abbild am Gerät,
+    legt es Netz und Container an (`docker ps`), findet das Echo die
+    Nachbildung auf Port 80 der eigenen IP und fragt es die Lampe ab, kommt
+    `hue_probe/ein` über die Brücke beim Broker an? (Gemessen 03.10.2026: ja.)
+18. Lampen für Alexa (Fassung 2): findet die Alexa-App zwei Lampen der Liste
+    (Schalter und Dimmer), kommen `hue/<kürzel>/ein` und `…/helligkeit` beim
+    Broker und am Miniserver an, zeigt Alexa nach einer Rückmeldung aus
+    Loxone den echten Zustand, und wie verhält sich ein Echo, dessen Adresse
+    nicht freigegeben ist? (Gemessen 03.10.2026: Schalter und Dimmer
+    gefunden, ein, aus und dimmen kamen als MQTT an.)
+19. Seit 0.9.7: zeigt die Alexa-App eine Lampe der Art „Licht (an/aus)“ als
+    Licht, und schließt „Alexa, Licht aus“ im Raum sie ein? Sendet „Alexa,
+    schalte <Dimmer> ein“ nur `ein` und „auf 40 Prozent“ genau `ein` und
+    `helligkeit` = `40`? (Gemessen 03.10.2026: die App zeigt „Licht (an/aus)“
+    nach Löschen und neuem Suchen als Lampe; Dimmer „ein“ sendet nur `ein`.
+    Der Raumbefehl ist nicht gemessen.)
 
 ## Voraussetzungen
 
@@ -644,6 +894,9 @@ zurückbehaltenen MQTT-Themen ab und löscht die Zweitschriften.
 - Nur für die Hue-Probe (ab Werk aus): die PHP-Erweiterung **sockets** (am
   LoxBerry unter PHP 7.4 vorhanden), ein freier TCP-Port (ab Werk 8380) und
   UDP 1900
+- Nur für die Hue-Probe auf eigener Netzadresse: **Docker** mit Zugriff für den
+  Benutzer loxberry, Netztreiber macvlan, Internet beim ersten Anlegen (Abbild
+  `php:8.4-cli`), eine freie IP im Heimnetz
 
 ## Lizenz
 
