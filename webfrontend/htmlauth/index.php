@@ -1046,6 +1046,28 @@ if ($ax_p['lbhome'] !== '' && ($ax_talter_b > AX_OK_GRENZE_S || ($ax_talter_b < 
 foreach ($ax_balken as $ax_bk) { ?><div class="sm-alert sm-err ax-balken" role="alert"><b><?= ax_e($ax_bk[0]) ?></b> <a href="<?= ax_e($ax_bk[1]) ?>"><?= ax_e($ax_bk[2]) ?></a></div>
 <?php } ?>
 
+<?php
+// Kopf (Entscheidung Nr. 43, seit 1.0.1): Statusuebersicht ueber den Reitern, immer sichtbar.
+// Die Kacheln standen bis 1.0.0 im Reiter Einstellungen. Den Befehlsdienst fragte die
+// Seite schon bisher bei jedem Aufbau ab (Reiter Test) - die Abfrage steht jetzt hier.
+$ax_kopf_dienst = empty($ax_cfg['befehle_mqtt_ein']) ? false : ax_dienst_status();
+?>
+<table class="sm-tbl" style="max-width:620px">
+<tr><th><?= ax_e(ax_t('KOPF.EIGENSCHAFT')) ?></th><th><?= ax_e(ax_t('KOPF.WERT')) ?></th></tr>
+<tr><td><?= ax_e(ax_t('KOPF.DIENST')) ?></td>
+    <?php if (empty($ax_cfg['befehle_mqtt_ein'])) { ?><td><?= ax_e(ax_t('ALLG.AUS')) ?></td>
+    <?php } elseif ($ax_kopf_dienst === null) { ?><td><?= ax_e(ax_t('KOPF.NICHT')) ?></td>
+    <?php } else { ?><td class="<?= $ax_kopf_dienst ? 'sm-an' : 'sm-aus' ?>"><?= ax_e($ax_kopf_dienst ? ax_t('KOPF.LAEUFT') : ax_t('KOPF.STEHT')) ?></td><?php } ?></tr>
+<tr><td><?= ax_e(ax_t('KACHEL.PLUGIN')) ?></td>
+    <td><?= !empty($ax_cfg['aktiv']) ? ax_e(ax_t('ALLG.EIN')) : ax_e(ax_t('ALLG.AUS')) ?></td></tr>
+<tr><td><?= ax_e(ax_t('KACHEL.ANMELDUNG')) ?></td>
+    <td><?= $ax_amz['form'] ? ($ax_bef['befund'] === 'ABGELAUFEN' ? ax_e(ax_t('KACHEL.ABGELAUFEN')) : ax_e(ax_t('ALLG.JA'))) : ax_e(ax_t('ALLG.NEIN')) ?></td></tr>
+<tr><td><?= ax_e(ax_t('KACHEL.GERAETE')) ?></td>
+    <td><?= $ax_st ? count($ax_st['liste']) : '–' ?></td></tr>
+<tr><td><?= ax_e(ax_t('KACHEL.TAKT')) ?></td>
+    <td><?= ax_e(ax_dauer_text(ax_alter($ax_takt['ts']))) ?></td></tr>
+</table>
+
 <div class="sm-tabs">
     <a class="sm-tab<?= $ax_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings" href="index.php?form=settings"><?= ax_e(ax_t('REITER.EINSTELLUNGEN')) ?></a>
     <a class="sm-tab<?= $ax_tab === 'tab-amazon' ? ' sm-active' : '' ?>" data-ziel="tab-amazon" href="index.php?form=amazon"><?= ax_e(ax_t('REITER.AMAZON')) ?></a>
@@ -1058,15 +1080,10 @@ foreach ($ax_balken as $ax_bk) { ?><div class="sm-alert sm-err ax-balken" role="
 
 <!-- ================= Reiter: Einstellungen ================= -->
 <div class="sm-seite<?= $ax_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
+<div class="sm-hinweis"><b><?= ax_e(ax_t('EINST.WAS_IST_DAS_KURZ')) ?></b> <?= ax_e(ax_t('EINST.WAS_IST_DAS')) ?></div>
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-lesen"></i> <?= ax_e(ax_t('LEGENDE.LESEN')) ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?= ax_e(ax_t('LEGENDE.AKTION')) ?></span>
-</div>
-<div class="sm-kacheln">
-    <div class="sm-kachel"><?= ax_e(ax_t('KACHEL.PLUGIN')) ?><b><?= !empty($ax_cfg['aktiv']) ? ax_e(ax_t('ALLG.EIN')) : ax_e(ax_t('ALLG.AUS')) ?></b></div>
-    <div class="sm-kachel"><?= ax_e(ax_t('KACHEL.ANMELDUNG')) ?><b><?= $ax_amz['form'] ? ($ax_bef['befund'] === 'ABGELAUFEN' ? ax_e(ax_t('KACHEL.ABGELAUFEN')) : ax_e(ax_t('ALLG.JA'))) : ax_e(ax_t('ALLG.NEIN')) ?></b></div>
-    <div class="sm-kachel"><?= ax_e(ax_t('KACHEL.GERAETE')) ?><b><?= $ax_st ? count($ax_st['liste']) : '–' ?></b></div>
-    <div class="sm-kachel"><?= ax_e(ax_t('KACHEL.TAKT')) ?><b><?= ax_e(ax_dauer_text(ax_alter($ax_takt['ts']))) ?></b></div>
 </div>
 <form action="index.php" method="post" autocomplete="off">
 <input data-role="none" type="hidden" name="save" value="1">
@@ -1689,7 +1706,7 @@ elseif ($ax_talter >= 0 && $ax_talter <= AX_OK_GRENZE_S) { $ax_zeile(1, ax_t('TE
 else { $ax_zeile(0, ax_t('TEST.F_TAKT'), sprintf(ax_t('TEST.A_TAKT_ALT'), ax_dauer_text($ax_talter), implode(', ', $ax_cron) ?: '–')); }
 if (empty($ax_cfg['befehle_mqtt_ein'])) { $ax_zeile(3, ax_t('TEST.F_BEFEHLE'), ax_t('TEST.A_BEFEHLE_AUS')); }
 else {
-    $ax_ds = ax_dienst_status();
+    $ax_ds = $ax_kopf_dienst;   // Abfrage im Kopf (Nr. 43, 1.0.1)
     $ax_zeile($ax_ds === null ? -1 : ($ax_ds ? 1 : 0), ax_t('TEST.F_BEFEHLE'), $ax_ds === null ? ax_t('TEST.A_BEFEHLE_NICHT') : ($ax_ds ? ax_t('TEST.A_BEFEHLE_LAEUFT') : ax_t('TEST.A_BEFEHLE_STEHT')));
 }
 // H2 (alexa4): Laeuft die Hue-Probe? Mit Selbstprobe, wenn dieser Reiter offen ist.
