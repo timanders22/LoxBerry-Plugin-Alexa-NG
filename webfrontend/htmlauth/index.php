@@ -1023,6 +1023,10 @@ if (class_exists('LBWeb', false)) {
 .sm-log { background: #1e1e1e; color: #d4d4d4; font-family: ui-monospace, monospace; font-size: 0.82em; padding: 12px; border-radius: 8px; max-height: 480px; overflow: auto; white-space: pre-wrap; }
 .sm-wrap .sm-beanstandet { border: 2px solid #c62828 !important; background: #fff5f5 !important; }
 .sm-wrap input[type=checkbox].sm-beanstandet { outline: 2px solid #c62828; outline-offset: 2px; }
+/* Welle Bild (Entscheidung 45): Bild der Bausteine aus dem gemeinsamen Musterprojekt. */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
 </style>
 <div class="sm-wrap">
 
@@ -1577,7 +1581,12 @@ $ax_hudp = ax_mqtt_udpport();
 </table>
 <div class="sm-small"><?= ax_e(ax_t('LOX.B_HINWEIS')) ?></div>
 <div class="sm-small"><?= ax_e(ax_t('LOX.B_HUE_HINWEIS')) ?></div>
-<div class="sm-small"><?= ax_e(ax_t('LOX.B_RADIO_HINWEIS')) ?></div></div>
+<div class="sm-small"><?= ax_e(ax_t('LOX.B_RADIO_HINWEIS')) ?></div>
+<figure class="sm-bild">
+<img src="einbindung_loxone.png" alt="<?= ax_e(ax_t('LOX.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= ax_e(ax_t('LOX.BILD_UNTERSCHRIFT')) ?></figcaption>
+</figure>
+<div class="sm-small"><?= ax_e(ax_t('LOX.MUSTERPROJEKT')) ?> <a href="https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt" target="_blank" rel="noopener">LoxBerry-Plugins Musterprojekt</a></div></div>
 <div class="sm-step"><b>7.</b> <?= ax_e(ax_t('LOX.S7')) ?></div>
 <div class="sm-step"><b>8.</b> <?= ax_e(ax_t('LOX.S8_SPERRE')) ?><br>
 <span class="sm-mono"><?= ax_e($ax_basis . '?aktion=sperre&token=' . $ax_aktion . '&wert=1') ?></span><br>

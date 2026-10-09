@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 1.0.2
+Version 1.0.3
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -15,6 +15,17 @@ Hue-Probe auf eigener Netzadresse (ab Werk aus).
 > Routinen, Musik-Probe, Radio je Zone an einem Echo und die Hue-Nachbildung
 > mit den Lampen für Alexa – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 > Was noch aussteht, steht unter „Noch am Gerät zu messen“.
+
+## Neu in 1.0.3
+
+Reiter „Einbindung in Loxone“ zeigt ein Bild der Bausteine aus dem gemeinsamen Musterprojekt und
+verlinkt die Projektdatei.
+
+* Unter der Baustein-Liste (Schritt 6) steht das Bild der Seite „Alexa NG“ aus dem
+  [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt); das Bild liegt im Plugin,
+  nachgeladen wird nichts. Config kürzt lange Bausteinnamen, die vollen Namen stehen in der Tabelle.
+* Baustein-Liste unverändert.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 1.0.2
 
@@ -315,7 +326,10 @@ Anmeldung, holt alle 6 Stunden die Geräteliste und sendet das Lebenszeichen.
 6. Im Reiter **Einbindung in Loxone** die Vorlagen herunterladen
    (`VI_alexang.xml` für die Statuszeile, `VQ_alexang.xml` für die Ansagen)
    und in Loxone Config importieren. Die dort gezeigten Adressen enthalten das
-   Sprechtoken bereits.
+   Sprechtoken bereits. Die Bausteine der Baustein-Liste stehen fertig verbunden
+   auf der Seite „Alexa NG“ im
+   [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
+   einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 7. Im Reiter **Test** nachsehen: jede Zeile ist eine Frage; ein Haken nur für
    Gemessenes, ein Strich heißt „nicht feststellbar“, ein grauer Punkt
    „ausgeschaltet“. Ab Werk sind das Befehlsabo (Befehle über MQTT) und die
