@@ -3737,10 +3737,11 @@ function ax_vorlage_hue_ein($host, array $cfg)
 {
     $cmds = array();
     foreach ($cfg['hue_lampen'] as $l) {
-        $cmds[] = array('title' => ax_hue_gateway_name($cfg, $l['kuerzel'], 'ein'), 'comment' => 'Alexa ' . $l['name'] . ' ein',
+        // Welle Bild 13 (1.0.4, Entscheidung 11): Kommentare aus der Sprachdatei, Titel = Gateway-Name.
+        $cmds[] = array('title' => ax_hue_gateway_name($cfg, $l['kuerzel'], 'ein'), 'comment' => sprintf(ax_t('LOX.VH_C_EIN'), $l['name']),
                         'check' => ' ', 'analog' => false, 'min' => 0, 'max' => 1, 'unit' => '<v>');
         if ($l['art'] === 'dimmer') {
-            $cmds[] = array('title' => ax_hue_gateway_name($cfg, $l['kuerzel'], 'helligkeit'), 'comment' => 'Alexa ' . $l['name'] . ' Helligkeit',
+            $cmds[] = array('title' => ax_hue_gateway_name($cfg, $l['kuerzel'], 'helligkeit'), 'comment' => sprintf(ax_t('LOX.VH_C_HELL'), $l['name']),
                             'check' => ' ', 'analog' => true, 'min' => 0, 'max' => 100, 'unit' => '<v> %');
         }
     }
@@ -3769,10 +3770,11 @@ function ax_vorlage_hue_aus($host, array $cfg)
     $cmds = array();
     foreach ($cfg['hue_lampen'] as $l) {
         $t = $cfg['mqtt_praefix'] . '/hue/' . $l['kuerzel'] . '/';
-        $cmds[] = array('title' => 'Alexa ' . $l['name'] . ' Rückmeldung', 'comment' => 'Rückmeldung ' . $l['kuerzel'], 'analog' => false,
+        // Welle Bild 13 (1.0.4, Entscheidung 11): Kommentare aus der Sprachdatei, Titel fest deutsch.
+        $cmds[] = array('title' => 'Alexa ' . $l['name'] . ' Rückmeldung', 'comment' => sprintf(ax_t('LOX.VQH_C_RUECK'), $l['kuerzel']), 'analog' => false,
                         'on' => 'publish ' . $t . 'status 1', 'off' => 'publish ' . $t . 'status 0');
         if ($l['art'] === 'dimmer') {
-            $cmds[] = array('title' => 'Alexa ' . $l['name'] . ' Rückmeldung Helligkeit', 'comment' => 'Helligkeit ' . $l['kuerzel'] . ' %',
+            $cmds[] = array('title' => 'Alexa ' . $l['name'] . ' Rückmeldung Helligkeit', 'comment' => sprintf(ax_t('LOX.VQH_C_HELL'), $l['kuerzel']),
                             'on' => 'publish ' . $t . 'status_helligkeit <v>');
         }
     }
@@ -5124,16 +5126,47 @@ function ax_vorlage_radio($host, array $cfg)
     $cmds = array();
     foreach ($zonen as $zn) {
         $t = ($zn === 'alle') ? 'alle Zonen' : 'Zone ' . $zn;
-        $cmds[] = array('title' => 'Alexa Radio ' . $t . ' Sender', 'comment' => 'Radio ' . $t . ': Sender-Nr., 0 = Stopp',
+        // Welle Bild 13 (1.0.4, Entscheidung 11): Titel fest deutsch, Kommentare aus der Sprachdatei.
+        $tk = ($zn === 'alle') ? ax_t('LOX.VR_C_ALLE') : sprintf(ax_t('LOX.VR_C_ZONE'), $zn);
+        $cmds[] = array('title' => 'Alexa Radio ' . $t . ' Sender', 'comment' => sprintf(ax_t('LOX.VR_C_SENDER'), $tk),
             'on' => $pfad . '&aktion=radio&zone=' . $zn . '&nr=<v>');
-        $cmds[] = array('title' => 'Alexa Radio ' . $t . ' Stopp', 'comment' => 'Radio ' . $t . ': Stopp', 'analog' => false,
+        $cmds[] = array('title' => 'Alexa Radio ' . $t . ' Stopp', 'comment' => sprintf(ax_t('LOX.VR_C_STOPP'), $tk), 'analog' => false,
             'on' => $pfad . '&aktion=radio_stopp&zone=' . $zn);
-        $cmds[] = array('title' => 'Alexa Radio ' . $t . ' Lautstärke', 'comment' => 'Radio ' . $t . ' %',
+        $cmds[] = array('title' => 'Alexa Radio ' . $t . ' Lautstärke', 'comment' => sprintf(ax_t('LOX.VR_C_LAUT'), $tk),
             'on' => $pfad . '&aktion=radio_laut&zone=' . $zn . '&wert=<v>');
     }
     $basis = ax_endpunkt_basis($host);
     return array('VQ_alexang_radio.xml', ax_xml_virtual_out(array('title' => 'Alexa NG Radio',
         'comment' => ax_t('LOX.VR_KOMMENTAR') . ' (' . date('d.m.Y') . ')',
+        'address' => preg_replace('#/plugins/.*$#', '', $basis)), $cmds));
+}
+
+/**
+ * [Dateiname, Inhalt] der Vorlage "Alexa NG Aktionen" (Welle Bild 13, 1.0.4; Entwurf Welle 13 ax,
+ * Entscheidung 4): "Alexa Ansagen sperren" (digital: Befehl bei EIN ...&aktion=sperre&wert=1, bei AUS
+ * ...&wert=0) und je Name der Freigabeliste "Alexa Routine <Name>" (digital: ...&aktion=routine&name=<Name,
+ * URL-kodiert>). Adresse wie "Alexa NG Radio". Traegt das AKTIONStoken - vertraulich. Titel fest deutsch,
+ * Kommentare aus der Sprachdatei (Sprachregel 13.10.2026). Die Sperre wirkt nur mit dem Haken "Sperre aus
+ * Loxone annehmen" (sonst 409 SPERRE_AUS); die Vorlage entsteht trotzdem immer. Kein neues Verhalten am
+ * Endpunkt - aktion=sperre und aktion=routine gab es schon.
+ */
+function ax_vorlage_aktionen($host, array $cfg)
+{
+    $p = ax_paths();
+    $pfad = '/plugins/' . $p['plugin'] . '/?token=' . rawurlencode(isset($cfg['aktionstoken']) ? (string) $cfg['aktionstoken'] : '');
+    $cmds = array();
+    $cmds[] = array('title' => 'Alexa Ansagen sperren', 'comment' => ax_t('LOX.VA_C_SPERRE'), 'analog' => false,
+                    'on' => $pfad . '&aktion=sperre&wert=1', 'off' => $pfad . '&aktion=sperre&wert=0');
+    if (isset($cfg['routinen_frei']) && is_array($cfg['routinen_frei'])) {
+        foreach ($cfg['routinen_frei'] as $r) {
+            if (!is_string($r) || $r === '') { continue; }
+            $cmds[] = array('title' => 'Alexa Routine ' . $r, 'comment' => sprintf(ax_t('LOX.VA_C_ROUTINE'), $r), 'analog' => false,
+                            'on' => $pfad . '&aktion=routine&name=' . rawurlencode($r));
+        }
+    }
+    $basis = ax_endpunkt_basis($host);
+    return array('VQ_alexang_aktionen.xml', ax_xml_virtual_out(array('title' => 'Alexa NG Aktionen',
+        'comment' => ax_t('LOX.VA_KOMMENTAR') . ' (' . date('d.m.Y') . ')',
         'address' => preg_replace('#/plugins/.*$#', '', $basis)), $cmds));
 }
 

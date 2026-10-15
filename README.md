@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 1.0.3
+Version 1.0.4
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -15,6 +15,37 @@ Hue-Probe auf eigener Netzadresse (ab Werk aus).
 > Routinen, Musik-Probe, Radio je Zone an einem Echo und die Hue-Nachbildung
 > mit den Lampen für Alexa – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 > Was noch aussteht, steht unter „Noch am Gerät zu messen“.
+
+## Neu in 1.0.4
+
+Vollausstattung aus dem [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt) mit drei Bildern und
+Schritt-für-Schritt-Anleitung, dazu die neue Vorlage „Alexa NG Aktionen“.
+
+* **Reiter Einbindung in Loxone, Schritt 6:** drei Baustein-Listen statt einer (68 statt 18 Zeilen) –
+  „Ansagen, Sperre, Routinen und Zustand“ (Türklingel-Ansage über einen Status, Morgendurchsage an alle,
+  Lautstärke, Ansagensperre bei Abwesenheit, Routinen „Gute Nacht“ und „Haus verlassen“, Ausfallmeldung über
+  eine Analogwertvalidierung auf `ZAEHLER`, Meldung bei misslungener Ansage, Status mit Zeilen), „Radio je
+  Zone“ (Radiotasten, Stopp und Lautstärke je Zone und für alle Zonen) und „Lampen für Alexa“ (je ein
+  Schalter, Licht und Dimmer mit Rückmeldung) –, je mit Kasten „So übernehmen Sie diese Seite“, Hinweisen und
+  dem Bild der Seite aus dem Musterprojekt. Die Tabellen zeigen die Beispielnamen des Musterprojekts (Echo
+  `kueche`/`wohnzimmer`, Lampen Kaffeemaschine, Stehlampe, Esstisch).
+* **Neue Vorlage „Alexa NG Aktionen“** (Knopf „Vorlage Aktionen erzeugen“, `VQ_alexang_aktionen.xml`, trägt
+  das Aktionstoken): „Alexa Ansagen sperren“ (Ein = gesperrt, Aus = frei; wirkt nur mit Haken „Sperre aus
+  Loxone annehmen“) und je Routine der Freigabeliste „Alexa Routine <Name>“. Bisher standen in Schritt 8 zwei
+  Adressen zum Abschreiben, für Routinen keine. **Neu importieren:** Vorlage erzeugen und in Loxone Config
+  unter Virtuelle Ausgänge einlesen. Ohne neuen Import geht es von Hand: im Virtuellen Ausgang „Alexa NG
+  Radio“ (gleiche Adresse, gleiches Aktionstoken) die Befehle `…&aktion=sperre&wert=1` (bei AUS `wert=0`) und
+  je Routine `…&aktion=routine&name=<Name>` ergänzen.
+* **Lampen (Entscheidung 8):** vor dem Aus-Eingang sitzt jetzt eine Flankenerkennung (Pd 0,1 s) statt NICHT –
+  ein Dauersignal am Aus-Eingang hätte eine Lichtsteuerung gesperrt.
+* **Kommentare der Vorlagen** „Alexa NG Radio“, „Alexa NG Lampen“ und „Alexa NG Lampen-Rückmeldung“ kommen aus
+  der Sprachdatei (englische Oberfläche: englische Kommentare). Die Titel bleiben fest deutsch; importierte
+  Bausteine behalten ihre Namen.
+* **Textberichtigungen:** Schritt 5 nennt die Analogwertvalidierung auf `ZAEHLER`; die Lampen-Eingänge kommen
+  zuerst aus der Vorlage; „Ihre Auslöser“ und „Ihr Licht- oder Schaltbaustein“ sind durch die Bausteine der
+  Liste ersetzt. Die Hilfe hat einen Absatz zur Einbindung in Loxone.
+* Das Verhalten des Plugins ist unverändert (auch `…/ein` nach einer Rückmeldung aus Loxone). Gerendert unter
+  PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
 
 ## Neu in 1.0.3
 
@@ -324,10 +355,11 @@ Anmeldung, holt alle 6 Stunden die Geräteliste und sendet das Lebenszeichen.
    Gerät dort aus der Geräteliste (ohne Geräteliste bleibt der Knopf gesperrt
    und die Seite sagt, warum).
 6. Im Reiter **Einbindung in Loxone** die Vorlagen herunterladen
-   (`VI_alexang.xml` für die Statuszeile, `VQ_alexang.xml` für die Ansagen)
-   und in Loxone Config importieren. Die dort gezeigten Adressen enthalten das
-   Sprechtoken bereits. Die Bausteine der Baustein-Liste stehen fertig verbunden
-   auf der Seite „Alexa NG“ im
+   (`VI_alexang.xml` für die Statuszeile, `VQ_alexang.xml` für die Ansagen,
+   `VQ_alexang_aktionen.xml` für Sperre und Routinen) und in Loxone Config
+   importieren. Die dort gezeigten Adressen enthalten das Sprechtoken bereits.
+   Die Bausteine der drei Baustein-Listen stehen fertig verbunden auf den Seiten
+   „Alexa NG“, „Alexa NG Radio“ und „Alexa NG Lampen“ im
    [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
    einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 7. Im Reiter **Test** nachsehen: jede Zeile ist eine Frage; ein Haken nur für
@@ -481,8 +513,9 @@ antworten `sprechen` und `ankuendigen` mit `200 UEBERSPRUNGEN=1;GRUND=GESPERRT`;
 `dringend=1` geht durch. Lautstärke, Routinen und die Musik-Probe gelten
 weiter. Der letzte Wert bleibt erhalten; nach einem Update ist er weg (er liegt
 im Datenordner), dann gilt „offen“, bis Loxone ihn neu setzt — der Reiter
-**Test** zeigt das als gelbe Zeile. Die vollständigen Adressen stehen im Reiter
-**Einbindung in Loxone**.
+**Test** zeigt das als gelbe Zeile. Im Reiter **Einbindung in Loxone** erzeugt
+**„Vorlage Aktionen erzeugen“** den virtuellen Ausgang „Alexa NG Aktionen“ mit dem
+Befehl „Alexa Ansagen sperren“ (`VQ_alexang_aktionen.xml`, trägt das Aktionstoken).
 
 ### Routinen
 
@@ -494,7 +527,9 @@ Sprachauslöser, über dieselbe Abfrage wie der Start, ohne Inhalt und ohne
 Kennungen; die Spalte „freigegeben“ sagt, was schon eingetragen ist. Im Reiter
 **Test** startet **„Freigegebene Routine jetzt starten“** eine Routine aus der
 Liste auf einem gewählten Gerät; die Antwortzeile steht in der Meldung, ein
-Neuladen der Seite löst nichts aus.
+Neuladen der Seite löst nichts aus. Für Loxone liefert die Vorlage „Alexa NG
+Aktionen“ (Reiter **Einbindung in Loxone**) je Routine der Freigabeliste einen
+Befehl „Alexa Routine <Name>“ (`aktion=routine&name=<Name>`, URL-kodiert).
 
 ### Musik-Probe (Stufe 3)
 
@@ -702,11 +737,12 @@ in allen drei Arten – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
   verraten keine Lampe.
 * **Probe-Lampe** „Loxone Probe“ (eigener Haken, ab Werk an): bleibt neben den eigenen Lampen sichtbar, bis der
   Haken weg ist; sie schaltet weiter nur `alexang/hue_probe/ein`.
-* **Einbindung in Loxone:** Die Eingänge legt das MQTT-Gateway beim ersten Schalten selbst an
-  (`alexang_hue_<kürzel>_ein`, `…_helligkeit`; Abo `alexang/#`), oder die Vorlage **VI_alexang_hue.xml** legt sie
-  an. Die Rückmeldung geht über einen virtuellen Ausgang an den UDP-Eingang des MQTT-Gateways
+* **Einbindung in Loxone:** Zuerst die Vorlage **VI_alexang_hue.xml** einlesen – ihre Eingänge heißen wie die
+  Namen, unter denen das MQTT-Gateway die Werte schreibt (`alexang_hue_<kürzel>_ein`, `…_helligkeit`; Abo
+  `alexang/#`). Die Rückmeldung geht über einen virtuellen Ausgang an den UDP-Eingang des MQTT-Gateways
   (`/dev/udp/<LoxBerry>/<UDP-Eingang>`, Befehl `publish alexang/hue/<kürzel>/status 1`), Vorlage
-  **VQ_alexang_hue.xml**. Die Baustein-Liste steht im Reiter „Einbindung in Loxone“.
+  **VQ_alexang_hue.xml**. Die Baustein-Liste „Lampen für Alexa“ (Seite „Alexa NG Lampen“ im Musterprojekt)
+  steht im Reiter „Einbindung in Loxone“; vor dem Aus-Eingang sitzt eine Flankenerkennung, kein NICHT.
 * **Reiter Test:** je Lampe Zustand (mit Quelle Alexa oder Loxone), letzte Abfrage und letzte Schaltung (Zeit,
   Echo-Adresse, Wert), MQTT gesendet, nicht gesendet, wegen gleichen Werts unterdrückt oder gebremst; dazu die
   abgewiesenen Absender und die Lage des Abos für die Rückmeldung.
