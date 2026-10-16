@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 1.0.4
+Version 1.0.5
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -15,6 +15,10 @@ Hue-Probe auf eigener Netzadresse (ab Werk aus).
 > Routinen, Musik-Probe, Radio je Zone an einem Echo und die Hue-Nachbildung
 > mit den Lampen für Alexa – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 > Was noch aussteht, steht unter „Noch am Gerät zu messen“.
+
+## Neu in 1.0.5
+
+* **Einbindung in Loxone: Eingang En der Analogwertvalidierung nicht negieren (Hinweis und Bild);** ohne diese Korrektur löste die Ausfallmeldung nie aus. Config legt den Eingang En negiert an – die Konstante 1 kam dann als 0 an, und „Alexa NG Abruf steht“ (#25 der Seite „Alexa NG“) prüfte die Zeit Tmc nicht. Wer die Seite schon gebaut hat: Haken bei ‚En‘ entfernen (Eigenschaftsfenster, Parameter). Das Bild zeigt den Eingang jetzt ohne Negation. Plugin-Verhalten unverändert.
 
 ## Neu in 1.0.4
 

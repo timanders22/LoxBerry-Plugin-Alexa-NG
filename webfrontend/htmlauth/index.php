@@ -1580,6 +1580,7 @@ $ax_bs_seiten = array(
           'hinweise' => array(
               ax_t('LOX.BS1_H1'),
               ax_t('LOX.BS1_H2'),
+              ax_t('LOX.BS1_H7'),
               sprintf(ax_t('LOX.BS1_H3'), ax_t('LOX.K_VA')),
               ax_t('LOX.BS1_H4'),
               sprintf(ax_t('LOX.BS1_H5'), ax_t('REITER.EINSTELLUNGEN')),
