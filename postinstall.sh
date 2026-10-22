@@ -89,11 +89,30 @@ ax_kopieren() {   # $1 Quelle, $2 Ziel
 
 AX_UEBERNOMMEN=0
 if [ -f "$MARKE" ]; then
-    DIENST="$BASE/bin/plugins/$PFOLDER/dienst.sh"
-    if [ -f "$DIENST" ] && timeout 15 /bin/sh "$DIENST" status >/dev/null 2>&1; then
-        timeout 30 /bin/sh "$DIENST" stop >/dev/null 2>&1
-        echo "<INFO> Ein Befehlsabo aus der Update-Luecke wurde angehalten."
-    fi
+    # Gruppe 6a (1.0.6, Entwurf ax 3.5): dienst.sh gibt es nicht mehr. Ein Befehlsabo der Fassung bis 1.0.5 aus der
+    # Update-Luecke wird argumentweise beendet (argv[1] = bin/ax_befehle.php, Bauart dienst.sh ist_unser), ebenso sein
+    # mosquitto_sub (Optionsdateien des Plugins, Abo .../befehl/#); dazu seine Dateien befehle.json, befehle_kind.pid,
+    # befehle.pid. Die Befehlsbruecke startet postupgrade.sh.
+    AX_ALT=0
+    for d in /proc/[0-9]*; do
+        mapfile -d '' -t a 2>/dev/null < "$d/cmdline" || continue
+        if [ "${#a[@]}" -ge 2 ] && [ "${a[1]}" = "$BASE/bin/plugins/$PFOLDER/ax_befehle.php" ]; then
+            kill "${d#/proc/}" 2>/dev/null && AX_ALT=$((AX_ALT + 1))
+        fi
+    done
+    for d in /proc/[0-9]*; do
+        c=""
+        read -r c 2>/dev/null < "$d/comm"
+        [ "$c" = "mosquitto_sub" ] || continue
+        mapfile -d '' -t e 2>/dev/null < "$d/environ" || continue
+        mapfile -d '' -t a 2>/dev/null < "$d/cmdline" || continue
+        case " ${a[*]} " in *"/befehl/#"*) ;; *) continue ;; esac
+        for x in "${e[@]}"; do
+            if [ "$x" = "XDG_CONFIG_HOME=$DDIR/mosquitto" ]; then kill "${d#/proc/}" 2>/dev/null && AX_ALT=$((AX_ALT + 1)); break; fi
+        done
+    done
+    [ "$AX_ALT" -gt 0 ] && echo "<INFO> $AX_ALT Prozess(e) des alten Befehlsabos aus der Update-Luecke beendet."
+    rm -f "$DDIR/befehle.json" "$DDIR/befehle_kind.pid" "$DDIR/befehle.pid" 2>/dev/null
     HUEDIENST="$BASE/bin/plugins/$PFOLDER/hue_dienst.sh"
     if [ -f "$HUEDIENST" ] && timeout 15 /bin/sh "$HUEDIENST" status >/dev/null 2>&1; then
         timeout 30 /bin/sh "$HUEDIENST" stop >/dev/null 2>&1

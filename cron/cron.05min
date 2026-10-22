@@ -1,7 +1,7 @@
 #!/bin/sh
 # Alexa NG - Takt alle fuenf Minuten: Konfiguration vervollstaendigen,
 # Anmeldung bei Amazon alle 30 Minuten pruefen, Geraeteliste alle 6 Stunden,
-# Lebenszeichen ueber MQTT, Waechter des Befehlsabos. Ob der Takt Amazon
+# Lebenszeichen ueber MQTT, Waechter der Befehlsbruecke. Ob der Takt Amazon
 # fragt, entscheidet das Skript selbst.
 #
 # Den bin-Ordner und den Log-Ordner des Plugins setzt der Installer in den

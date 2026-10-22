@@ -4,8 +4,8 @@
  *
  *   php ax_takt.php                 ein Takt: Konfiguration vervollstaendigen,
  *                                   Anmeldung alle 30 min pruefen, Geraeteliste
- *                                   alle 6 h, Lebenszeichen, Waechter Befehlsabo
- *                                   und Hue-Probe
+ *                                   alle 6 h, Lebenszeichen, Waechter der
+ *                                   Befehlsbruecke (seit 1.0.6) und Hue-Probe
  *   php ax_takt.php --abmelden      bei Amazon abmelden (Deinstallation), rc 0/1
  *   php ax_takt.php --mqtt-raeumen  eigene retained Themen abraeumen, rc 0/1
  *
@@ -69,6 +69,10 @@ if (in_array('--mqtt-raeumen', $ax_schalter, true)) {
  * Ausgabe HUE_ENTFERNT;CONTAINER=n;NETZ=n;BILD=<abbild> | HUE_NICHTS |
  * HUE_KEIN_DOCKER | HUE_FEHL;GRUND=<grund> (rc 1). */
 if (in_array('--hue-entfernen', $ax_schalter, true)) {
+    // Fremdbefund F7 (1.0.6): zuerst einen laufenden hue_vorgang.php samt Prozessgruppe (docker build) beenden -
+    // sonst legte er nach dem Aufraeumen Netz und Container neu an, und HUE_NICHTS waere ein falsches Gruen.
+    list($ax_vok, $ax_vg) = ax_hue_vorgang_beenden();
+    if (!$ax_vok) { echo 'HUE_FEHL;GRUND=' . $ax_vg . "\n"; exit(1); }
     list($ax_ok, $ax_g, $ax_txt, $ax_erg) = ax_hue_docker_entfernen(function ($s) { });
     $ax_e = explode('|', $ax_erg);
     if (!$ax_ok) { echo 'HUE_FEHL;GRUND=' . $ax_g . "\n"; exit(1); }
@@ -78,6 +82,18 @@ if (in_array('--hue-entfernen', $ax_schalter, true)) {
     ax_log('INFO', 'Hue-Probe (eigene Netzadresse): Container und Netz entfernt (' . $ax_erg . ').');
     echo 'HUE_ENTFERNT;CONTAINER=' . (int) $ax_e[1] . ';NETZ=' . (int) $ax_e[2] . ';BILD=' . $ax_nm['bild'] . "\n";
     exit(0);
+}
+
+/* ---------------- Waechter der Befehlsbruecke (Gruppe 6a, 1.0.6; Entwurf ax 3.5, E9) ----------------
+ * Der 5-Minuten-Takt ist der Minutentakt der Linie: bb_waechter() startet die Bruecke nur mit dem Haken
+ * "Befehle ueber MQTT annehmen", haelt sie sonst an und sendet <praefix>/status/befehle. Vor takt.lock
+ * ("Waechter vor den Sperren"), nie waehrend eines Updates (Marke), Neustart hoechstens alle 600 s.
+ * Eine Ausnahme stoert den Takt nicht. Bis 1.0.5 stand hier der Waechter von bin/dienst.sh. */
+try {
+    ax_bruecke_waechter();
+} catch (Throwable $ax_bw) {
+    ax_log_wenn_neu('bruecke_waechter', 'WARN', 'Takt: Waechter der Befehlsbruecke warf ' . get_class($ax_bw) . ': '
+        . substr($ax_bw->getMessage(), 0, 200), 3600);
 }
 
 /* ---------------- Ein Takt ---------------- */
@@ -126,24 +142,6 @@ if (!empty($ax_cfg['aktiv']) && $ax_amz && function_exists('curl_init')) {
     $ax_ok = 0;
 }
 
-/* ---------------- Waechter des Befehlsabos ---------------- */
-$ax_laeuft = false;
-$ax_status = ax_dienst_status();
-if ($ax_status !== null) {
-    $ax_laeuft = $ax_status;
-    $ax_soll = !empty($ax_cfg['befehle_mqtt_ein']) && !empty($ax_cfg['mqtt_ein']) && !empty($ax_cfg['aktiv']);
-    if ($ax_soll && !$ax_laeuft && time() - (int) $ax_t['dienst_versuch'] >= 600 && !is_file($ax_p['marke'])) {
-        $ax_t['dienst_versuch'] = time();
-        list($ax_d_ok, $ax_d_text) = ax_dienst('start');
-        ax_log($ax_d_ok ? 'INFO' : 'WARN', 'Takt: Befehlsabo ' . ($ax_d_ok ? 'gestartet.' : 'liess sich nicht starten: ' . $ax_d_text));
-        $ax_laeuft = (bool) ax_dienst_status();
-    } elseif (!$ax_soll && $ax_laeuft) {
-        list($ax_d_ok) = ax_dienst('stop');
-        ax_log('INFO', 'Takt: Befehlsabo angehalten (ausgeschaltet).');
-        $ax_laeuft = !$ax_d_ok;
-    }
-}
-
 /* ---------------- Waechter der Hue-Probe (Bauliste alexa4 H1) ----------------
  * Sie laeuft nur, solange der Haken gesetzt ist: fehlt er, haelt der Takt sie
  * an (der Dienst endet auch selbst binnen 5 s); ist er gesetzt und sie laeuft
@@ -184,6 +182,6 @@ $ax_t['ts'] = time();
 $ax_t['ok'] = $ax_ok;
 ax_write_json($ax_p['datadir'] . '/takt.json', $ax_t, 0644);
 ax_abo_datei($ax_cfg['mqtt_praefix'], true);
-ax_mqtt_takt($ax_cfg, $ax_t, $ax_laeuft, $ax_anmeldung);
+ax_mqtt_takt($ax_cfg, $ax_t, $ax_anmeldung);
 flock($ax_sp, LOCK_UN);
 exit(0);

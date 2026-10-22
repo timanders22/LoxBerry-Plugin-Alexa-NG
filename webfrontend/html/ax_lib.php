@@ -314,6 +314,10 @@ function ax_vorgaben()
         'mqtt_ein' => 1,
         'mqtt_praefix' => 'alexang',
         'befehle_mqtt_ein' => 0,
+        // Gruppe 6a (1.0.6): zweiter Haken der Befehlsbruecke "Echos ueber MQTT steuern" (Ansagen, Lautstaerke,
+        // Radio, Routinen; ab Werk aus). Fehlt er in einer bestehenden Konfiguration, gilt befehle_mqtt_ein
+        // (ax_uebergang(): in ax_config(), in der Selbstheilung und in der Sicherung).
+        'befehle_mqtt_steuern' => 0,
         'befehle_routine_ein' => 0,
         // Zwei Token (E4): das Sprechtoken fuer Loxone und andere Plugins,
         // das Aktionstoken zusaetzlich fuer Routinen und die Geraeteliste
@@ -371,6 +375,7 @@ function ax_config()
     }
     $fehlend = array_values(array_diff(array_keys($vorgaben), array_keys($cfg)));
     ax_config_lage(array('zustand' => $zustand, 'abgewiesen' => $abgewiesen, 'fehlend' => $fehlend));
+    $cfg += ax_uebergang($cfg);   // Gruppe 6a: zweiter Haken fehlt -> Wert von befehle_mqtt_ein
     $cfg += $vorgaben;
     if ($cfg['mqtt_praefix'] === '') { $cfg['mqtt_praefix'] = 'alexang'; }
     return $cfg;
@@ -409,6 +414,7 @@ function ax_wert_pruefen($schluessel, $wert, &$grund = '')
         case 'texte_protokollieren':
         case 'mqtt_ein':
         case 'befehle_mqtt_ein':
+        case 'befehle_mqtt_steuern':
         case 'befehle_routine_ein':
         case 'sperre_ein':
         case 'musik_ein':
@@ -442,7 +448,7 @@ function ax_wert_pruefen($schluessel, $wert, &$grund = '')
             if (count($wert) > AX_HUE_ECHOS_MAX) { $grund = 'MEHR_ZEILEN|' . AX_HUE_ECHOS_MAX; return null; }
             $aus = array();
             foreach (array_values($wert) as $e) {
-                if (!is_string($e) || ax_ipv4_zahl($e) === null) { $grund = 'ECHO_FORM|' . (is_string($e) ? str_replace('|', '/', substr($e, 0, 40)) : '?'); return null; }
+                if (!is_string($e) || ax_ipv4_zahl($e) === null) { $grund = 'ECHO_FORM|' . (is_string($e) ? str_replace('|', '/', ax_utf8_schneiden($e, 40)) : '?'); return null; }
                 if (in_array($e, $aus, true)) { $grund = 'ECHO_DOPPELT|' . $e; return null; }
                 $aus[] = $e;
             }
@@ -450,8 +456,8 @@ function ax_wert_pruefen($schluessel, $wert, &$grund = '')
         case 'hue_lampen':
             /* Fassung 2 (alexa6): die Freigabeliste. Je Lampe genau id
              * (2..9999, eindeutig, bleibt beim Umbenennen), name (1..32
-             * Zeichen, eindeutig), art (schalter|licht|dimmer; licht
-             * seit alexa7, Nr. 42), kuerzel
+             * Zeichen, eindeutig), art (schalter|licht|dimmer|taster; licht
+             * seit alexa7, Nr. 42; taster seit 1.0.6, E1), kuerzel
              * (a-z/0-9/_, eindeutig) und frei (Haken "bewusst freigeben",
              * Pflicht bei Tuer/Tor/Garage/Alarm/Schloss). Hoechstens 50. */
             if (!is_array($wert)) { $grund = 'KEINE_LISTE'; return null; }
@@ -470,7 +476,7 @@ function ax_wert_pruefen($schluessel, $wert, &$grund = '')
                 if ($g !== '') { $grund = $g; return null; }
                 $nn = ax_name_normal($z['name']);
                 if (isset($namen[$nn])) { $grund = 'LAMPE_NAME_DOPPELT|' . str_replace('|', '/', $z['name']); return null; }
-                if (!is_string($z['art']) || !in_array($z['art'], array('schalter', 'licht', 'dimmer'), true)) { $grund = 'LAMPE_ART|' . str_replace('|', '/', $z['name']); return null; }
+                if (!is_string($z['art']) || !in_array($z['art'], array('schalter', 'licht', 'dimmer', 'taster'), true)) { $grund = 'LAMPE_ART|' . str_replace('|', '/', $z['name']); return null; }
                 if (!is_string($z['kuerzel']) || !preg_match('/^[a-z0-9_]{1,32}\z/', $z['kuerzel'])) {
                     $grund = 'LAMPE_KUERZEL|' . str_replace('|', '/', $z['name']) . '|' . ax_hue_kuerzel_vorschlag($z['name'], $z['id']); return null;
                 }
@@ -691,7 +697,7 @@ function ax_config_heilen($token_anlegen = false)
             }
         }
         if ($neu) {
-            $voll = $roh + ax_vorgaben();
+            $voll = $roh + ax_uebergang($roh) + ax_vorgaben();   // Gruppe 6a: Uebergang zweiter Haken
             if (ax_config_speichern($voll)) {
                 $meld[] = ax_t('MELDUNG.TOKEN_ANGELEGT');
                 ax_log('INFO', 'Konfiguration: Token angelegt (keine vorhanden).');
@@ -703,7 +709,7 @@ function ax_config_heilen($token_anlegen = false)
     if ($zustand === 'ok' && is_array($roh) && ax_config_hat_inhalt($roh)) {
         $fehlend = array_values(array_diff(array_keys(ax_vorgaben()), array_keys($roh)));
         if ($fehlend) {
-            $voll = $roh;
+            $voll = $roh + ax_uebergang($roh);   // Gruppe 6a: Uebergang zweiter Haken vor den Vorgaben
             foreach (ax_vorgaben() as $k => $v) {
                 if (!array_key_exists($k, $voll)) { $voll[$k] = $v; }
             }
@@ -1427,7 +1433,7 @@ function ax_geraete_holen()
                 if (is_string($m) && preg_match('/^[A-Za-z0-9]{4,64}\z/', $m)) { $mitglieder[] = $m; }
             }
         }
-        $roh[] = array('anzeige' => substr($name, 0, 120), 'familie' => $fam, 'typ' => $typ, 'serial' => $ser,
+        $roh[] = array('anzeige' => ax_utf8_schneiden($name, 120), 'familie' => $fam, 'typ' => $typ, 'serial' => $ser,
                        'online' => !empty($d['online']) ? 1 : 0, 'mitglieder' => $mitglieder,
                        'laut' => isset($laut[$ser]) ? $laut[$ser] : -1);
     }
@@ -1481,7 +1487,11 @@ function ax_geraete_holen()
     }
     ax_write_json($p['namen'], $namen, 0644);
     $st = array('stand' => time(), 'konto_gesamt' => $gesamt, 'liste' => $liste, 'verschwunden' => $verschwunden);
-    ax_write_json($p['datadir'] . '/geraete.json', $st, 0644);
+    // Eigener Fund E1 (1.0.6): ein gescheitertes Schreiben ist kein Erfolg - sonst setzte der Takt geraete_ts.
+    if (!ax_write_json($p['datadir'] . '/geraete.json', $st, 0644)) {
+        ax_log_wenn_neu('geraete_schreiben', 'WARN', 'Geraete: geraete.json liess sich nicht schreiben - die Liste bleibt alt.', 3600);
+        return array(false, 'SCHREIBEN', null);
+    }
     ax_log_wenn_neu('geraete_' . md5(json_encode(array_map(function ($g) { return $g['normal']; }, $liste))),
         'INFO', 'Geraete: ' . $gesamt . ' im Konto, ' . count($liste) . ' sprechfaehig.', 86400);
     return array(true, '', $st);
@@ -3127,6 +3137,7 @@ function ax_mqtt_themen()
         'status/befehle'            => array(false, 'THEMA.STATUS_BEFEHLE'),
         'status/anmeldung'          => array(false, 'THEMA.STATUS_ANMELDUNG'),
         'geraete/anzahl'            => array(true, 'THEMA.GERAETE_ANZAHL'),
+        'geraete/online'            => array(true, 'THEMA.GERAETE_ONLINE'),
         'geraet/<name>/online'      => array(true, 'THEMA.GERAET_ONLINE'),
         'geraet/<name>/lautstaerke' => array(true, 'THEMA.GERAET_LAUT'),
         'letzte/zeit'               => array(true, 'THEMA.LETZTE_ZEIT'),
@@ -3256,7 +3267,7 @@ function ax_mqtt_letzte(array $l, array $cfg)
  * 30 Minuten den vollen Satz. Ein verschwundenes Geraet bekommt EINMAL -1
  * auf seine Zahlen (Entscheidung 8); seine Themen werden nicht geloescht.
  */
-function ax_mqtt_takt(array $cfg, array $t, $befehle_laeuft, $anmeldung)
+function ax_mqtt_takt(array $cfg, array $t, $anmeldung)
 {
     $p = ax_paths();
     $f = $p['datadir'] . '/mqtt_letzte.json';
@@ -3266,16 +3277,21 @@ function ax_mqtt_takt(array $cfg, array $t, $befehle_laeuft, $anmeldung)
     $werte = array();
     $st = ax_geraete();
     $jetzt_geraete = array();
+    // Gruppe 6a (1.0.6, Entwurf ax 2.2/2.3): geraete/anzahl und die neue Summe geraete/online kommen auch ohne
+    // Geraeteliste - dann mit -1 ("noch nicht geholt") statt gar nicht. Gezaehlt wie ax_status() (ohne WHA-Gruppen).
+    $n = -1;
+    $on = -1;
     if ($st) {
         $n = 0;
+        $on = 0;
         foreach ($st['liste'] as $g) {
             if ($g['familie'] === 'WHA') { continue; }
             $n++;
+            if (!empty($g['online'])) { $on++; }
             $jetzt_geraete[] = $g['normal'];
             $werte['geraet/' . $g['normal'] . '/online'] = (int) $g['online'];
             $werte['geraet/' . $g['normal'] . '/lautstaerke'] = (int) $g['laut'];
         }
-        $werte['geraete/anzahl'] = $n;
         foreach ((array) $alt['geraete'] as $weg) {
             if (is_string($weg) && !in_array($weg, $jetzt_geraete, true)) {
                 $werte['geraet/' . $weg . '/online'] = -1;
@@ -3283,13 +3299,9 @@ function ax_mqtt_takt(array $cfg, array $t, $befehle_laeuft, $anmeldung)
             }
         }
     }
-    $l = ax_json_lesen($p['datadir'] . '/letzte.json');
-    if (is_array($l) && isset($l['zeit'])) {
-        $werte['letzte/zeit'] = (int) $l['zeit'];
-        $werte['letzte/geraet'] = (string) $l['geraet'];
-        $werte['letzte/ergebnis'] = (int) $l['ergebnis'];
-        $werte['letzte/grund'] = (string) $l['grund'];
-    }
+    $werte += array('geraete/anzahl' => $n, 'geraete/online' => $on);
+    // letzte/*: ohne letzte.json (neu installiert, nach jedem Update) -1 bzw. "-" statt Schweigen (Entwurf ax 2.3).
+    $werte += ax_mqtt_letzte_werte();
     $senden = array();
     foreach ($werte as $k => $v) {
         if ($voll || !array_key_exists($k, $alt['werte']) || (string) $alt['werte'][$k] !== (string) $v) { $senden[$k] = $v; }
@@ -3297,7 +3309,7 @@ function ax_mqtt_takt(array $cfg, array $t, $befehle_laeuft, $anmeldung)
     $senden['status/ok'] = (int) $t['ok'];
     $senden['status/ts'] = time();
     $senden['status/zaehler'] = (int) $t['zaehler'];
-    $senden['status/befehle'] = $befehle_laeuft ? 1 : 0;
+    // status/befehle sendet seit 1.0.6 die Befehlsbruecke (1 laeuft, 0 aus, -1 gestoert) - ein Thema, ein Schreiber (E8).
     $senden['status/anmeldung'] = $anmeldung ? 1 : 0;
     list($n, $fehl) = ax_mqtt_senden($senden, $cfg);
     if ($n > 0 && $fehl === 0) {
@@ -3386,33 +3398,21 @@ function ax_abo_datei($praefix, $schreiben = false)
 }
 
 /* ==================================================================
- * Befehlsabo (Dienst ueber bin/dienst.sh)
+ * Befehlsbruecke (bin/befehlsbruecke.sh; bis 1.0.5 das eigene Befehlsabo bin/dienst.sh)
  * ================================================================== */
 
 /** Laeuft das Befehlsabo? Fragt dienst.sh status - die PID-Datei ist kein Beleg. */
 function ax_dienst_status()
 {
-    $p = ax_paths();
+    // Gruppe 6a (1.0.6): die Befehlsbruecke statt des Befehlsabos - argumentweise gemessen (bb_dienste), nicht die PID-Datei.
     if (DIRECTORY_SEPARATOR === '\\' || !function_exists('exec')) { return null; }
-    $sh = $p['bindir'] . '/dienst.sh';
-    if (!is_file($sh)) { return null; }
-    $o = array(); $rc = 0;
-    @exec('timeout 10 /bin/sh ' . escapeshellarg($sh) . ' status 2>/dev/null', $o, $rc);
-    return $rc === 0;
+    if (!ax_bruecke_laden() || !bb_pfade()) { return null; }
+    return (bool) bb_dienste();
 }
 
-function ax_dienst($was)
-{
-    $p = ax_paths();
-    if (DIRECTORY_SEPARATOR === '\\' || !function_exists('exec') || !in_array($was, array('start', 'stop'), true)) {
-        return array(false, 'NICHT_MOEGLICH');
-    }
-    $sh = $p['bindir'] . '/dienst.sh';
-    if (!is_file($sh)) { return array(false, 'DIENST_SH_FEHLT'); }
-    $o = array(); $rc = 0;
-    @exec('timeout 20 /bin/sh ' . escapeshellarg($sh) . ' ' . $was . ' 2>&1', $o, $rc);
-    return array($rc === 0, implode(' ', array_slice($o, 0, 3)));
-}
+/* Gruppe 6a (1.0.6): ax_dienst() (start/stop von bin/dienst.sh) entfaellt - die Befehlsbruecke schalten
+ * ax_bruecke_schalten() (Speichern) und bb_waechter() (Takt); ein altes Befehlsabo beenden preupgrade.sh,
+ * postinstall.sh und uninstall. */
 
 /* ==================================================================
  * Hue-Probe (Bauliste alexa4 H1-H3; ab Werk aus, nicht am Geraet erprobt).
@@ -3641,7 +3641,8 @@ function ax_hue_name_grund($name)
 {
     if (!is_string($name) || $name === '') { return 'LAMPE_NAME_FEHLT'; }
     $n = ax_hue_zeichenzahl($name);
-    if ($n < 0 || preg_match('/[\x00-\x1F\x7F]/', $name)) { return 'LAMPE_NAME_ZEICHEN|' . str_replace('|', '/', substr($name, 0, 40)); }
+    // F6 (1.0.6): UTF-8-sicher schneiden; ungueltiges UTF-8 kommt gar nicht zurueck.
+    if ($n < 0 || preg_match('/[\x00-\x1F\x7F]/', $name)) { return 'LAMPE_NAME_ZEICHEN|' . ($n < 0 ? '?' : str_replace('|', '/', ax_utf8_schneiden($name, 40))); }
     if (trim($name) !== $name) { return 'LAMPE_NAME_ZEICHEN|' . $name; }
     if ($n > AX_HUE_NAME_MAX) { return 'LAMPE_NAME_LAENGE|' . str_replace('|', '/', $name) . '|' . $n; }
     if (preg_match('/[=";<>|\\\\%]/', $name)) { return 'LAMPE_NAME_ZEICHEN|' . str_replace('|', '/', $name); }
@@ -3725,29 +3726,12 @@ function ax_mqtt_udpport()
 /** Der Name, unter dem das MQTT-Gateway ein Thema als virtuellen Eingang anlegt (/ und % werden _, Regeln/07). */
 function ax_hue_gateway_name(array $cfg, $kuerzel, $feld)
 {
-    return str_replace(array('/', '%'), '_', $cfg['mqtt_praefix'] . '/hue/' . $kuerzel . '/' . $feld);
+    return ax_gateway_name($cfg['mqtt_praefix'], 'hue/' . $kuerzel . '/' . $feld);   // Gruppe 6a: eine Regel fuer alle Themen
 }
 
-/**
- * [Dateiname, Inhalt] der Eingangsvorlage fuer die Lampen: Gateway-Eingaenge
- * als VirtualInHttp mit Dummy-Adresse (Kunstgriff Regeln/07), Titel = Name des
- * Gateways, Check leer. Je Lampe "ein" (digital), beim Dimmer "helligkeit" (0..100).
- */
-function ax_vorlage_hue_ein($host, array $cfg)
-{
-    $cmds = array();
-    foreach ($cfg['hue_lampen'] as $l) {
-        // Welle Bild 13 (1.0.4, Entscheidung 11): Kommentare aus der Sprachdatei, Titel = Gateway-Name.
-        $cmds[] = array('title' => ax_hue_gateway_name($cfg, $l['kuerzel'], 'ein'), 'comment' => sprintf(ax_t('LOX.VH_C_EIN'), $l['name']),
-                        'check' => ' ', 'analog' => false, 'min' => 0, 'max' => 1, 'unit' => '<v>');
-        if ($l['art'] === 'dimmer') {
-            $cmds[] = array('title' => ax_hue_gateway_name($cfg, $l['kuerzel'], 'helligkeit'), 'comment' => sprintf(ax_t('LOX.VH_C_HELL'), $l['name']),
-                            'check' => ' ', 'analog' => true, 'min' => 0, 'max' => 100, 'unit' => '<v> %');
-        }
-    }
-    return array('VI_alexang_hue.xml', ax_xml_virtual_in_http(array('title' => 'Alexa NG Lampen',
-        'comment' => ax_t('LOX.VH_KOMMENTAR') . ' (' . date('d.m.Y') . ')', 'address' => 'http://localhost', 'polling' => '604800'), $cmds));
-}
+/* Gruppe 6a (1.0.6): ax_vorlage_hue_ein() (VI_alexang_hue.xml, VirtualInHttp mit Dummy-Adresse localhost) entfaellt -
+ * fuer Gateway-Werte legt man einfache Virtuelle Eingaenge an (Gruppe 1 Nachtrag 2, Regeln/07 R2_078); die Namen
+ * nennt die Namenstabelle (ax_mqtt_namen()). */
 
 /** Die Adresse des LoxBerry fuer /dev/udp/... (aus der Anfrage; ohne Port). */
 function ax_hue_udp_host($host)
@@ -4862,7 +4846,16 @@ function ax_log_wenn_neu($schluessel, $stufe, $text, $sekunden = 3600)
     ax_log($stufe, $text);
     $d[$k] = time();
     if (count($d) > 200) { asort($d); $d = array_slice($d, -150, null, true); }
-    if (is_dir($p['datadir']) && !ax_nur_lesen()) { ax_write_json($f, $d, 0600); }
+    // F9 (1.0.6): wie ax_fehlversuch() den Nur-Lese-Betrieb kurz aufheben - sonst wurde der Zeitstempel am
+    // unangemeldeten Endpunkt nie gespeichert und die Bremse wirkte nie. Geschrieben wird nur in einen schon
+    // vorhandenen Datenordner und nur diese Laufzeitdatei (gleichartig fehlversuche.json), nie die Konfiguration;
+    // hoechstens einmal je $sekunden und Schluessel, weil nur nach einer Protokollzeile.
+    if (is_dir($p['datadir'])) {
+        $alt = ax_nur_lesen();
+        ax_nur_lesen(false);
+        ax_write_json($f, $d, 0600);
+        ax_nur_lesen($alt);
+    }
 }
 
 /** Das Protokollende rueckwaerts mit fseek. */
@@ -5242,6 +5235,11 @@ function ax_sicherung_lesen($roh)
         $gesehen[$k] = 1;
         $anzahl++;
     }
+    // Gruppe 6a (1.0.6): Uebergang wie in ax_config() - eine Sicherung bis 1.0.5 traegt befehle_mqtt_ein, aber nicht
+    // den zweiten Haken; dann gilt ihr Wert von befehle_mqtt_ein (nicht der jetzige Stand).
+    if (!isset($gesehen['befehle_mqtt_steuern']) && isset($gesehen['befehle_mqtt_ein'])) {
+        $neu['befehle_mqtt_steuern'] = $neu['befehle_mqtt_ein'];
+    }
     if ($anzahl === 0) { $mangel[] = ax_t('SICH.LEER'); }
     foreach (array('sprechtoken', 'aktionstoken') as $tk) {
         if (isset($gesehen[$tk]) && $neu[$tk] === '' && (string) $jetzt[$tk] !== '') {
@@ -5388,6 +5386,8 @@ function ax_pruef_themen()
     foreach ($m4[1] as $s) { $gesendet[] = 'radio/<zone>/' . $s; }
     preg_match_all("/'hue\/' \. \\\$kuerzel \. '\/([a-z]+)'/", $q, $m5);
     foreach ($m5[1] as $s) { $gesendet[] = 'hue/<kuerzel>/' . $s; }
+    // Gruppe 6a (1.0.6): status/befehle sendet die Befehlsbruecke (bb_status_senden), nicht diese Datei (E8).
+    if (ax_bruecke_datei() !== '') { $gesendet[] = 'status/befehle'; }
     $gesendet = array_values(array_unique($gesendet));
     $tabelle = array_keys(ax_mqtt_themen());
     if (!$gesendet) { return array(0, ax_t('TEST.A_THEMEN_LEER')); }
@@ -5403,21 +5403,26 @@ function ax_pruef_themen()
 function ax_pruef_vorlagen(array $cfg)
 {
     if (!function_exists('simplexml_load_string')) { return array(-1, ax_t('TEST.A_XML_NICHT')); }
+    // Fremdbefund F2 (1.0.6): ALLE Vorlagen, die der Reiter erzeugt, aus derselben Liste wie die Knoepfe
+    // (ax_vorlagen_liste()); bis 1.0.5 fehlte die Vorlage "Aktionen", und der Text nannte "fuenf" als Zahlwort.
     $fehl = array();
+    $namen = array();
+    $liste = ax_vorlagen_liste('loxberry', $cfg);
     $alt = libxml_use_internal_errors(true);
-    foreach (array(ax_vorlage_ein('loxberry'), ax_vorlage_aus('loxberry', $cfg), ax_vorlage_radio('loxberry', $cfg),
-                   ax_vorlage_hue_ein('loxberry', $cfg), ax_vorlage_hue_aus('loxberry', $cfg)) as $v) {
+    foreach ($liste as $v) {
+        $namen[] = $v[0];
         if (@simplexml_load_string($v[1]) === false) { $fehl[] = $v[0]; }
     }
     libxml_clear_errors();
     libxml_use_internal_errors($alt);
+    if (!$liste) { $fehl[] = '-'; }
     $zeile = ax_zeile('ALEXANG', array('OK' => 1, 'ANMELDUNG' => 1, 'GERAETE' => 1, 'ONLINE' => 1, 'ALTER' => 1,
                                        'ZAEHLER' => 1, 'LETZTE_OK' => 1, 'LETZTE_ALTER' => 1));
     foreach (array_keys(ax_status_felder()) as $feld) {
         if (substr_count($zeile, ';' . $feld . '=') !== 1) { $fehl[] = $feld; }
     }
     if ($fehl) { return array(0, sprintf(ax_t('TEST.A_XML_FEHL'), implode(', ', $fehl))); }
-    return array(1, sprintf(ax_t('TEST.A_XML_OK'), count(ax_status_felder())));
+    return array(1, sprintf(ax_t('TEST.A_XML_OK'), count($liste), implode(', ', $namen), count(ax_status_felder())));
 }
 
 /* ---------------- Eigener Endpunkt (nur aus dem Reiter Test) ---------------- */
@@ -5442,4 +5447,553 @@ function ax_selbstprobe(array $cfg)
     if ($code === 200 && strpos((string) $r, 'SELFTEST;OK=1;TOKEN=OK') === 0) { return array(1, ax_t('TEST.A_SELBST_OK')); }
     preg_match('/^.{0,60}/s', (string) $r, $m);
     return array(0, sprintf(ax_t('TEST.A_SELBST_FEHL'), $code, str_replace(array("\r", "\n"), ' ', $m[0])));
+}
+
+/* ==================================================================
+ * Gruppe 6a / MQTT (1.0.6): Namenstabelle, Befehlsbruecke, Lampe testen,
+ * laufenden Hue-Vorgang beenden
+ *
+ * Grundlage: Musterprojekt/entwurf_gruppe6_ax.txt (E1-E19), ENTSCHEIDUNGEN_GRUPPE6_ALEXANG.md,
+ * Bauvorschrift wz_bild/GRUPPE6A_BAUVORSCHRIFT.md. Fuer Werte ueber das MQTT-Gateway gibt es KEINE
+ * Importvorlage: je Wert ein einfacher Virtueller Eingang, Name genau so, wie das Gateway ihn vergibt
+ * (ax_gateway_name()). Die Namen kommen aus EINER Funktion (ax_mqtt_namen()) fuer Namenstabelle,
+ * Hakenliste und Selbstpruefung. Befehle laufen ueber die gemeinsame Befehlsbruecke
+ * (bin/befehlsbruecke.php, Stammfassung; Zuordnung bin/befehle_zuordnung.php) - sie ersetzt
+ * bin/ax_befehle.php und bin/dienst.sh mit denselben Themennamen.
+ * ================================================================== */
+
+if (!defined('AX_HUE_TEST_MINUTE_MAX')) { define('AX_HUE_TEST_MINUTE_MAX', 10); }   // E2: Test-Befehle je Lampe und Minute
+if (!defined('AX_HUE_VORGANG_ENDE_S')) { define('AX_HUE_VORGANG_ENDE_S', 10); }    // F7: so lange nach TERM, dann KILL
+
+/**
+ * Bis zu $max Byte schneiden, ohne ein UTF-8-Zeichen zu zerreissen (F6, eigener Fund E1). Mittel wie in
+ * ax_kurztext(): schneiden, dann ein angebrochenes Zeichen am Ende weglassen - aber ohne "..." und ohne
+ * Leerraum zu aendern. War schon die Eingabe kein gueltiges UTF-8, kommt '?' zurueck (json_encode schluege
+ * sonst fehl und die Meldung ginge verloren).
+ */
+function ax_utf8_schneiden($s, $max)
+{
+    $s = (string) $s;
+    if (strlen($s) > $max) {
+        $s = substr($s, 0, $max);
+        if (preg_match('//u', $s) !== 1) { $s = (string) preg_replace('/[\xC0-\xFF][\x80-\xBF]*\z/', '', $s); }
+    }
+    return preg_match('//u', $s) === 1 ? $s : '?';
+}
+
+/**
+ * Uebergang 1.0.5 -> 1.0.6 (ENTSCHEIDUNGEN Gruppe 6a Punkt 2): fehlt der zweite Haken "Echos ueber MQTT steuern"
+ * (befehle_mqtt_steuern) in einer gespeicherten Konfiguration, gilt der Wert von "Befehle ueber MQTT annehmen" -
+ * bestehende Anlagen mit Befehlsabo laufen unveraendert weiter; neue Installationen: beide aus. Rueckgabe die
+ * Schluessel, die vor den Vorgaben gelten ('' wenn nichts zu tun).
+ */
+function ax_uebergang($roh)
+{
+    if (!is_array($roh) || array_key_exists('befehle_mqtt_steuern', $roh) || !array_key_exists('befehle_mqtt_ein', $roh)) {
+        return array();
+    }
+    $g = '';
+    $w = ax_wert_pruefen('befehle_mqtt_ein', $roh['befehle_mqtt_ein'], $g);
+    return $w === null ? array() : array('befehle_mqtt_steuern' => $w);
+}
+
+/** Der Name, unter dem das MQTT-Gateway ein Thema als Virtuellen Eingang anlegt: / % und Leerzeichen werden _ (Regeln/07). */
+function ax_gateway_name($praefix, $thema)
+{
+    return str_replace(array('/', '%', ' '), '_', (string) $praefix . '/' . (string) $thema);
+}
+
+/** letzte/* fuer den Takt: aus letzte.json, sonst -1 bzw. "-" (Entwurf ax 2.3: "unbekannt" statt Schweigen). */
+function ax_mqtt_letzte_werte()
+{
+    $p = ax_paths();
+    $l = ax_json_lesen($p['datadir'] . '/letzte.json');
+    $da = is_array($l) && isset($l['zeit']);
+    return array(
+        'letzte/zeit' => $da ? (int) $l['zeit'] : -1,
+        'letzte/geraet' => $da && isset($l['geraet']) ? (string) $l['geraet'] : '-',
+        'letzte/ergebnis' => $da && isset($l['ergebnis']) ? (int) $l['ergebnis'] : -1,
+        'letzte/grund' => $da && isset($l['grund']) ? (string) $l['grund'] : '-',
+    );
+}
+
+/**
+ * Die Namenstabelle (Reiter "Einbindung in Loxone", Schritt 2) - EINE Liste fuer Tabelle, Hakenliste und
+ * Selbstpruefung (Entwurf ax 2.4, Bauart pw_mqtt_namen). Je Zeile: thema (ohne Praefix), name (Gateway),
+ * bedeutung (Sprachschluessel THEMA.*), bereich, art (zahl|text), im_muster, haken (V2), noncached, retained.
+ * Echos, Zonen und Lampen kommen aus der Anlage; Befehls-, Quittungs- und Rueckmeldethemen sind keine Eingaenge.
+ */
+function ax_mqtt_namen($cfg = null, $praefix = null)
+{
+    if ($cfg === null) { $cfg = ax_config(); }
+    if ($praefix === null) { $praefix = $cfg['mqtt_praefix']; }
+    $t = ax_mqtt_themen();
+    $aus = array();
+    $zeile = function ($thema, $muster, $bereich, $art, $im_muster, $haken, $nc) use (&$aus, $t, $praefix) {
+        $aus[] = array('thema' => $thema, 'name' => ax_gateway_name($praefix, $thema), 'bedeutung' => $t[$muster][1],
+                       'bereich' => $bereich, 'art' => $art, 'im_muster' => $im_muster, 'haken' => $haken,
+                       'noncached' => $nc, 'retained' => $t[$muster][0]);
+    };
+    $zeile('status/ok', 'status/ok', '0 … 1', 'zahl', true, true, true);
+    $zeile('status/ts', 'status/ts', 'Unix-s', 'zahl', false, false, false);
+    $zeile('status/zaehler', 'status/zaehler', '0 … 999', 'zahl', true, true, false);
+    $zeile('status/befehle', 'status/befehle', '-1 … 1', 'zahl', false, true, false);
+    $zeile('status/anmeldung', 'status/anmeldung', '0 … 1', 'zahl', true, true, true);
+    $zeile('geraete/anzahl', 'geraete/anzahl', '-1 … 999', 'zahl', true, true, false);
+    $zeile('geraete/online', 'geraete/online', '-1 … 999', 'zahl', true, true, false);
+    $st = ax_geraete();
+    if ($st) {
+        foreach ($st['liste'] as $g) {
+            if ($g['familie'] === 'WHA') { continue; }
+            $zeile('geraet/' . $g['normal'] . '/online', 'geraet/<name>/online', '-1 … 1', 'zahl', false, false, false);
+            $zeile('geraet/' . $g['normal'] . '/lautstaerke', 'geraet/<name>/lautstaerke', '-1 … 100', 'zahl', false, false, false);
+        }
+    }
+    $zeile('letzte/zeit', 'letzte/zeit', '-1, Unix-s', 'zahl', false, false, false);
+    $zeile('letzte/geraet', 'letzte/geraet', '', 'text', false, false, false);
+    $zeile('letzte/ergebnis', 'letzte/ergebnis', '-1 … 1', 'zahl', true, true, false);
+    $zeile('letzte/grund', 'letzte/grund', '', 'text', true, true, false);
+    foreach ((isset($cfg['radio_zonen']) && is_array($cfg['radio_zonen'])) ? $cfg['radio_zonen'] : array() as $z) {
+        $zeile('radio/' . (int) $z['zone'] . '/sender', 'radio/<zone>/sender', '0 … 50', 'zahl', false, false, false);
+        $zeile('radio/' . (int) $z['zone'] . '/zustand', 'radio/<zone>/zustand', '0 … 1', 'zahl', false, false, false);
+    }
+    $zeile('hue_probe/ein', 'hue_probe/ein', '0 … 1', 'zahl', false, false, false);
+    foreach ((isset($cfg['hue_lampen']) && is_array($cfg['hue_lampen'])) ? $cfg['hue_lampen'] : array() as $l) {
+        $zeile('hue/' . $l['kuerzel'] . '/ein', 'hue/<kuerzel>/ein', '0 … 1', 'zahl', true, true, false);
+        if ($l['art'] === 'dimmer') {
+            $zeile('hue/' . $l['kuerzel'] . '/helligkeit', 'hue/<kuerzel>/helligkeit', '0 … 100 %', 'zahl', true, true, false);
+        }
+    }
+    return $aus;
+}
+
+/** Hakenliste fuer Gateway V2 (Entwurf ax 2.4, E6): je Zeile array(Thema voll, Name, Bedeutung, noncached). */
+function ax_mqtt_hakenliste($cfg = null)
+{
+    if ($cfg === null) { $cfg = ax_config(); }
+    $aus = array();
+    foreach (ax_mqtt_namen($cfg) as $z) {
+        if ($z['haken']) { $aus[] = array($cfg['mqtt_praefix'] . '/' . $z['thema'], $z['name'], $z['bedeutung'], $z['noncached']); }
+    }
+    return $aus;
+}
+
+/**
+ * Pruefzeile "Namenstabelle" (Entwurf ax 2.4): jeder Name der Tabelle ist ein Thema aus ax_mqtt_themen() unter dem
+ * Praefix (Muster <name>, <zone>, <kuerzel> als Ausdruck), und jedes feste Thema der Liste steht in der Tabelle. Die
+ * Gegenseite wird OHNE ax_gateway_name() gebildet. $namen: Liste array(thema, name) fuer die Gegenprobe (ein
+ * verdrehter Name muss rot werden). Rueckgabe array(1|0, Text ohne HTML).
+ */
+function ax_pruef_namen($cfg = null, $namen = null)
+{
+    if ($cfg === null) { $cfg = ax_config(); }
+    $p = $cfg['mqtt_praefix'];
+    if ($namen === null) {
+        $namen = array();
+        foreach (ax_mqtt_namen($cfg) as $z) { $namen[] = array($z['thema'], $z['name']); }
+    }
+    if (!$namen) { return array(0, ax_t('TEST.A_NAMEN_LEER')); }
+    $muster = array();
+    foreach (array_keys(ax_mqtt_themen()) as $m) {
+        $teile = preg_split('#(<name>|<zone>|<kuerzel>)#', $m, -1, PREG_SPLIT_DELIM_CAPTURE);
+        $re = '';
+        foreach ($teile as $x) {
+            $ers = array('<name>' => '[a-z0-9_]{1,40}', '<zone>' => '[0-9]{1,2}', '<kuerzel>' => '[a-z0-9_]{1,32}');
+            $re .= isset($ers[$x]) ? $ers[$x] : preg_quote($x, '#');
+        }
+        $muster[$m] = '#^' . $re . '\z#';
+    }
+    $falsch = array();
+    $gesehen = array();
+    foreach ($namen as $z) {
+        $treffer = '';
+        foreach ($muster as $m => $re) { if (preg_match($re, $z[0])) { $treffer = $m; break; } }
+        if ($treffer === '' || $z[1] !== strtr($p . '/' . $z[0], array('/' => '_', '%' => '_', ' ' => '_'))) { $falsch[] = $z[1]; continue; }
+        $gesehen[$treffer] = 1;
+    }
+    $fehlt = array();
+    foreach (array_keys($muster) as $m) {
+        if (strpos($m, '<') === false && !isset($gesehen[$m])) { $fehlt[] = $m; }
+    }
+    if ($falsch || $fehlt) {
+        return array(0, sprintf(ax_t('TEST.A_NAMEN_FEHL'), $falsch ? implode(', ', $falsch) : '-', $fehlt ? implode(', ', $fehlt) : '-'));
+    }
+    return array(1, sprintf(ax_t('TEST.A_NAMEN_OK'), count($namen)));
+}
+
+/* ---------------- Befehle ueber die Befehlsbruecke (bin/befehlsbruecke.php) ---------------- */
+
+/**
+ * Die Rueckgabe von ax_befehl_ausfuehren(), ax_radio_ausfuehren() oder ax_loxsperre_setzen() - array(http, felder) -
+ * fuer die Bruecke: array(bool, Grund). Angenommen heisst HTTP 200 mit OK=1, auch UEBERSPRUNGEN (GESPERRT, RUHEZEIT,
+ * TEXT_NULL, UNVERAENDERT; der Grund steht im Protokoll). Sonst der GRUND der Felder in die Quittung (Entwurf ax 3.3).
+ */
+function ax_befehl_bruecke($r)
+{
+    if (is_array($r) && isset($r[0], $r[1]) && (int) $r[0] === 200 && is_array($r[1]) && !empty($r[1]['OK'])) { return array(true, ''); }
+    $g = (is_array($r) && isset($r[1]) && is_array($r[1]) && isset($r[1]['GRUND'])) ? (string) $r[1]['GRUND'] : '';
+    return array(false, $g !== '' ? $g : 'FEHLER');
+}
+
+/**
+ * Einstellungen fuer die Zuordnung (Entwurf ax 3.3/3.4): Praefix = mqtt_praefix; annehmen = "Befehle ueber MQTT
+ * annehmen" UND Plugin aktiv UND MQTT an (wie bis 1.0.5 das Befehlsabo); eingreifend = zweiter Haken "Echos ueber
+ * MQTT steuern" (mit Uebergang, ax_config()).
+ */
+function ax_befehle_einstellungen()
+{
+    $c = ax_config();
+    $mqtt = !empty($c['mqtt_ein']);
+    return array('praefix' => (string) $c['mqtt_praefix'],
+                 'annehmen' => !empty($c['befehle_mqtt_ein']) && !empty($c['aktiv']) && $mqtt,
+                 'eingreifend' => !empty($c['befehle_mqtt_steuern']), 'mqtt_ein' => $mqtt);
+}
+
+/** Wo liegt bin/befehlsbruecke.php? Installiert unter bin/plugins/<ordner>, im Archiv neben webfrontend. */
+function ax_bruecke_datei()
+{
+    $p = ax_paths();
+    $kand = array();
+    if ($p['lbhome'] !== '') { $kand[] = $p['bindir'] . '/befehlsbruecke.php'; }
+    $kand[] = dirname(dirname(__DIR__)) . '/bin/befehlsbruecke.php';
+    foreach ($kand as $k) {
+        if (is_file($k)) { return $k; }
+    }
+    return '';
+}
+
+/** Die Bruecke als Bibliothek laden (BB_NUR_LADEN: kein Hauptteil). */
+function ax_bruecke_laden()
+{
+    if (function_exists('bb_waechter')) { return true; }
+    $f = ax_bruecke_datei();
+    if ($f === '') { return false; }
+    if (!defined('BB_NUR_LADEN')) { define('BB_NUR_LADEN', true); }
+    require_once $f;
+    return function_exists('bb_waechter');
+}
+
+/**
+ * Der Waechter der Bruecke aus dem 5-Minuten-Takt (bin/ax_takt.php, Entwurf ax 3.5, E9): startet sie nur mit dem
+ * Haken "Befehle ueber MQTT annehmen", haelt sie sonst an und sendet <praefix>/status/befehle. Der Aufrufer faengt
+ * jede Ausnahme. Rueckgabe wie bb_waechter() oder array(null, Grund).
+ */
+function ax_bruecke_waechter()
+{
+    if (!ax_bruecke_laden()) { return array(null, 'bin/befehlsbruecke.php fehlt'); }
+    return bb_waechter();
+}
+
+/**
+ * Direktstart bzw. -stopp beim Speichern des Reiters MQTT (Bauart pw_bruecke_schalten): der Waechter im Takt
+ * startet nach einem Start hoechstens alle 600 s neu. befehlsbruecke.sh start startet nur nach --soll, nie als
+ * root, nie waehrend eines Updates, nie doppelt. $neustart: Praefix gewechselt (stop, dann start).
+ * Rueckgabe array(''|'ein'|'aus'|'start_fehl'|'stop_fehl', Ausgabe).
+ */
+function ax_bruecke_schalten($neustart = false)
+{
+    if (DIRECTORY_SEPARATOR === '\\' || !ax_bruecke_laden()) { return array('', ''); }
+    $p = bb_pfade();
+    if (!$p) { return array('', ''); }
+    $e = ax_befehle_einstellungen();
+    $laeuft = (bool) bb_dienste();
+    if ($e['annehmen']) {
+        if ($laeuft && !$neustart) { return array('', ''); }
+        if ($laeuft) { bb_sh($p, 'stop'); }
+        list($rc, $aus) = bb_sh($p, 'start');
+        if ($rc === 0 && bb_dienste()) {
+            ax_log('INFO', 'Befehlsbruecke beim Speichern gestartet.');
+            return array('ein', $aus);
+        }
+        ax_log('WARN', 'Befehlsbruecke: Start beim Speichern gescheitert (Rueckgabe ' . (int) $rc . '): ' . substr($aus, 0, 200));
+        return array('start_fehl', $aus);
+    }
+    if (!$laeuft) { return array('', ''); }
+    list($rc, $aus) = bb_sh($p, 'stop');
+    if ($rc === 0 && !bb_dienste()) {
+        ax_log('INFO', 'Befehlsbruecke beim Speichern angehalten.');
+        return array('aus', $aus);
+    }
+    return array('stop_fehl', $aus);
+}
+
+/**
+ * Die Befehlsliste der Bruecke (bb_liste(): EINE Quelle fuer Reiter und Baustein-Liste). Fuer Ansagen und
+ * Ankuendigungen (Art 'text') setzt die Linie den Loxone-Befehl selbst: den Ansagetext setzt Loxone in <v> ein (Status-Baustein, Ausgang TQ; Entwurf
+ * ax 2.5 S3) - die Stammfassung schreibt dort "<fester Text>" und bleibt unberuehrt. Rueckgabe Liste oder null.
+ */
+function ax_bb_liste()
+{
+    if (!ax_bruecke_laden()) { return null; }
+    list($z) = bb_zuordnung_laden();
+    if ($z === null) { return null; }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) { return null; }
+    $l = bb_liste($z, bb_einstellungen($z));
+    foreach ($l['befehle'] as $i => $b) {
+        if ($b['art'] === 'text' && preg_match('#/(sprechen|ankuendigen)\z#', $b['name'])) {
+            $l['befehle'][$i]['loxone']['ein'] = 'publish ' . $b['thema'] . ' <v>';
+        }
+    }
+    return $l;
+}
+
+/**
+ * [Dateiname, Inhalt] der Vorlage "Alexa NG MQTT-Befehle" (Entwurf ax 2.5 S3): eigener Virtueller Ausgang an den
+ * UDP-Eingang des MQTT-Gateways (/dev/udp/<LoxBerry>/<Udpinport>), Titel "Alexa NG <Bedeutung> (MQTT)" - nie wie ein
+ * Gateway-Eingang (Leerzeichen). Die Muster der Bruecke rollt die Linie selbst aus: Ansage und Lautstaerke je Echo,
+ * Ansage an "alle" und je eigene Gruppe, Sperre, je freigegebene Routine, Radio je Zone und alle Zonen, die
+ * Rueckmeldungen der Lampen (keine Brueckenbefehle, gleiche Adresse; Taster brauchen keine). publish, nie retain.
+ * Traegt kein Token. Kommentare aus der Sprachdatei, Titel fest deutsch.
+ */
+function ax_vorlage_mqtt($host, array $cfg)
+{
+    $port = ax_mqtt_udpport();
+    $pr = $cfg['mqtt_praefix'];
+    $b = $pr . '/befehl/';
+    $cmds = array();
+    $echos = array();
+    $st = ax_geraete();
+    if ($st) { foreach ($st['liste'] as $g) { if ($g['familie'] !== 'WHA') { $echos[] = $g['normal']; } } }
+    foreach (array_merge($echos, array('alle')) as $n) {
+        $cmds[] = array('title' => 'Alexa NG Ansage ' . $n . ' (MQTT)', 'comment' => sprintf(ax_t('LOX.VM_C_SPRECHEN'), $n),
+                        'on' => 'publish ' . $b . $n . '/sprechen <v>');
+        if ($n !== 'alle') {
+            $cmds[] = array('title' => 'Alexa NG Lautstärke ' . $n . ' (MQTT)', 'comment' => sprintf(ax_t('LOX.VM_C_LAUT'), $n),
+                            'on' => 'publish ' . $b . $n . '/lautstaerke <v.0>');
+        }
+    }
+    foreach ($cfg['gruppen'] as $gr) {
+        $cmds[] = array('title' => 'Alexa NG Ansage Gruppe ' . $gr['name'] . ' (MQTT)', 'comment' => sprintf(ax_t('LOX.VM_C_GRUPPE'), $gr['name']),
+                        'on' => 'publish ' . $b . 'gruppe/' . $gr['name'] . '/sprechen <v>');
+    }
+    $cmds[] = array('title' => 'Alexa NG Ansagen sperren (MQTT)', 'comment' => ax_t('LOX.VA_C_SPERRE'), 'analog' => false,
+                    'on' => 'publish ' . $b . 'sperre 1', 'off' => 'publish ' . $b . 'sperre 0');
+    foreach ($cfg['routinen_frei'] as $r) {
+        if (!is_string($r) || $r === '') { continue; }
+        $cmds[] = array('title' => 'Alexa NG Routine ' . $r . ' (MQTT)', 'comment' => sprintf(ax_t('LOX.VA_C_ROUTINE'), $r), 'analog' => false,
+                        'on' => 'publish ' . $b . 'routine ' . $r);
+    }
+    $zonen = array();
+    foreach ($cfg['radio_zonen'] as $z) { $zonen[] = (string) (int) $z['zone']; }
+    $zonen[] = 'alle';
+    foreach ($zonen as $zn) {
+        $t = ($zn === 'alle') ? 'alle Zonen' : 'Zone ' . $zn;
+        $tk = ($zn === 'alle') ? ax_t('LOX.VR_C_ALLE') : sprintf(ax_t('LOX.VR_C_ZONE'), $zn);
+        $cmds[] = array('title' => 'Alexa NG Radio ' . $t . ' Sender (MQTT)', 'comment' => sprintf(ax_t('LOX.VR_C_SENDER'), $tk),
+                        'on' => 'publish ' . $b . 'radio/' . $zn . ' <v.0>');
+        $cmds[] = array('title' => 'Alexa NG Radio ' . $t . ' Stopp (MQTT)', 'comment' => sprintf(ax_t('LOX.VR_C_STOPP'), $tk), 'analog' => false,
+                        'on' => 'publish ' . $b . 'radio/' . $zn . ' stopp');
+        $cmds[] = array('title' => 'Alexa NG Radio ' . $t . ' Lautstärke (MQTT)', 'comment' => sprintf(ax_t('LOX.VR_C_LAUT'), $tk),
+                        'on' => 'publish ' . $b . 'radio/' . $zn . '/laut <v.0>');
+    }
+    foreach ($cfg['hue_lampen'] as $l) {
+        if ($l['art'] === 'taster') { continue; }
+        $t = $pr . '/hue/' . $l['kuerzel'] . '/';
+        $cmds[] = array('title' => 'Alexa NG ' . $l['name'] . ' Rückmeldung (MQTT)', 'comment' => sprintf(ax_t('LOX.VQH_C_RUECK'), $l['kuerzel']),
+                        'analog' => false, 'on' => 'publish ' . $t . 'status 1', 'off' => 'publish ' . $t . 'status 0');
+        if ($l['art'] === 'dimmer') {
+            $cmds[] = array('title' => 'Alexa NG ' . $l['name'] . ' Rückmeldung Helligkeit (MQTT)', 'comment' => sprintf(ax_t('LOX.VQH_C_HELL'), $l['kuerzel']),
+                            'on' => 'publish ' . $t . 'status_helligkeit <v.0>');
+        }
+    }
+    return array('VQ_alexang_mqtt.xml', ax_xml_virtual_out(array('title' => 'Alexa NG MQTT-Befehle',
+        'comment' => ax_t('LOX.VM_KOMMENTAR') . ' (' . date('d.m.Y') . ')',
+        'address' => '/dev/udp/' . ax_hue_udp_host($host) . '/' . ($port > 0 ? $port : 11884)), $cmds));
+}
+
+/**
+ * Alle Vorlagen, die der Reiter "Einbindung in Loxone" erzeugt - EINE Liste fuer die Knoepfe und die Selbstpruefung
+ * (Fremdbefund F2, Entwurf ax 2.6): Kuerzel => array(Dateiname, Inhalt). Seit 1.0.6 sechs: MQTT-Befehle (neu) und
+ * fuer bestehende Anlagen Status, Ansagen, Aktionen, Radio (HTTP) und Lampen-Rueckmeldung (UDP). Die Vorlage der
+ * Lampen-Eingaenge (localhost-Kunstgriff) gibt es nicht mehr (Gruppe 1 Nachtrag 2, R2_078).
+ */
+function ax_vorlagen_liste($host, array $cfg)
+{
+    return array(
+        'vm' => ax_vorlage_mqtt($host, $cfg),
+        'vi' => ax_vorlage_ein($host),
+        'vo' => ax_vorlage_aus($host, $cfg),
+        'va' => ax_vorlage_aktionen($host, $cfg),
+        'vr' => ax_vorlage_radio($host, $cfg),
+        'vq' => ax_vorlage_hue_aus($host, $cfg),
+    );
+}
+
+/**
+ * Zeile "Laeuft die Befehlsbruecke?" (Entwurf gemeinsam 2.11, Bauart pw_pruef_bruecke): array(1|0|2|3, Text ohne
+ * HTML). Gemessen wird das Erzeugnis (zustand.json: ts, abo, Zaehler) und ob ein Dienst argumentweise laeuft - wie
+ * der Waechter. Aus (Haken) ist grau, kein Kreuz.
+ */
+function ax_pruef_bruecke()
+{
+    if (!ax_bruecke_laden()) { return array(0, ax_t('BEFEHL.P_FEHLT')); }
+    list($z, $fehler) = bb_zuordnung_laden();
+    if ($z === null) { return array(0, sprintf(ax_t('BEFEHL.P_DEFEKT'), $fehler)); }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) { return array(0, sprintf(ax_t('BEFEHL.P_DEFEKT'), $f[0])); }
+    $c = ax_config();
+    if (empty($c['befehle_mqtt_ein'])) { return array(3, ax_t('BEFEHL.P_AUS')); }
+    if (empty($c['mqtt_ein'])) { return array(2, ax_t('BEFEHL.P_MQTT_AUS')); }
+    if (empty($c['aktiv'])) { return array(2, ax_t('BEFEHL.P_PLUGIN_AUS')); }
+    if (!bb_praefix_gueltig($c['mqtt_praefix'])) { return array(0, sprintf(ax_t('BEFEHL.P_PRAEFIX'), $c['mqtt_praefix'])); }
+    if (DIRECTORY_SEPARATOR === '\\' || !bb_pfade()) { return array(-1, ax_t('BEFEHL.P_ARCHIV')); }
+    $zu = bb_zustand_lesen();
+    $alter = ($zu && isset($zu['ts'])) ? time() - (int) $zu['ts'] : null;
+    if (!bb_dienste()) { return array(0, ax_t('BEFEHL.P_STEHT')); }
+    if ($alter === null || $alter > BB_WACHE_GRENZE) { return array(0, sprintf(ax_t('BEFEHL.P_HAENGT'), (int) $alter)); }
+    if (empty($zu['abo'])) {
+        return array(0, sprintf(ax_t('BEFEHL.P_OHNE_ABO'), isset($zu['fehler']) ? (string) $zu['fehler'] : ''));
+    }
+    $zl = (isset($zu['zaehler']) && is_array($zu['zaehler'])) ? $zu['zaehler'] : array();
+    $t = sprintf(ax_t('BEFEHL.P_LAEUFT'), date('d.m.Y H:i', isset($zu['start']) ? (int) $zu['start'] : time()),
+                 isset($zl['angenommen']) ? (int) $zl['angenommen'] : 0, isset($zl['abgelehnt']) ? (int) $zl['abgelehnt'] : 0,
+                 isset($zl['verworfen']) ? (int) $zl['verworfen'] : 0);
+    if (!empty($zu['letzter']) && is_array($zu['letzter'])) {
+        $t .= ' ' . sprintf(ax_t('BEFEHL.P_LETZTER'), (string) $zu['letzter']['name'],
+                            (string) $zu['letzter']['ergebnis'], max(0, time() - (int) $zu['letzter']['zeit']));
+    }
+    if (!empty($zl['verworfen'])) { $t .= ' ' . ax_t('BEFEHL.P_VERWORFEN'); }
+    return array(1, $t);
+}
+
+/** Die Zeilen von "befehlsbruecke.php --pruefen" (bb_pruefen()) als eine Pruefzeile: array(1|0|2, Text). */
+function ax_pruef_bruecke_einrichtung()
+{
+    if (!ax_bruecke_laden()) { return array(2, ax_t('BEFEHL.P_FEHLT')); }
+    ob_start();
+    bb_pruefen();
+    $aus = array_values(array_filter(explode("\n", (string) ob_get_clean()), 'strlen'));
+    if (!$aus) { return array(2, '-'); }
+    $fehl = preg_grep('/^\[FEHL\]/', $aus);
+    return array($fehl ? 0 : 1, implode(' | ', $fehl ? $fehl : array($aus[0], end($aus))));
+}
+
+/* ---------------- E2: Lampe testen (Reiter Test) ---------------- */
+
+/**
+ * Einen Befehl einer Lampe an Loxone senden - dieselbe Sendefunktion wie die Nachbildung (ax_hue_lampe_melden),
+ * dieselben Werte: ein (ein=1), aus (ein=0, beim Dimmer dazu helligkeit=0), halb (nur Dimmer: ein=1 und
+ * helligkeit=50), puls (nur Taster: ein=1, gleich danach ein=0). Eigene Bremse: hoechstens AX_HUE_TEST_MINUTE_MAX
+ * je Lampe und Minute (data/hue_test.json unter flock) - die Minutenbremse der Nachbildung liegt nur in deren
+ * Speicher. Geht ohne Echo und ohne laufende Nachbildung; braucht MQTT. Rueckgabe array(ok, Grund, Wert-Text).
+ */
+function ax_hue_test($kuerzel, $was, array $cfg)
+{
+    $l = null;
+    foreach ($cfg['hue_lampen'] as $x) { if ($x['kuerzel'] === (string) $kuerzel) { $l = $x; break; } }
+    if ($l === null) { return array(false, 'HUE_TEST_LAMPE', ''); }
+    $erlaubt = ($l['art'] === 'taster') ? array('puls') : (($l['art'] === 'dimmer') ? array('ein', 'aus', 'halb') : array('ein', 'aus'));
+    if (!in_array((string) $was, $erlaubt, true)) { return array(false, 'HUE_TEST_WAS', ''); }
+    if (empty($cfg['mqtt_ein'])) { return array(false, 'HUE_TEST_MQTT_AUS', ''); }
+    $p = ax_paths();
+    if (!is_dir($p['datadir'])) { @mkdir($p['datadir'], 0775, true); }
+    $fh = @fopen($p['datadir'] . '/hue_test.lock', 'c');
+    if ($fh === false || !flock($fh, LOCK_EX)) { return array(false, 'BESCHAEFTIGT', ''); }
+    $d = ax_json_lesen($p['datadir'] . '/hue_test.json');
+    if (!is_array($d)) { $d = array(); }
+    $jetzt = time();
+    foreach ($d as $k => $t) {
+        $d[$k] = is_array($t) ? array_values(array_filter($t, function ($z) use ($jetzt) { return is_int($z) && $z <= $jetzt && $jetzt - $z < 60; })) : array();
+        if (!$d[$k]) { unset($d[$k]); }
+    }
+    $mein = isset($d[$l['kuerzel']]) ? $d[$l['kuerzel']] : array();
+    if (count($mein) >= AX_HUE_TEST_MINUTE_MAX) {
+        flock($fh, LOCK_UN);
+        fclose($fh);
+        return array(false, 'HUE_TEST_BREMSE|' . AX_HUE_TEST_MINUTE_MAX, '');
+    }
+    $mein[] = $jetzt;
+    $d[$l['kuerzel']] = $mein;
+    ax_write_json($p['datadir'] . '/hue_test.json', $d, 0600);
+    flock($fh, LOCK_UN);
+    fclose($fh);
+    $schritte = array();
+    if ($was === 'puls') { $schritte = array(array('ein' => 1), array('ein' => 0)); }
+    elseif ($was === 'ein') { $schritte = array(array('ein' => 1)); }
+    elseif ($was === 'halb') { $schritte = array(array('ein' => 1, 'helligkeit' => 50)); }
+    else { $schritte = array(($l['art'] === 'dimmer') ? array('ein' => 0, 'helligkeit' => 0) : array('ein' => 0)); }
+    $n = 0;
+    $fehl = 0;
+    $wert = array();
+    foreach ($schritte as $paare) {
+        list($n1, $f1) = ax_hue_lampe_melden($l['kuerzel'], $paare, $cfg);
+        $n += $n1;
+        $fehl += $f1;
+        $w = array();
+        foreach ($paare as $k => $v) { $w[] = $k . '=' . $v; }
+        $wert[] = implode(' ', $w);
+    }
+    $wert = implode(', dann ', $wert);
+    $ok = ($n > 0 && $fehl === 0);
+    ax_log($ok ? 'INFO' : 'WARN', 'Hue-Test: ' . $l['kuerzel'] . ' ' . $wert . ' (Oberflaeche), MQTT ' . ($ok ? 'gesendet' : 'nicht gesendet') . '.');
+    return array($ok, $ok ? '' : ($n === 0 ? 'HUE_TEST_KEIN_MQTT' : 'HUE_TEST_NICHT_GESENDET'), $wert);
+}
+
+/* ---------------- F7: laufenden Hue-Vorgang samt Prozessgruppe beenden ---------------- */
+
+/** Ein Signal an den Prozess - an die ganze Gruppe, wenn er ihr Fuehrer ist (setsid in ax_hue_vorgang_starten()). */
+function ax_prozessgruppe_signal($pid, $sig)
+{
+    $pid = (int) $pid;
+    if ($pid <= 1) { return false; }
+    if (function_exists('posix_kill')) {
+        $gruppe = function_exists('posix_getpgid') ? @posix_getpgid($pid) : false;
+        return @posix_kill(($gruppe === $pid) ? -$pid : $pid, (int) $sig);
+    }
+    $stat = (string) @file_get_contents('/proc/' . $pid . '/stat');
+    $teile = explode(' ', (string) substr($stat, (int) strrpos($stat, ')') + 2));
+    $ziel = (isset($teile[2]) && (int) $teile[2] === $pid) ? '-' . $pid : (string) $pid;
+    $rc = 1;
+    $o = array();
+    @exec('kill -' . (int) $sig . ' -- ' . escapeshellarg($ziel) . ' 2>/dev/null', $o, $rc);
+    return $rc === 0;
+}
+
+/**
+ * Fremdbefund F7 (berechtigt, mittel): Deinstallation, Aktualisierung und ax_takt.php --hue-entfernen beenden
+ * zuerst einen laufenden bin/hue_vorgang.php samt Prozessgruppe (docker build bis 1800 s) und raeumen erst dann auf -
+ * sonst legte der Vorgang nach dem Aufraeumen Netz und Container neu an. TERM an die Gruppe, bis $grenze s warten,
+ * dann KILL. Danach die Sperrdatei weg und der Zustand "fehler/VORGANG_ABGEBROCHEN". Rueckgabe
+ * array(ok, NICHTS|BEENDET|VORGANG_LAEUFT, PIDs).
+ */
+function ax_hue_vorgang_beenden($grenze = AX_HUE_VORGANG_ENDE_S)
+{
+    if (DIRECTORY_SEPARATOR === '\\') { return array(true, 'NICHTS', array()); }
+    $p = ax_paths();
+    $v = ax_hue_vorgang();
+    $warte = microtime(true) + 5;
+    while ($v['zustand'] === 'gestartet' && $v['pid'] === 0 && microtime(true) < $warte) {   // PID kommt mit dem ersten Schritt
+        usleep(250000);
+        $v = ax_hue_vorgang();
+    }
+    $sperre = $p['datadir'] . '/hue_vorgang.sperre';
+    $pids = array();
+    if ($v['pid'] > 0 && ax_hue_vorgang_prozess($v['pid'])) { $pids[] = (int) $v['pid']; }
+    $sp = (int) trim((string) @file_get_contents($sperre));
+    if ($sp > 0 && !in_array($sp, $pids, true) && ax_hue_vorgang_prozess($sp)) { $pids[] = $sp; }
+    if (!$pids) { return array(true, 'NICHTS', array()); }
+    foreach ($pids as $pid) { ax_prozessgruppe_signal($pid, 15); }
+    $ende = microtime(true) + max(1, (int) $grenze);
+    $leben = function () use (&$pids) { return array_values(array_filter($pids, 'ax_hue_vorgang_prozess')); };
+    while ($leben() && microtime(true) < $ende) { usleep(200000); }
+    if ($leben()) {
+        foreach ($leben() as $pid) { ax_prozessgruppe_signal($pid, 9); }
+        $ende = microtime(true) + 2;
+        while ($leben() && microtime(true) < $ende) { usleep(200000); }
+    }
+    $rest = $leben();
+    if ($rest) {
+        ax_log('WARN', 'Hue-Probe (eigene Netzadresse): laufender Vorgang (PID ' . implode(', ', $rest) . ') liess sich nicht beenden.');
+        return array(false, 'VORGANG_LAEUFT', $rest);
+    }
+    if (in_array((int) trim((string) @file_get_contents($sperre)), $pids, true)) { @unlink($sperre); }
+    $alt = ax_nur_lesen();
+    ax_nur_lesen(false);
+    ax_hue_vorgang_schreiben(array('vorgang' => $v['vorgang'] !== '' ? $v['vorgang'] : 'anlegen', 'zustand' => 'fehler', 'pid' => $pids[0],
+                                   'start' => $v['start'], 'ende' => time(), 'schritt' => '', 'grund' => 'VORGANG_ABGEBROCHEN',
+                                   'text' => '', 'ergebnis' => ''));
+    ax_nur_lesen($alt);
+    ax_log('INFO', 'Hue-Probe (eigene Netzadresse): laufender Vorgang (PID ' . implode(', ', $pids) . ') samt Prozessgruppe beendet, bevor aufgeraeumt wird.');
+    return array(true, 'BEENDET', $pids);
 }

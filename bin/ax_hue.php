@@ -424,6 +424,14 @@ define('AX_HUEL_GLEICH_S', 2.0);       // gleicher Wert je Thema binnen 2 s: nur
 define('AX_HUEL_MINUTE_MAX', 10);      // Schaltbefehle je Lampe und Minute
 define('AX_HUEL_PING_S', 30);          // MQTT-Leser: PINGREQ-Abstand (Keepalive 60 s)
 define('AX_HUEL_PAKET_MAX', 65536);    // groesstes MQTT-Paket, das der Leser annimmt
+// Gruppe 6a (1.0.6), EchoLox-Idee E3 / Entwurf ax E16: Hue-Fehler 901 an Alexa, wenn ein noetiges MQTT-Senden
+// scheiterte. HINTER DIESEM SCHALTER, ab Werk aus - eingeschaltet wird erst nach der Messung am Echo
+// (ENTSCHEIDUNGEN Gruppe 6a Punkt 4). Aus: "success" wie bis 1.0.5.
+define('AX_HUEL_FEHLER_901', false);
+// Gruppe 6a (1.0.6), Entwurf ax E14: Spiegeln der Rueckmeldung auf .../ein - Sperre gegen Schaltschleifen:
+// hoechstens AX_HUEL_SPIEGEL_MAX Spiegelungen je Lampe in 60 s, danach AX_HUEL_SPIEGEL_PAUSE_S Pause (WARN).
+define('AX_HUEL_SPIEGEL_MAX', 3);
+define('AX_HUEL_SPIEGEL_PAUSE_S', 600);
 
 $ax_hl_lage = null;
 $ax_hl_lage_zeit = 0.0;
@@ -431,6 +439,7 @@ $ax_hl_gesendet = array();             // Thema => array(wert, zeit)
 $ax_hl_takt = array();                 // Lampen-ID => Zeitpunkte der letzten Minute
 $ax_hl_abgewiesen_log = array();       // IP => 1 (je Lauf einmal ins Protokoll)
 $ax_hl_bremse_log = array();           // Lampen-ID => Zeit der letzten Protokollzeile
+$ax_hl_spiegel = array();              // Lampen-ID => array('zeiten' => [...], 'pause_bis' => t) (E14)
 $ax_ab = array('s' => null, 'puffer' => '', 'naechster' => 0, 'warte' => 5, 'ping' => 0, 'sig' => '', 'pflege' => 0);
 
 /** Die Lage (siehe oben). $frisch: neu lesen (jede HTTP-Anfrage), sonst hoechstens einmal je Sekunde. */
@@ -682,6 +691,10 @@ function ax_hue_lampe_put(array $l, $rumpf, $ip)
     }
     $t[] = $jetzt;
     $ax_hl_takt[$id] = $t;
+    // Gruppe 6a (1.0.6), EchoLox-Idee E1 / Entwurf ax 2.7: Art "Taster/Szene" - Alexa zeigt eine Steckdose, deren
+    // Zustand nach jedem Puls "aus" ist. on=true schickt ein=1 und gleich danach ein=0 (zwei Sendungen; die 2-s-Sperre
+    // trifft das nicht, weil die Werte wechseln); on=false schickt nichts. bri ergab oben schon Hue-Fehler 6.
+    if ($l['art'] === 'taster') { return ax_hue_taster_put($l, $d, $erg, $adr, $neu_ein, $ip); }
     $s = ax_hue_lampe_stand($id);
     if ($neu_bri !== null) {
         $s['bri'] = $neu_bri;
@@ -696,6 +709,14 @@ function ax_hue_lampe_put(array $l, $rumpf, $ip)
     list($n, $f, $gleich) = ax_hue_lampe_senden($l, $paare);
     $gesendet = ($n > 0 && $f === 0);
     $wert = 'ein=' . $paare['ein'] . (isset($paare['helligkeit']) ? ' helligkeit=' . $paare['helligkeit'] : '');
+    // E3 (1.0.6, hinter AX_HUEL_FEHLER_901): war ein Senden noetig (nicht nur wegen gleichem Wert unterdrueckt) und
+    // ging nichts hinaus, bekommt Alexa Hue-Fehler 901, und der Zustand der Lampe wird NICHT uebernommen.
+    if (AX_HUEL_FEHLER_901 && ($n > 0 || $gleich === 0) && !$gesendet) {
+        ax_hue_lampe_merken($id, 'schalten', array('ip' => (string) $ip, 'zeit' => time(), 'wert' => $wert, 'mqtt' => 0, 'mqtt_nicht' => 1, 'gleich' => 0));
+        ax_log('WARN', 'Hue: Lampe "' . $l['name'] . '" (' . $l['kuerzel'] . ') ' . $wert . ' von ' . $ip
+            . ' nicht an MQTT gesendet - Hue-Fehler 901 an Alexa, Zustand nicht uebernommen.');
+        return array(array('error' => array('type' => 901, 'address' => $adr, 'description' => 'Internal error, MQTT not sent')));
+    }
     ax_hue_lampe_merken($id, '', array('ein' => $s['ein'], 'bri' => $s['bri'], 'quelle' => 'alexa', 'zeit' => time()));
     ax_hue_lampe_merken($id, 'schalten', array('ip' => (string) $ip, 'zeit' => time(), 'wert' => $wert,
         'mqtt' => $gesendet ? 1 : 0, 'mqtt_nicht' => ($n > 0 && !$gesendet) || ($n === 0 && $gleich === 0) ? 1 : 0, 'gleich' => ($n === 0 && $gleich > 0) ? 1 : 0));
@@ -916,6 +937,85 @@ function ax_hue_rueckmeldung($thema, $wert)
     }
     ax_hue_lampe_merken($id, '', array('ein' => $s['ein'], 'bri' => $s['bri'], 'quelle' => 'loxone', 'zeit' => time()));
     ax_hue_abo_stand(array('empfangen' => 1, 'zeit' => time()));
+    // Gruppe 6a (1.0.6), Entwurf ax E14: weicht die Rueckmeldung vom zuletzt gesendeten Wert ab, einmal hinterher spiegeln.
+    if ($l['art'] !== 'taster') {
+        ax_hue_spiegeln($l, $m[2] === 'status' ? 'ein' : 'helligkeit', (int) round($zahl));
+    }
+}
+
+/**
+ * Gruppe 6a (1.0.6), EchoLox-Idee E1: PUT einer Lampe der Art "Taster/Szene". on=true sendet ein=1 und gleich danach
+ * ein=0 (Puls); on=false sendet nichts. Der gemerkte Zustand bleibt "aus" - Alexa sieht nach jedem Schalten eine
+ * ausgeschaltete Steckdose. Hue-Fehler 901 nur mit AX_HUEL_FEHLER_901 (ab Werk aus). Rueckgabe wie ax_hue_lampe_put().
+ */
+function ax_hue_taster_put(array $l, array $d, array $erg, $adr, $neu_ein, $ip)
+{
+    $id = (string) $l['id'];
+    $n = 0;
+    $f = 0;
+    if ($neu_ein === 1) {
+        list($n1, $f1) = ax_hue_lampe_senden($l, array('ein' => 1));
+        list($n2, $f2) = ax_hue_lampe_senden($l, array('ein' => 0));
+        $n = $n1 + $n2;
+        $f = $f1 + $f2;
+        $wert = 'ein=1, ein=0 (Puls)';
+    } else {
+        $wert = 'aus (Taster: nichts gesendet)';
+    }
+    $noetig = ($neu_ein === 1);
+    $gesendet = ($n > 0 && $f === 0);
+    if (AX_HUEL_FEHLER_901 && $noetig && !$gesendet) {
+        ax_hue_lampe_merken($id, 'schalten', array('ip' => (string) $ip, 'zeit' => time(), 'wert' => $wert, 'mqtt' => 0, 'mqtt_nicht' => 1, 'gleich' => 0));
+        ax_log('WARN', 'Hue: Taster "' . $l['name'] . '" (' . $l['kuerzel'] . ') ' . $wert . ' von ' . $ip
+            . ' nicht an MQTT gesendet - Hue-Fehler 901 an Alexa.');
+        return array(array('error' => array('type' => 901, 'address' => $adr, 'description' => 'Internal error, MQTT not sent')));
+    }
+    ax_hue_lampe_merken($id, '', array('ein' => 0, 'bri' => 254, 'quelle' => 'alexa', 'zeit' => time()));
+    ax_hue_lampe_merken($id, 'schalten', array('ip' => (string) $ip, 'zeit' => time(), 'wert' => $wert,
+        'mqtt' => $gesendet ? 1 : 0, 'mqtt_nicht' => ($noetig && !$gesendet) ? 1 : 0, 'gleich' => 0));
+    ax_log('INFO', 'Hue: Taster "' . $l['name'] . '" (' . $l['kuerzel'] . ') ' . $wert . ' von ' . $ip . ', MQTT '
+        . ($noetig ? ($gesendet ? 'gesendet' : 'nicht gesendet (aus oder Broker nicht erreichbar)') : 'nicht noetig') . '.');
+    if (array_key_exists('on', $d) && is_bool($d['on'])) { $erg[] = array('success' => array($adr . '/on' => $d['on'])); }
+    return $erg;
+}
+
+/**
+ * Gruppe 6a (1.0.6), Entwurf ax E14 (ENTSCHEIDUNGEN Gruppe 6a Punkt 3): Spiegeln der Rueckmeldung. Weicht eine
+ * Rueckmeldung aus Loxone (status bzw. status_helligkeit) vom zuletzt an Loxone gesendeten .../ein bzw.
+ * .../helligkeit ab, sendet die Nachbildung den Wert einmal hinterher (fluechtig) - Loxone bekommt eine Flanke in die
+ * Richtung, in der der Baustein schon steht, und das naechste "Alexa, ... ein" ist wieder eine Aenderung. Nichts
+ * gesendet, solange noch nichts gesendet wurde (keine Abweichung bekannt) oder der Wert gleich ist.
+ * Schleifensperre: hoechstens AX_HUEL_SPIEGEL_MAX Spiegelungen je Lampe in 60 s; die naechste fuehrt zu
+ * AX_HUEL_SPIEGEL_PAUSE_S Pause mit einer WARN-Zeile (eine Logik, die auf das gespiegelte ein umschaltet, kann so
+ * nicht dauerhaft hin- und herschalten). Rueckgabe 'gespiegelt'|'gleich'|'unbekannt'|'gesperrt'|'nicht_gesendet'.
+ */
+function ax_hue_spiegeln(array $l, $feld, $wert)
+{
+    global $ax_hl_gesendet, $ax_hl_spiegel;
+    $thema = $l['kuerzel'] . '/' . $feld;
+    if (!isset($ax_hl_gesendet[$thema])) { return 'unbekannt'; }
+    if ((string) $ax_hl_gesendet[$thema][0] === (string) $wert) { return 'gleich'; }
+    $id = (string) $l['id'];
+    $jetzt = microtime(true);
+    $sp = isset($ax_hl_spiegel[$id]) ? $ax_hl_spiegel[$id] : array('zeiten' => array(), 'pause_bis' => 0.0);
+    if ($jetzt < $sp['pause_bis']) { return 'gesperrt'; }
+    $z = array();
+    foreach ($sp['zeiten'] as $t) { if ($jetzt - $t < 60.0) { $z[] = $t; } }
+    if (count($z) >= AX_HUEL_SPIEGEL_MAX) {
+        $ax_hl_spiegel[$id] = array('zeiten' => array(), 'pause_bis' => $jetzt + AX_HUEL_SPIEGEL_PAUSE_S);
+        ax_log('WARN', 'Hue: Lampe "' . $l['name'] . '" (' . $l['kuerzel'] . ') - mehr als ' . AX_HUEL_SPIEGEL_MAX
+            . ' Spiegelungen der Rueckmeldung in einer Minute (Schaltschleife in Loxone?); Spiegeln fuer '
+            . (int) (AX_HUEL_SPIEGEL_PAUSE_S / 60) . ' Minuten angehalten.');
+        return 'gesperrt';
+    }
+    $alt = (string) $ax_hl_gesendet[$thema][0];
+    list($n, $f) = ax_hue_lampe_senden($l, array($feld => (int) $wert));
+    $z[] = $jetzt;
+    $ax_hl_spiegel[$id] = array('zeiten' => $z, 'pause_bis' => 0.0);
+    $ok = ($n > 0 && $f === 0);
+    ax_log('INFO', 'Hue: Rueckmeldung ' . $l['kuerzel'] . ' ' . $feld . '=' . (int) $wert . ' weicht vom zuletzt gesendeten Wert '
+        . $alt . ' ab - ' . $feld . '=' . (int) $wert . ' gespiegelt' . ($ok ? '' : ' (MQTT nicht gesendet)') . '.');
+    return $ok ? 'gespiegelt' : 'nicht_gesendet';
 }
 
 /* ---------------- SSDP ---------------- */

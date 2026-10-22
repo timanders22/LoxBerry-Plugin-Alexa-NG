@@ -59,4 +59,18 @@ if command -v php >/dev/null 2>&1; then
         *) echo "<INFO> Nachgelesen: noch keine eingerichtete Konfiguration - beim ersten Oeffnen der Oberflaeche entstehen die Token." ;;
     esac
 fi
+# Gruppe 6a (1.0.6, Entwurf ax 3.5): die Marke ausdruecklich entfernen (der Trap bleibt als Rueckfall), dann die
+# Befehlsbruecke starten - sie startet nur mit dem Haken "Befehle ueber MQTT annehmen" (befehlsbruecke.sh fragt
+# --soll); sonst uebernimmt der Waechter im 5-Minuten-Takt.
+rm -f "$MARKE" 2>/dev/null
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    AX_BB=$(timeout 40 bash "$BBSH" start 2>&1)
+    AX_RC=$?
+    case "$AX_RC:$AX_BB" in
+        0:*gestartet*|0:*laeuft*) echo "<OK> Befehlsbruecke: $AX_BB" ;;
+        0:*) echo "<INFO> Befehlsbruecke: ${AX_BB:-kein Start}" ;;
+        *) echo "<WARNING> Befehlsbruecke nicht gestartet (${AX_BB:-Rueckgabe $AX_RC}); der Takt versucht es binnen 5 Minuten wieder." ;;
+    esac
+fi
 exit 0

@@ -13,11 +13,21 @@
 #   2. Bei Amazon abmelden (/auth/deregister, 15 s) [ungemessen]; scheitert
 #      es: WARNING, das Geraet im Amazon-Konto von Hand entfernen
 #   3. Eigene retained Themen unter dem eingestellten Praefix abraeumen
-#      (-r -n direkt am Broker) und zuruecklesen (Entscheidung 3)
+#      (-r -n direkt am Broker) und zuruecklesen (Entscheidung 3); danach die
+#      Optionsdateien mit dem Broker-Zugang ueberschreiben (Bruecke und Plugin, 1.0.6)
 #   4. Zweitschriften, .alt, .kaputt, Marke, Bestand, Namenszuordnung
 #      ueberschreiben und loeschen; nachzaehlen. config/ und data/ des
 #      Plugins raeumt LoxBerry selbst.
 
+# Gruppe 6a (1.0.6, Entwurf ax E11): Uninstall-Praefix (am Geraet gemessen 08.10.2026, plugininstall.pl :1570/:1603):
+# beim Deinstallieren ruft der Installer JEDES data/system/uninstall/<name>* - auch dieses Skript, wenn ein Plugin
+# deinstalliert wird, dessen NAME mit "alexang" beginnt; $2 ist dann DESSEN Name. Dann gehoert der Lauf nicht uns:
+# nichts tun - vor allem keine Bruecke anhalten, nicht abmelden, keine Themen leeren, nichts loeschen. Bis 1.0.5
+# wertete das Skript nur $3 und $5 aus.
+if [ -n "$2" ] && [ "$2" != "alexang" ]; then
+    echo "<INFO> Deinstallation von '$2' - dieses Skript gehoert zu 'alexang' und tut nichts."
+    exit 0
+fi
 PFOLDER="${3:-alexang}"
 case "$PFOLDER" in
     ''|.|..|*/*|system) echo "<WARNING> Unbrauchbarer Ordnername '$PFOLDER' - nichts geloescht."; exit 0 ;;
@@ -48,19 +58,40 @@ fi
 BIN="$BASE/bin/plugins/$PFOLDER"
 PHP=$(command -v php 2>/dev/null)
 
-# 1. Befehlsabo
-if [ -f "$BIN/dienst.sh" ]; then
-    if timeout 15 /bin/sh "$BIN/dienst.sh" status >/dev/null 2>&1; then
-        timeout 30 /bin/sh "$BIN/dienst.sh" stop >/dev/null 2>&1
-        if timeout 15 /bin/sh "$BIN/dienst.sh" status >/dev/null 2>&1; then
-            echo "<WARNING> Das Befehlsabo laeuft noch - bitte den LoxBerry neu starten."
-        else
-            echo "<OK> Befehlsabo angehalten (nachgesehen)."
-        fi
-    else
-        echo "<INFO> Das Befehlsabo lief nicht."
-    fi
+# 1. Befehlsbruecke (Gruppe 6a, 1.0.6; Muster vb_g1_bruecke_bau/beispiel/uninstall/uninstall): anhalten (stop beendet
+#    Dienst UND mosquitto_sub), dann argumentweise nachzaehlen - dabei auch Reste des bis 1.0.5 eigenen Befehlsabos
+#    (bin/ax_befehle.php) und verwaiste mosquitto_sub mit unseren Optionsdateien. Die Optionsdateien selbst
+#    ueberschreibt Schritt 3b (die Themen in Schritt 3 brauchen die des Plugins noch).
+BBSH="$BIN/befehlsbruecke.sh"
+BBPHP="$BIN/befehlsbruecke.php"
+BBDIR="$BASE/data/plugins/$PFOLDER/befehle"
+if [ -f "$BBSH" ]; then
+    AX_AUS=$(timeout 40 bash "$BBSH" stop 2>&1)
+    echo "<INFO> Befehlsbruecke: ${AX_AUS:-keine Antwort}"
 fi
+AX_REST=0
+for d in /proc/[0-9]*; do
+    mapfile -d '' -t a 2>/dev/null < "$d/cmdline" || continue
+    [ "${#a[@]}" -ge 2 ] || continue
+    if { [ "${a[1]}" = "$BBPHP" ] || [ "${a[1]}" = "$BIN/ax_befehle.php" ]; } && [[ "${a[0]}" =~ (^|/)php[0-9.]*$ ]]; then
+        kill -9 "${d#/proc/}" 2>/dev/null && AX_REST=$((AX_REST + 1))
+    fi
+done
+AX_ABO=0
+for d in /proc/[0-9]*; do
+    c=""
+    read -r c 2>/dev/null < "$d/comm"
+    [ "$c" = "mosquitto_sub" ] || continue
+    mapfile -d '' -t e 2>/dev/null < "$d/environ" || continue
+    for x in "${e[@]}"; do
+        case "$x" in
+            "XDG_CONFIG_HOME=$BBDIR/mosquitto"|"XDG_CONFIG_HOME=$BASE/data/plugins/$PFOLDER/mosquitto")
+                kill -9 "${d#/proc/}" 2>/dev/null && AX_ABO=$((AX_ABO + 1)); break ;;
+        esac
+    done
+done
+[ "$AX_REST" -gt 0 ] && echo "<WARNING> Befehlsbruecke bzw. altes Befehlsabo: $AX_REST Dienst(e) erst mit kill -9 beendet."
+[ "$AX_ABO" -gt 0 ] && echo "<WARNING> $AX_ABO mosquitto_sub mit den Optionsdateien des Plugins erst mit kill -9 beendet."
 if [ -f "$BIN/hue_dienst.sh" ]; then
     if timeout 15 /bin/sh "$BIN/hue_dienst.sh" status >/dev/null 2>&1; then
         timeout 30 /bin/sh "$BIN/hue_dienst.sh" stop >/dev/null 2>&1
@@ -72,6 +103,52 @@ if [ -f "$BIN/hue_dienst.sh" ]; then
     else
         echo "<INFO> Die Hue-Probe lief nicht."
     fi
+fi
+
+# Fremdbefund F7 (1.0.6): einen laufenden bin/hue_vorgang.php samt Prozessgruppe (docker build bis 1800 s) beenden,
+# BEVOR Container und Netz entfernt werden - sonst legte er sie danach neu an (falsches "nachgesehen"). Gefunden wird
+# argumentweise: argv[1] genau unser Skript (Regeln/06). setsid macht den Vorgang zum Gruppenfuehrer; dann geht TERM an
+# die ganze Gruppe (auch den docker-Client), nach 10 s KILL. Ausgabe: Zahl der gefundenen Vorgaenge; Rueckgabe 1, wenn
+# einer weiterlebt.
+ax_lebt() {   # $1 PID - laeuft und ist kein Zombie
+    [ -r "/proc/$1/stat" ] || return 1
+    [ "$(sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f1)" != "Z" ]
+}
+ax_vorgang_beenden() {   # $1 bin-Ordner des Plugins
+    local prog="$1/hue_vorgang.php" d pid pg i n
+    local -a a pids=()
+    for d in /proc/[0-9]*; do
+        mapfile -d '' -t a 2>/dev/null < "$d/cmdline" || continue
+        [ "${#a[@]}" -ge 2 ] && [ "${a[1]}" = "$prog" ] || continue
+        pids+=("${d#/proc/}")
+    done
+    if [ "${#pids[@]}" -eq 0 ]; then echo 0; return 0; fi
+    for pid in "${pids[@]}"; do
+        pg=$(sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f3)
+        if [ "$pg" = "$pid" ]; then kill -TERM -- "-$pid" 2>/dev/null; else kill -TERM "$pid" 2>/dev/null; fi
+    done
+    i=0
+    while [ $i -lt 50 ]; do
+        n=0
+        for pid in "${pids[@]}"; do ax_lebt "$pid" && n=$((n + 1)); done
+        [ $n -eq 0 ] && break
+        sleep 0.2
+        i=$((i + 1))
+    done
+    for pid in "${pids[@]}"; do
+        if ax_lebt "$pid"; then kill -KILL -- "-$pid" 2>/dev/null; kill -KILL "$pid" 2>/dev/null; fi
+    done
+    sleep 0.5
+    n=0
+    for pid in "${pids[@]}"; do ax_lebt "$pid" && n=$((n + 1)); done
+    echo "${#pids[@]}"
+    [ $n -eq 0 ]
+}
+AX_VG=$(ax_vorgang_beenden "$BIN"); AX_VRC=$?
+if [ "$AX_VRC" != 0 ]; then
+    echo "<WARNING> Ein laufender Hue-Vorgang (hue_vorgang.php) liess sich nicht beenden - Container und Netz danach von Hand pruefen."
+elif [ "$AX_VG" != 0 ]; then
+    echo "<OK> Laufenden Hue-Vorgang (Anlegen bzw. docker build) samt Prozessgruppe beendet, bevor aufgeraeumt wird."
 fi
 
 # 1b. Hue-Probe auf eigener Netzadresse (Nr. 41): Container und Netz entfernen,
@@ -116,6 +193,28 @@ if [ -n "$PHP" ] && [ -f "$BIN/ax_takt.php" ]; then
         *UEBRIG=0*) echo "<OK> Zurueckbehaltene MQTT-Themen abgeraeumt und zurueckgelesen ($AX_AUS)." ;;
         *) echo "<WARNING> Zurueckbehaltene MQTT-Themen nicht vollstaendig abgeraeumt (${AX_AUS:-keine Antwort})." ;;
     esac
+fi
+
+# 3b. Optionsdateien mit dem Broker-Zugang ueberschreiben und entfernen (Gruppe 6a, 1.0.6, Entwurf ax 3.5 und E11):
+#     die der Befehlsbruecke (data/.../befehle/mosquitto) und die des Plugins (data/.../mosquitto) - bis 1.0.5 blieben
+#     sie stehen, bis LoxBerry den Datenordner raeumt. Nachgezaehlt.
+AX_OPT=0
+AX_OPTREST=""
+for AX_F in "$BBDIR/mosquitto/mosquitto_sub" "$BBDIR/mosquitto/mosquitto_pub" \
+            "$BASE/data/plugins/$PFOLDER/mosquitto/mosquitto_sub" "$BASE/data/plugins/$PFOLDER/mosquitto/mosquitto_pub"; do
+    [ -f "$AX_F" ] || continue
+    AX_N=$(stat -c %s "$AX_F" 2>/dev/null || echo 64)
+    [ "$AX_N" -gt 0 ] 2>/dev/null && head -c "$AX_N" /dev/zero > "$AX_F" 2>/dev/null
+    rm -f "$AX_F" 2>/dev/null
+    if [ -e "$AX_F" ]; then AX_OPTREST="$AX_OPTREST $AX_F"; else AX_OPT=$((AX_OPT + 1)); fi
+done
+case "$BBDIR" in
+    "$BASE"/data/plugins/"$PFOLDER"/befehle) [ -d "$BBDIR" ] && rm -rf "${BBDIR:?}" 2>/dev/null ;;
+esac
+if [ -n "$AX_OPTREST" ]; then
+    echo "<WARNING> Optionsdateien mit dem Broker-Zugang liegen noch:$AX_OPTREST - bitte von Hand entfernen."
+else
+    echo "<OK> $AX_OPT Optionsdateien mit dem Broker-Zugang ueberschrieben und entfernt (Befehlsbruecke und Plugin)."
 fi
 
 # 4. Nachbarn neben den Ordnern

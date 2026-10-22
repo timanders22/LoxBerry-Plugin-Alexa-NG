@@ -8,8 +8,10 @@
 #   1. Upgrade-Marke NEBEN den Datenordner (Unixzeit) - als Erstes. Ohne sie
 #      hielte preinstall.sh das Update fuer eine Neuinstallation; deshalb
 #      Abbruch mit rc 2, VOR purge_installation.
-#   2. Befehlsabo anhalten (dienst.sh der ALTEN Fassung: status, dann stop),
-#      ebenso die Hue-Probe (hue_dienst.sh, ab 0.9.4).
+#   2. Befehlsabo anhalten (dienst.sh der ALTEN Fassung bis 1.0.5: status, dann stop)
+#      bzw. die Befehlsbruecke (befehlsbruecke.sh, ab 1.0.6), ebenso die Hue-Probe
+#      (hue_dienst.sh, ab 0.9.4); einen laufenden Hue-Vorgang samt Prozessgruppe
+#      beenden, BEVOR Container und Netz entfernt werden (F7, 1.0.6).
 #   3. Einen alten Bestand erst wegraeumen, dann Einstellungen und
 #      Anmeldung frisch nach data/plugins/<ordner>.upgrade_bestand/ (0700,
 #      Dateien 0600) sichern und mit cmp nachsehen. Die Zweitschriften
@@ -49,6 +51,16 @@ if ! grep -qx '[0-9][0-9]*' "$MARKE" 2>/dev/null; then
     exit 2
 fi
 
+# Gruppe 6a (1.0.6): die Befehlsbruecke der bisherigen Fassung anhalten (gibt es ab 1.0.6); postupgrade.sh
+# startet sie danach, wenn sie eingeschaltet ist. Der Block fuer dienst.sh bleibt fuer den Umstieg von 1.0.5.
+BBSH="$BASE/bin/plugins/$PFOLDER/befehlsbruecke.sh"
+if [ -f "$BBSH" ]; then
+    if timeout 40 bash "$BBSH" stop >/dev/null 2>&1; then
+        echo "<OK> Befehlsbruecke fuer das Update angehalten (postupgrade.sh startet sie danach, wenn sie eingeschaltet ist)."
+    else
+        echo "<WARNING> Die Befehlsbruecke liess sich nicht anhalten; der Takt der neuen Fassung zieht sie nach."
+    fi
+fi
 DIENST="$BASE/bin/plugins/$PFOLDER/dienst.sh"
 if [ -f "$DIENST" ]; then
     if timeout 15 /bin/sh "$DIENST" status >/dev/null 2>&1; then
@@ -73,6 +85,52 @@ fi
 # Nr. 41: Container und Netz der Hue-Probe auf eigener Netzadresse entfernen. Der
 # Container haengt mit Dateien aus bin/ und data/ - beides tauscht das Update
 # aus; der Takt der neuen Fassung legt ihn danach neu an, wenn er eingeschaltet ist.
+# Fremdbefund F7 (1.0.6): einen laufenden bin/hue_vorgang.php samt Prozessgruppe (docker build bis 1800 s) beenden,
+# BEVOR Container und Netz entfernt werden - sonst legte er sie danach neu an (falsches "nachgesehen"). Gefunden wird
+# argumentweise: argv[1] genau unser Skript (Regeln/06). setsid macht den Vorgang zum Gruppenfuehrer; dann geht TERM an
+# die ganze Gruppe (auch den docker-Client), nach 10 s KILL. Ausgabe: Zahl der gefundenen Vorgaenge; Rueckgabe 1, wenn
+# einer weiterlebt.
+ax_lebt() {   # $1 PID - laeuft und ist kein Zombie
+    [ -r "/proc/$1/stat" ] || return 1
+    [ "$(sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | cut -d' ' -f1)" != "Z" ]
+}
+ax_vorgang_beenden() {   # $1 bin-Ordner des Plugins
+    local prog="$1/hue_vorgang.php" d pid pg i n
+    local -a a pids=()
+    for d in /proc/[0-9]*; do
+        mapfile -d '' -t a 2>/dev/null < "$d/cmdline" || continue
+        [ "${#a[@]}" -ge 2 ] && [ "${a[1]}" = "$prog" ] || continue
+        pids+=("${d#/proc/}")
+    done
+    if [ "${#pids[@]}" -eq 0 ]; then echo 0; return 0; fi
+    for pid in "${pids[@]}"; do
+        pg=$(sed 's/^.*) //' "/proc/$pid/stat" 2>/dev/null | cut -d' ' -f3)
+        if [ "$pg" = "$pid" ]; then kill -TERM -- "-$pid" 2>/dev/null; else kill -TERM "$pid" 2>/dev/null; fi
+    done
+    i=0
+    while [ $i -lt 50 ]; do
+        n=0
+        for pid in "${pids[@]}"; do ax_lebt "$pid" && n=$((n + 1)); done
+        [ $n -eq 0 ] && break
+        sleep 0.2
+        i=$((i + 1))
+    done
+    for pid in "${pids[@]}"; do
+        if ax_lebt "$pid"; then kill -KILL -- "-$pid" 2>/dev/null; kill -KILL "$pid" 2>/dev/null; fi
+    done
+    sleep 0.5
+    n=0
+    for pid in "${pids[@]}"; do ax_lebt "$pid" && n=$((n + 1)); done
+    echo "${#pids[@]}"
+    [ $n -eq 0 ]
+}
+# Die ALTE Fassung (bis 1.0.5) beendet einen laufenden Vorgang in --hue-entfernen nicht - deshalb hier, vorher.
+AX_VG=$(ax_vorgang_beenden "$BASE/bin/plugins/$PFOLDER"); AX_VRC=$?
+if [ "$AX_VRC" != 0 ]; then
+    echo "<WARNING> Ein laufender Hue-Vorgang (hue_vorgang.php) liess sich nicht beenden - Container und Netz nach dem Update pruefen (Reiter Test)."
+elif [ "$AX_VG" != 0 ]; then
+    echo "<OK> Laufenden Hue-Vorgang (Anlegen bzw. docker build) samt Prozessgruppe fuer das Update beendet."
+fi
 PHP=$(command -v php 2>/dev/null)
 TAKT="$BASE/bin/plugins/$PFOLDER/ax_takt.php"
 if [ -n "$PHP" ] && [ -f "$TAKT" ] && grep -q -- '--hue-entfernen' "$TAKT" 2>/dev/null; then

@@ -67,13 +67,21 @@ try {
                      'sperre' => 'SPERRE', 'musik_probe' => 'MUSIK', 'musik_stopp' => 'MUSIK',
                      'radio' => 'RADIO', 'radio_stopp' => 'RADIO', 'radio_laut' => 'RADIO');
     if (!isset($ax_kopf[$ax_aktion])) {
-        ax_log('WARN', 'Endpunkt: unbekannte Aktion (Laenge ' . strlen($ax_aktion) . ') von ' . $ax_wer);
+        // 1.0.6, Fremdbefund F8 und eigener Fund E3: eine unbekannte Aktion zaehlt als Fehlversuch und unterliegt der
+        // Sperre nach AX_FEHLVERSUCHE; die Protokollzeile ist gebremst (900 s je Absender, wirkt seit F9).
+        if (ax_fehlversuch($ax_wer, false)) {
+            ax_log_wenn_neu('gesperrt_' . $ax_wer, 'WARN', 'Endpunkt: ' . $ax_wer . ' ist nach ' . AX_FEHLVERSUCHE . ' Fehlversuchen eine Stunde gesperrt.', 900);
+            ax_ende_roh(429, 'ALEXANG;OK=0;ERR=GESPERRT;GRUND=GESPERRT');
+        }
+        ax_fehlversuch($ax_wer, true);
+        ax_log_wenn_neu('aktion_' . $ax_wer, 'WARN', 'Endpunkt: unbekannte Aktion (Laenge ' . strlen($ax_aktion) . ') von ' . $ax_wer, 900);
         ax_ende_roh(400, 'ALEXANG;OK=0;GRUND=AKTION');
     }
     $K = $ax_kopf[$ax_aktion];
     if ($ax_falsch) {
         // Ein Feld wie token[] oder text[] wird abgewiesen, nie umgewandelt.
-        ax_log('WARN', 'Endpunkt: ' . $ax_aktion . ' von ' . $ax_wer . ' - Parameter keine Zeichenkette: ' . implode(',', $ax_falsch));
+        // 1.0.6, Fremdbefund F8: gebremst (900 s je Absender).
+        ax_log_wenn_neu('parameter_' . $ax_wer, 'WARN', 'Endpunkt: ' . $ax_aktion . ' von ' . $ax_wer . ' - Parameter keine Zeichenkette: ' . implode(',', $ax_falsch), 900);
         ax_ende_roh(in_array('token', $ax_falsch, true) ? 403 : 400,
             ax_zeile($K, array('OK' => 0, 'ERR' => in_array('token', $ax_falsch, true) ? 'TOKEN' : 'PARAMETER',
                                'GRUND' => in_array('token', $ax_falsch, true) ? 'TOKEN' : 'PARAMETER')));

@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 1.0.5
+Version 1.0.6
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -15,6 +15,18 @@ Hue-Probe auf eigener Netzadresse (ab Werk aus).
 > Routinen, Musik-Probe, Radio je Zone an einem Echo und die Hue-Nachbildung
 > mit den Lampen für Alexa – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 > Was noch aussteht, steht unter „Noch am Gerät zu messen“.
+
+## Neu in 1.0.6
+
+Alexa NG läuft jetzt über **MQTT, für Werte und Befehle** – wie das [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt). Der HTTP-Endpunkt bleibt unverändert für andere Plugins (Ausgabeart „Alexa-NG“) und bestehende Anlagen.
+
+* **Befehle über die gemeinsame Befehlsbrücke** (`bin/befehlsbruecke.php`, dieselbe Stammfassung wie in den anderen Plugins). Sie ersetzt das eigene Befehlsabo (`bin/ax_befehle.php`, `bin/dienst.sh`) mit **genau denselben Themen** (`alexang/befehl/<echo>/sprechen`, `…/lautstaerke`, `…/ankuendigen`, `gruppe/<g>/sprechen`, `routine`, `sperre`, `radio/<zone>`, `radio/<zone>/laut`) – bestehende Loxone-Befehle laufen ohne Änderung weiter. Neu: jede Nachricht bekommt eine Quittung auf `…/befehl/<name>/quittung`, gleiche Werte im Lesepuffer werden zusammengelegt, die Brücke hat einen Wächter im 5-Minuten-Takt, und `alexang/status/befehle` sendet die Brücke (1 läuft, 0 aus, -1 gestört).
+* **Neuer zweiter Haken „Echos über MQTT steuern“** (Reiter MQTT, ab Werk aus) für Ansagen, Ankündigungen, Lautstärke, Radio und Routinen. **Übergang:** Fehlt der Haken in einer bestehenden Konfiguration, gilt der Wert von „Befehle über MQTT annehmen“ – wer das Befehlsabo bis 1.0.5 eingeschaltet hatte, muss nichts tun. „Routine per MQTT erlauben“ bleibt die dritte Stufe für Routinen und wird jetzt bei jedem Befehl frisch gelesen (vorher wirkte das Entziehen erst nach einem Neustart des Dienstes).
+* **Werte:** neues Thema `alexang/geraete/online` (Zahl der Echos online). Über MQTT kommen `geraete/anzahl`, `geraete/online`, `letzte/ergebnis` und `letzte/zeit` jetzt mit **-1**, solange nichts bekannt ist (vorher fehlte das Thema).
+* **Reiter Einbindung in Loxone:** Namenstabelle mit Kopierknopf statt einer Vorlage für Eingänge, Hakenliste für Gateway Fassung 2 (13 Haken im Musterprojekt, Noncached nur `status/ok` und `status/anmeldung`), Befehlsliste und neue **Vorlage „Alexa NG MQTT-Befehle“** (`VQ_alexang_mqtt.xml`, ohne Token). Die drei Baustein-Listen gleichen dem Musterprojekt vom 22.10.2026 (32, 20 und 18 Zeilen) mit neuen Bildern. Der Weg über HTTP steht zugeklappt darunter; die Vorlage der Lampen-Eingänge (localhost) gibt es nicht mehr.
+* **Lampen für Alexa:** neue Art **Taster/Szene** (Alexa zeigt eine Steckdose; „ein“ schickt einen Puls 1 → 0, „aus“ nichts), Knopf **„Lampe testen“** im Reiter Test (mit Rückfrage, höchstens 10 Befehle je Lampe und Minute), Schrittliste „Lampe löschen, neu suchen“. Die Nachbildung **spiegelt die Rückmeldung** aus Loxone auf `…/ein`, wenn sie vom zuletzt gesendeten Wert abweicht – damit wirkt ein zweites „Alexa, … ein“ nach einem Ausschalten in der App (gegen Schaltschleifen höchstens dreimal je Lampe und Minute). Hue-Fehler 901 bei nicht gesendetem MQTT ist eingebaut, aber **ab Werk aus** (erst nach der Messung am Echo).
+* **Korrekturen:** Die Selbstprüfung der Vorlagen prüft jetzt alle sechs Vorlagen (auch „Aktionen“). Lampennamen, Echo-Adressen und Amazon-Gerätenamen werden UTF-8-sicher gekürzt (vorher ging eine Beanstandung bzw. die Geräteliste still verloren). Deinstallation und Aktualisierung beenden einen laufenden Hue-Vorgang (docker build) samt Prozessgruppe, bevor sie aufräumen. Die Protokollbremse am Endpunkt wirkt jetzt (vorher ergab jede Anfrage mit falschem Token eine Zeile); eine unbekannte Aktion zählt als Fehlversuch und unterliegt der Sperre nach 20 Fehlversuchen.
+* **Deinstallation** tut nichts, wenn ein anderes Plugin deinstalliert wird, dessen Name mit „alexang“ beginnt; sie hält die Befehlsbrücke an und überschreibt die Optionsdateien mit dem Broker-Zugang.
 
 ## Neu in 1.0.5
 
@@ -803,30 +815,38 @@ Broker aus der LoxBerry-Konfiguration, nicht über den UDP-Eingang.
 | `alexang/status/ok` | 1/0 | nie |
 | `alexang/status/ts` | Unix-Sekunden | nie |
 | `alexang/status/zaehler` | 0…999 | nie |
-| `alexang/status/befehle` | 1/0, Befehlsabo läuft | nie |
+| `alexang/status/befehle` | Befehlsbrücke: `1` läuft, `0` aus, `-1` gestört (sendet die Brücke) | nie |
 | `alexang/status/anmeldung` | 1/0 | nie |
-| `alexang/geraete/anzahl` | Zahl | ja |
+| `alexang/geraete/anzahl` | Zahl, `-1` = Geräteliste noch nicht geholt | ja |
+| `alexang/geraete/online` | Zahl der Echos online, `-1` = Geräteliste noch nicht geholt (seit 1.0.6) | ja |
 | `alexang/geraet/<name>/online` | 1/0 | ja |
 | `alexang/geraet/<name>/lautstaerke` | 0–100, `-1` ohne Aussage | ja |
-| `alexang/letzte/zeit` | Unix-Sekunden | ja |
+| `alexang/letzte/zeit` | Unix-Sekunden, `-1` = noch keine | ja |
 | `alexang/letzte/geraet` | Normalname(n) | ja |
-| `alexang/letzte/ergebnis` | 1/0 | ja |
+| `alexang/letzte/ergebnis` | 1/0, `-1` = noch keine | ja |
 | `alexang/letzte/grund` | Grund, `-` ohne Grund | ja |
 | `alexang/radio/<zone>/sender` | Sendernummer, zuletzt bestätigt gesendet; `0` nach Stopp | nie |
 | `alexang/radio/<zone>/zustand` | `1` Start, `0` Stopp, zuletzt bestätigt gesendet | nie |
 | `alexang/hue_probe/ein` | `1`/`0`: ein Echo hat die Lampe „Loxone Probe“ der Hue-Probe geschaltet | nie |
-| `alexang/hue/<kürzel>/ein` | `1`/`0`: Alexa schaltet eine Lampe der Freigabeliste (Befehl an Loxone) | nie |
+| `alexang/hue/<kürzel>/ein` | `1`/`0`: Alexa schaltet eine Lampe der Freigabeliste (Befehl an Loxone); Taster/Szene: `1`, gleich danach `0` | nie |
 | `alexang/hue/<kürzel>/helligkeit` | nur Dimmer, wenn Alexa eine Helligkeit setzt: `1`–`100`; `0` bei aus (Befehl an Loxone) | nie |
 
 Kein Thema geht leer hinaus. Ein Gerät, das aus der Amazon-Liste
 verschwindet, bekommt einmal `-1` und bleibt im Reiter **Geräte** als
-„verschwunden“ sichtbar. Der **Ansagetext geht nie** über MQTT.
+„verschwunden“ sichtbar. Ansagetexte, die Loxone über MQTT schickt, stehen
+im Befehlsthema; das Plugin sendet sie nie selbst (unter Gateway Fassung 1
+legt das Abo `alexang/#` dafür einen Eingang an).
 
 **Gateway Fassung 1:** Das Abo `alexang/#` steht in `mqtt_subscriptions.cfg`.
 **Gateway Fassung 2:** nichts eintragen, Datenpunkte anhaken. Der Reiter MQTT
 sagt, welche Fassung läuft.
 
-**Befehlseingang** (Reiter MQTT, ab Werk aus). Ein Dienst abonniert:
+**Befehle** (Reiter MQTT, ab Werk aus) gehen seit 1.0.6 über die gemeinsame **Befehlsbrücke**: Haken
+„Befehle über MQTT annehmen“; Ansagen, Ankündigungen, Lautstärke, Radio und Routinen brauchen dazu „Echos über
+MQTT steuern“ (fehlt er in einer Konfiguration bis 1.0.5, gilt der Wert des ersten Hakens), Routinen außerdem
+„Routine per MQTT erlauben“. Jede Nachricht bekommt eine Quittung auf `alexang/befehl/<name>/quittung`
+(`angenommen` oder `abgelehnt: <Grund>`, nie retained). Sperrzeiten: Routine 10 s, sonst 0 s (die Bremsen des
+Plugins gelten weiter). Die Brücke abonniert:
 
 | Thema | Nutzlast |
 |---|---|
@@ -845,6 +865,10 @@ sagt, welche Fassung läuft.
 Zurückbehaltene (retained) Befehle werden **verworfen**, nicht ausgeführt.
 Es gelten dieselbe Prüfung und Bremse wie am Endpunkt; das Ergebnis steht in
 `alexang/letzte/*`.
+
+Seit 1.0.6 **spiegelt** die Nachbildung eine Rückmeldung, die vom zuletzt gesendeten `…/ein` abweicht, einmal
+auf `…/ein` zurück (höchstens dreimal je Lampe und Minute, danach zehn Minuten Pause) – damit wirkt ein zweites
+„Alexa, … ein“ nach einem Ausschalten in der App.
 
 ## Sicherheit und Grenzen
 
@@ -958,6 +982,14 @@ zurückbehaltenen MQTT-Themen ab und löscht die Zweitschriften.
     `helligkeit` = `40`? (Gemessen 03.10.2026: die App zeigt „Licht (an/aus)“
     nach Löschen und neuem Suchen als Lampe; Dimmer „ein“ sendet nur `ein`.
     Der Raumbefehl ist nicht gemessen.)
+20. Seit 1.0.6 (MQTT): kommen Ansagetexte mit Umlauten und Leerzeichen über den UDP-Eingang 11884 und die
+    Brücke unverändert an, auch der Text aus dem Status-Ausgang TQ? Sendet eine Radiotaste `3` (nicht `3.0`)?
+21. Taster/Szene: sieht Loxone den Puls 1 → 0 sicher als Flanke (Monoflop)?
+22. Spiegeln der Rückmeldung: wirkt ein zweites „Alexa, … ein“ nach einem Ausschalten in der App, und entsteht
+    keine Schaltschleife?
+23. Hue-Fehler 901 (ab Werk aus): wie führt die Alexa-App eine Lampe danach – nur einmal „reagiert nicht“?
+24. Befehlsbrücke als loxberry gegen den echten Broker; Dauer eines Radio-Befehls an alle Zonen gegen die
+    Wächtergrenze von 180 s.
 
 ## Voraussetzungen
 

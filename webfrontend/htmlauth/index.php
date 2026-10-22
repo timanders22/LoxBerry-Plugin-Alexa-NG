@@ -69,7 +69,7 @@ function ax_ui_felder($formular)
                      'radio_ein', 'radio_zonen', 'hue_ein', 'hue_port', 'hue_art', 'hue_ip', 'hue_schnittstelle',
                      'hue_probe_lampe', 'hue_l_id', 'hue_l_name', 'hue_l_art', 'hue_l_kuerzel', 'hue_l_frei', 'hue_echos');
     }
-    if ($formular === 'mqtt') { return array('mqtt_ein', 'mqtt_praefix', 'befehle_mqtt_ein', 'befehle_routine_ein'); }
+    if ($formular === 'mqtt') { return array('mqtt_ein', 'mqtt_praefix', 'befehle_mqtt_ein', 'befehle_mqtt_steuern', 'befehle_routine_ein'); }
     return array();
 }
 function ax_ui_bean($feld = null, $idx = null)
@@ -252,10 +252,10 @@ if ($ax_post && !ax_formtoken_ok($ax_cfg)) {
 if ($ax_post && isset($_POST['download'])) {
     $ax_host = isset($_SERVER['HTTP_HOST']) ? (string) $_SERVER['HTTP_HOST'] : '';
     $ax_dl = is_string($_POST['download']) ? $_POST['download'] : '';
-    // Welle Bild 13 (1.0.4): va = Vorlage "Alexa NG Aktionen" (Sperre und Routinen, Aktionstoken).
-    $ax_v = ($ax_dl === 'vo') ? ax_vorlage_aus($ax_host, $ax_cfg) : (($ax_dl === 'vr') ? ax_vorlage_radio($ax_host, $ax_cfg)
-        : (($ax_dl === 'vh') ? ax_vorlage_hue_ein($ax_host, $ax_cfg) : (($ax_dl === 'vq') ? ax_vorlage_hue_aus($ax_host, $ax_cfg)
-        : (($ax_dl === 'va') ? ax_vorlage_aktionen($ax_host, $ax_cfg) : ax_vorlage_ein($ax_host)))));
+    // Gruppe 6a (1.0.6, F2): EINE Liste fuer Knoepfe und Selbstpruefung (ax_vorlagen_liste()); neu vm = Vorlage
+    // "Alexa NG MQTT-Befehle"; die Vorlage der Lampen-Eingaenge (vh, localhost) gibt es nicht mehr. Unbekannt: Status.
+    $ax_vl = ax_vorlagen_liste($ax_host, $ax_cfg);
+    $ax_v = isset($ax_vl[$ax_dl]) ? $ax_vl[$ax_dl] : $ax_vl['vi'];
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $ax_v[0] . '"');
     header('Content-Length: ' . strlen($ax_v[1]));
@@ -623,7 +623,7 @@ if ($ax_post && isset($_POST['save_mqtt'])) {
     $ax_alt = ax_config();
     $ax_neu = $ax_alt;
     $ax_hw = array();
-    foreach (array('mqtt_ein', 'befehle_mqtt_ein', 'befehle_routine_ein') as $ax_k) { $ax_neu[$ax_k] = empty($_POST[$ax_k]) ? 0 : 1; }
+    foreach (array('mqtt_ein', 'befehle_mqtt_ein', 'befehle_mqtt_steuern', 'befehle_routine_ein') as $ax_k) { $ax_neu[$ax_k] = empty($_POST[$ax_k]) ? 0 : 1; }
     $ax_g = '';
     $ax_pr = ax_wert_pruefen('mqtt_praefix', ax_ui_post('mqtt_praefix'), $ax_g);
     if ($ax_pr === null) {
@@ -649,20 +649,14 @@ if ($ax_post && isset($_POST['save_mqtt'])) {
     ax_abo_datei($ax_neu['mqtt_praefix'], true);
     ax_hue_docker_datei_nachziehen($ax_neu);   // Nr. 41: MQTT-Werte fuer den Container (ohne Docker-Aufruf)
     ax_log('INFO', 'MQTT gespeichert (ein=' . $ax_neu['mqtt_ein'] . ', Praefix ' . $ax_neu['mqtt_praefix']
-        . ', Befehle ' . $ax_neu['befehle_mqtt_ein'] . ', Routine ' . $ax_neu['befehle_routine_ein'] . ').');
-    // Das Befehlsabo nachziehen und sagen, was geschah.
-    $ax_st = ax_dienst_status();
-    if ($ax_st !== null) {
-        $ax_soll = !empty($ax_neu['befehle_mqtt_ein']) && !empty($ax_neu['mqtt_ein']) && !empty($ax_neu['aktiv']);
-        if ($ax_soll && ($ax_st === false || $ax_alt['mqtt_praefix'] !== $ax_neu['mqtt_praefix'])) {
-            if ($ax_st) { ax_dienst('stop'); }
-            list($ax_d_ok, $ax_d_t) = ax_dienst('start');
-            $ax_erg['hinweise'][] = $ax_d_ok ? ax_t('MQTT.DIENST_GESTARTET') : sprintf(ax_t('MQTT.DIENST_FEHL'), $ax_d_t);
-        } elseif (!$ax_soll && $ax_st) {
-            list($ax_d_ok) = ax_dienst('stop');
-            $ax_erg['hinweise'][] = $ax_d_ok ? ax_t('MQTT.DIENST_ANGEHALTEN') : sprintf(ax_t('MQTT.DIENST_FEHL'), '');
-        }
-    }
+        . ', Befehle ' . $ax_neu['befehle_mqtt_ein'] . ', Echos steuern ' . $ax_neu['befehle_mqtt_steuern']
+        . ', Routine ' . $ax_neu['befehle_routine_ein'] . ').');
+    // Gruppe 6a (1.0.6): die Befehlsbruecke nachziehen (Direktstart; der Waechter im Takt startet hoechstens alle
+    // 600 s neu) und sagen, was geschah. Ein Praefixwechsel startet sie neu (neues Abo).
+    list($ax_bs, $ax_bt) = ax_bruecke_schalten($ax_alt['mqtt_praefix'] !== $ax_neu['mqtt_praefix']);
+    if ($ax_bs === 'ein') { $ax_erg['hinweise'][] = ax_t('MQTT.DIENST_GESTARTET'); }
+    elseif ($ax_bs === 'aus') { $ax_erg['hinweise'][] = ax_t('MQTT.DIENST_ANGEHALTEN'); }
+    elseif ($ax_bs !== '') { $ax_erg['hinweise'][] = sprintf(ax_t('MQTT.DIENST_FEHL'), $ax_bt); }
     ax_ui_umleiten($ax_datadir, 'tab-mqtt', $ax_erg);
 }
 
@@ -839,6 +833,19 @@ if ($ax_post && (isset($_POST['radio_start']) || isset($_POST['radio_halt']))) {
                    'NR' => array('radio_nr'), 'SENDER_UNBEKANNT' => array('radio_nr'));
     if (isset($ax_rf[$ax_grund])) { $ax_erg['radio_falsch'] = $ax_rf[$ax_grund]; }
     ax_ui_umleiten($ax_datadir, 'tab-test', $ax_erg + $ax_rueck);
+}
+
+/* ---------------- Reiter Test: Lampe testen (Gruppe 6a, 1.0.6; EchoLox-Idee E2, Entwurf ax 2.7) ----------------
+ * Dieselbe Sendefunktion wie die Nachbildung (ax_hue_test -> ax_hue_lampe_melden), Rueckfrage im Browser, eigene
+ * Bremse 10 je Lampe und Minute; PRG mit Ergebnis in der Einmalmeldung. Schaltet echte Geraete in Loxone. */
+if ($ax_post && isset($_POST['hue_test'])) {
+    $ax_hk = (isset($_POST['hue_test_kuerzel']) && is_string($_POST['hue_test_kuerzel']) && preg_match('/^[a-z0-9_]{1,32}\z/', $_POST['hue_test_kuerzel']))
+           ? $_POST['hue_test_kuerzel'] : '';
+    $ax_hwas = (is_string($_POST['hue_test']) && preg_match('/^[a-z]{1,8}\z/', $_POST['hue_test'])) ? $_POST['hue_test'] : '';
+    list($ax_hok, $ax_hg, $ax_hwert) = ax_hue_test($ax_hk, $ax_hwas, $ax_cfg);
+    ax_ui_umleiten($ax_datadir, 'tab-test', $ax_hok ? array('meldung' => sprintf(ax_t('TEST.HUE_TEST_OK'), $ax_hk, $ax_hwert))
+        : array('fehler' => sprintf(ax_t('TEST.HUE_TEST_FEHL'), $ax_hk !== '' ? $ax_hk : '-', $ax_hwert !== '' ? $ax_hwert : ($ax_hwas !== '' ? $ax_hwas : '-'),
+                                    ax_grund_text($ax_hg))));
 }
 
 /* Ein POST, den kein Handler kannte: trotzdem umleiten. */
@@ -1265,9 +1272,10 @@ $ax_hl_n = min($ax_hl_n, AX_HUE_LAMPEN_MAX + 3);
 <tr><td><?= $ax_i + 1 ?><input data-role="none" type="hidden" name="hue_l_id[<?= $ax_i ?>]" value="<?= ax_e(ax_ui_w('hue_l_id', $ax_l ? $ax_l['id'] : '', $ax_i)) ?>"></td>
 <td><input data-role="none" type="text" name="hue_l_name[<?= $ax_i ?>]" aria-label="<?= ax_e(ax_t('EINST.T_HUE_NAME')) ?> <?= $ax_i + 1 ?>" value="<?= ax_e(ax_ui_w('hue_l_name', $ax_l ? $ax_l['name'] : '', $ax_i)) ?>"<?= ax_ui_m('hue_l_name', $ax_i) ?>></td>
 <td><select data-role="none" name="hue_l_art[<?= $ax_i ?>]" aria-label="<?= ax_e(ax_t('EINST.T_HUE_ART')) ?> <?= $ax_i + 1 ?>"<?= ax_ui_m('hue_l_art', $ax_i) ?>>
-<option value="schalter"<?= $ax_la !== 'dimmer' && $ax_la !== 'licht' ? ' selected' : '' ?>><?= ax_e(ax_t('EINST.O_HUE_SCHALTER')) ?></option>
+<option value="schalter"<?= $ax_la !== 'dimmer' && $ax_la !== 'licht' && $ax_la !== 'taster' ? ' selected' : '' ?>><?= ax_e(ax_t('EINST.O_HUE_SCHALTER')) ?></option>
 <option value="licht"<?= $ax_la === 'licht' ? ' selected' : '' ?>><?= ax_e(ax_t('EINST.O_HUE_LICHT')) ?></option>
 <option value="dimmer"<?= $ax_la === 'dimmer' ? ' selected' : '' ?>><?= ax_e(ax_t('EINST.O_HUE_DIMMER')) ?></option>
+<option value="taster"<?= $ax_la === 'taster' ? ' selected' : '' ?>><?= ax_e(ax_t('EINST.O_HUE_TASTER')) ?></option>
 </select></td>
 <td><input data-role="none" type="text" name="hue_l_kuerzel[<?= $ax_i ?>]" aria-label="<?= ax_e(ax_t('EINST.T_HUE_KUERZEL')) ?> <?= $ax_i + 1 ?>" placeholder="<?= ax_e(ax_t('EINST.P_HUE_KUERZEL')) ?>" value="<?= ax_e(ax_ui_w('hue_l_kuerzel', $ax_l ? $ax_l['kuerzel'] : '', $ax_i)) ?>"<?= ax_ui_m('hue_l_kuerzel', $ax_i) ?>></td>
 <td><label class="sm-haken"><input data-role="none" type="checkbox" name="hue_l_frei[<?= $ax_i ?>]" value="1"<?= $ax_lf ? ' checked' : '' ?><?= ax_ui_m('hue_l_frei', $ax_i) ?>> <?= ax_e(ax_t('EINST.L_HUE_FREI')) ?></label></td></tr>
@@ -1275,6 +1283,16 @@ $ax_hl_n = min($ax_hl_n, AX_HUE_LAMPEN_MAX + 3);
 </table>
 </div>
 <div class="sm-small"><?= ax_e(ax_t('EINST.HUE_LAMPEN_ZEILEN_HILFE')) ?></div>
+<div class="sm-small"><?= ax_e(ax_t('EINST.HUE_TASTER_HILFE')) ?></div>
+<?php /* Gruppe 6a (1.0.6), EchoLox-Idee E5: Schrittliste, wenn Alexa nach einem Wechsel der Art alte Werte zeigt. */ ?>
+<details><summary><?= ax_e(ax_t('EINST.E5_TITEL')) ?></summary>
+<ol class="sm-schritte">
+<li><?= ax_e(ax_t('EINST.E5_1')) ?></li>
+<li><?= ax_e(ax_t('EINST.E5_2')) ?></li>
+<li><?= ax_e(ax_t('EINST.E5_3')) ?></li>
+</ol>
+<div class="sm-small"><?= ax_e(ax_t('EINST.E5_HINWEIS')) ?></div>
+</details>
 <label for="hue_echos"><?= ax_e(ax_t('FELD.HUE_ECHOS')) ?></label>
 <input data-role="none" type="text" id="hue_echos" name="hue_echos" placeholder="<?= ax_e(ax_t('EINST.P_HUE_ECHOS')) ?>" value="<?= ax_e(ax_ui_w('hue_echos', implode(', ', $ax_cfg['hue_echos']))) ?>"<?= ax_ui_m('hue_echos') ?>>
 <div class="sm-small"><?= ax_e(ax_t('EINST.HUE_ECHOS_HILFE')) ?></div>
@@ -1492,6 +1510,8 @@ $ax_hl_n = min($ax_hl_n, AX_HUE_LAMPEN_MAX + 3);
 <div class="sm-small"><?= ax_e(ax_t('MQTT.PRAEFIX_HILFE')) ?></div>
 <label class="sm-haken"><input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1"<?= ax_ui_h('befehle_mqtt_ein', !empty($ax_cfg['befehle_mqtt_ein'])) ? ' checked' : '' ?><?= ax_ui_m('befehle_mqtt_ein') ?>> <?= ax_e(ax_t('MQTT.L_BEFEHLE')) ?></label>
 <div class="sm-small"><?= ax_e(ax_t('MQTT.BEFEHLE_HILFE')) ?></div>
+<label class="sm-haken"><input data-role="none" type="checkbox" name="befehle_mqtt_steuern" value="1"<?= ax_ui_h('befehle_mqtt_steuern', !empty($ax_cfg['befehle_mqtt_steuern'])) ? ' checked' : '' ?><?= ax_ui_m('befehle_mqtt_steuern') ?>> <?= ax_e(ax_t('MQTT.L_STEUERN')) ?></label>
+<div class="sm-small"><?= ax_e(ax_t('MQTT.STEUERN_HILFE')) ?></div>
 <label class="sm-haken"><input data-role="none" type="checkbox" name="befehle_routine_ein" value="1"<?= ax_ui_h('befehle_routine_ein', !empty($ax_cfg['befehle_routine_ein'])) ? ' checked' : '' ?><?= ax_ui_m('befehle_routine_ein') ?>> <?= ax_e(ax_t('MQTT.L_ROUTINE')) ?></label>
 <div class="sm-small"><?= ax_e(ax_t('MQTT.ROUTINE_HILFE')) ?></div>
 <div class="sm-knopfreihe">
@@ -1528,6 +1548,7 @@ $ax_hl_n = min($ax_hl_n, AX_HUE_LAMPEN_MAX + 3);
 <tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/radio/<zone>/laut') ?></span></td><td><?= ax_e(ax_t('MQTT.N_RADIO_LAUT')) ?></td></tr>
 </table>
 <div class="sm-small"><?= ax_e(ax_t('MQTT.BEFEHLE_RETAIN')) ?></div>
+<div class="sm-small"><?= ax_e(ax_t('MQTT.BEFEHLE_QUITTUNG')) ?></div>
 <h2 id="hue_rueck"><?= ax_e(ax_t('MQTT.H_HUE_RUECK')) ?></h2>
 <table class="sm-tbl">
 <tr><th style="width:50%"><?= ax_e(ax_t('MQTT.T_THEMA')) ?></th><th style="width:50%"><?= ax_e(ax_t('MQTT.T_NUTZLAST')) ?></th></tr>
@@ -1542,37 +1563,149 @@ $ax_hl_n = min($ax_hl_n, AX_HUE_LAMPEN_MAX + 3);
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-technik"></i> <?= ax_e(ax_t('LEGENDE.TECHNIK')) ?></span>
 </div>
-<div class="sm-step"><b>1.</b> <?= ax_e(ax_t('LOX.S1')) ?></div>
-<div class="sm-step"><b>2.</b> <?= ax_e(ax_t('LOX.S2')) ?><br><span class="sm-mono"><?= ax_e($ax_basis . '?aktion=status') ?></span>
-<table class="sm-tbl">
-<tr><th style="width:22%"><?= ax_e(ax_t('LOX.T_FELD')) ?></th><th style="width:30%"><?= ax_e(ax_t('LOX.T_SUCHTEXT')) ?></th><th style="width:48%"><?= ax_e(ax_t('LOX.T_BEDEUTUNG')) ?></th></tr>
-<?php foreach (ax_status_felder() as $ax_f => $ax_d) { ?>
-<tr><td><?= ax_e($ax_f) ?></td><td><span class="sm-mono"><?= ax_e(ax_check($ax_f)) ?></span></td><td><?= ax_e(ax_t('KACHEL.' . $ax_f)) ?></td></tr>
+<?php /* Gruppe 6a / MQTT (1.0.6; Entwurf ax 2.5, Bauvorschrift Gruppe 1 Nachtrag 2): MQTT ist der Weg des LoxBerry-Plugins
+   Musterprojekts, fuer Werte UND Befehle. Schritt 1 das Gateway nach seiner Fassung (V1: Abo-Zeile; V2 und "nicht
+   feststellbar": Hakenliste aus ax_mqtt_hakenliste(), status/ok und status/anmeldung mit "Noncached"), Schritt 2 die
+   Namenstabelle (KEINE Importvorlage fuer Werte), Schritt 3 die Befehle aus der Befehlsbruecke (ax_bb_liste()) mit der
+   Vorlage "Alexa NG MQTT-Befehle", Schritt 4 die Ausfallerkennung, Schritt 5 die Lampen (Taster, Spiegeln, E5),
+   Schritt 6 die Baustein-Listen, Schritt 7 die Gegenprobe. Der Weg ueber HTTP (bis 1.0.5 die Schritte 1-5 und 8-11
+   und die Vorlagen) steht darunter, zugeklappt; die Vorlage der Lampen-Eingaenge (localhost-Kunstgriff) entfaellt. */
+$ax_gnamen = ax_mqtt_namen($ax_cfg);
+$ax_ghaken = ax_mqtt_hakenliste($ax_cfg);
+$ax_gbef = ax_bb_liste();
+$ax_gp = $ax_cfg['mqtt_praefix'];
+$ax_ja = function ($w) { return ax_t($w ? 'ALLG.JA' : 'ALLG.NEIN'); };
+list(, $ax_gabo_da) = ax_abo_datei($ax_gp); ?>
+<div class="sm-step"><b>0.</b> <?= ax_e(ax_t('LOX.S0')) ?></div>
+<div class="sm-step"><b>1.</b> <?= ax_e(ax_t('LOX.M_S1')) ?>
+<?php if ($ax_gw['fassung'] !== 2 && $ax_gw['fassung'] < 3) { /* V1 oder nicht feststellbar: das Abo wie im Reiter MQTT */ ?>
+<div class="sm-hinweis"><?= ax_e($ax_gw['fassung'] === 1 ? sprintf(ax_t($ax_gabo_da ? 'MQTT.ABO_V1_DA' : 'MQTT.ABO_V1'), $ax_gp . '/#')
+                                                       : sprintf(ax_t('MQTT.ABO_UNBEKANNT'), $ax_gp . '/#')) ?></div>
+<div class="sm-small"><?= ax_e(ax_t('LOX.M_V1_BEFEHLE')) ?></div>
 <?php } ?>
-</table></div>
-<div class="sm-step"><b>3.</b> <?= ax_e(ax_t('LOX.S3')) ?><br>
-<span class="sm-mono"><?= ax_e(preg_replace('#/plugins/.*$#', '', $ax_basis)) ?></span><br>
-<span class="sm-mono"><?= ax_e('/plugins/' . $ax_p['plugin'] . '/?token=' . $ax_sprech . '&aktion=sprechen&geraet=' . $ax_std . '&text=<v>') ?></span><br>
-<span class="sm-mono"><?= ax_e('/plugins/' . $ax_p['plugin'] . '/?token=' . $ax_sprech . '&aktion=lautstaerke&geraet=' . $ax_std . '&wert=<v>') ?></span></div>
-<div class="sm-step"><b>4.</b> <?= ax_e(ax_t('LOX.S4')) ?></div>
-<div class="sm-step"><b>5.</b> <?= ax_e(ax_t('LOX.S5')) ?></div>
+<?php if ($ax_gw['fassung'] !== 1) { /* V2 oder nicht feststellbar: die Hakenliste, aufgeklappt */ ?>
+<div class="sm-hinweis"><?= ax_e(sprintf(ax_t('LOX.M_S1_V2'), $ax_gp, count($ax_ghaken))) ?></div>
+<details open><summary><?= ax_e(sprintf(ax_t('LOX.M_HAKEN_AUF'), count($ax_ghaken))) ?></summary>
+<div class="sm-breit">
+<table class="sm-tbl" id="ax_hakenliste">
+<tr><th style="width:5%">#</th><th style="width:32%"><?= ax_e(ax_t('LOX.M_T_THEMA')) ?></th><th style="width:28%"><?= ax_e(ax_t('LOX.M_T_NAME')) ?></th><th style="width:10%"><?= ax_e(ax_t('LOX.M_T_NONCACHED')) ?></th><th style="width:25%"><?= ax_e(ax_t('LOX.T_BEDEUTUNG')) ?></th></tr>
+<?php foreach ($ax_ghaken as $ax_hi => $ax_hz) { ?>
+<tr><td><?= (int) $ax_hi + 1 ?></td><td><span class="sm-mono"><?= ax_e($ax_hz[0]) ?></span></td><td><span class="sm-mono"><?= ax_e($ax_hz[1]) ?></span></td><td><?= ax_e($ax_ja($ax_hz[3])) ?></td><td><?= ax_e(ax_t($ax_hz[2])) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+</details>
+<div class="sm-small"><?= ax_e(ax_t('LOX.M_NONCACHED')) ?></div>
+<?php } ?>
+<div class="sm-small"><?= ax_e(ax_t('LOX.M_RECONNECT')) ?></div>
+<?php if (empty($ax_cfg['mqtt_ein'])) { ?><div class="sm-warnung"><?= ax_e(ax_t('LOX.M_MQTT_AUS')) ?></div><?php } ?>
+</div>
+<div class="sm-step"><b>2.</b> <?= ax_e(ax_t('LOX.M_S2')) ?>
+<div class="sm-breit">
+<table class="sm-tbl" id="ax_namenstabelle">
+<tr><th style="width:5%">#</th><th style="width:33%"><?= ax_e(ax_t('LOX.M_T_NAME')) ?></th><th style="width:32%"><?= ax_e(ax_t('LOX.T_BEDEUTUNG')) ?></th><th style="width:12%"><?= ax_e(ax_t('LOX.M_T_BEREICH')) ?></th><th style="width:8%"><?= ax_e(ax_t('LOX.M_T_ART')) ?></th><th style="width:10%"><?= ax_e(ax_t('LOX.M_T_MUSTER')) ?></th></tr>
+<?php foreach ($ax_gnamen as $ax_ni => $ax_nz) { ?>
+<tr><td><?= (int) $ax_ni + 1 ?></td><td><span class="sm-mono"><?= ax_e($ax_nz['name']) ?></span> <button data-role="none" type="button" class="sm-kopie" data-kopie="<?= ax_e($ax_nz['name']) ?>"><?= ax_e(ax_t('LOX.M_KOPIEREN')) ?></button></td><td><?= ax_e(ax_t($ax_nz['bedeutung'])) ?></td><td><?= ax_e($ax_nz['bereich']) ?></td><td><?= ax_e(ax_t($ax_nz['art'] === 'text' ? 'LOX.M_ART_TEXT' : 'LOX.M_ART_ZAHL')) ?></td><td><?= ax_e($ax_ja($ax_nz['im_muster'])) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-small"><?= ax_e(ax_t('LOX.M_S2_DIGITAL')) ?></div>
+<div class="sm-small"><?= ax_e(ax_t('LOX.M_S2_TEXT')) ?></div>
+<div class="sm-small"><?= ax_e(ax_t('LOX.M_S2_FEHLWERT')) ?></div>
+<div class="sm-small"><?= ax_e(ax_t('LOX.M_S2_RECHTE')) ?></div>
+<div class="sm-small"><?= ax_e(ax_t('LOX.M_S2_MUSTER')) ?></div>
+<div class="sm-small"><?= ax_e(ax_t('LOX.M_S2_PRAEFIX')) ?></div>
+<script>
+(function () {
+    document.querySelectorAll('.sm-kopie').forEach(function (k) {
+        k.addEventListener('click', function () {
+            var n = k.getAttribute('data-kopie');
+            var fertig = function () { k.textContent = <?= json_encode(ax_t('LOX.M_KOPIERT')) ?>; };
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(n).then(fertig);
+            } else {
+                var f = document.createElement('textarea');
+                f.value = n; document.body.appendChild(f); f.select();
+                try { document.execCommand('copy'); fertig(); } catch (e) {}
+                document.body.removeChild(f);
+            }
+        });
+    });
+})();
+</script>
+</div>
+<div class="sm-step" id="befehle_loxone"><b>3.</b> <?= ax_e(sprintf(ax_t('LOX.M_S3'), $ax_gp . '/befehl/#')) ?>
+<?php if ($ax_gbef === null) { ?>
+<div class="sm-warnung"><?= ax_e(ax_t('LOX.M_S3_KEINE')) ?></div>
+<?php } else { ?>
+<div class="sm-breit">
+<table class="sm-tbl" id="ax_befehle">
+<tr><th style="width:20%"><?= ax_e(ax_t('BEFEHL.T_BEDEUTUNG')) ?></th><th style="width:34%"><?= ax_e(ax_t('BEFEHL.T_THEMA')) ?></th><th style="width:16%"><?= ax_e(ax_t('BEFEHL.T_WERT')) ?></th><th style="width:10%"><?= ax_e(ax_t('BEFEHL.T_EINGREIFEND')) ?></th><th style="width:10%"><?= ax_e(ax_t('BEFEHL.T_SPERRE')) ?></th><th style="width:10%"><?= ax_e(ax_t('BEFEHL.T_TITEL')) ?></th></tr>
+<?php foreach ($ax_gbef['befehle'] as $ax_bb) {
+    if ($ax_bb['art'] === 'text') { $ax_bw = sprintf(ax_t('BEFEHL.W_TEXT'), (int) $ax_bb['max_byte']); }
+    elseif ($ax_bb['art'] === 'ganz') { $ax_bw = $ax_bb['min'] . '–' . $ax_bb['max']; }
+    elseif ($ax_bb['art'] === 'schalter') { $ax_bw = '1 / 0'; }
+    else { $ax_bw = ax_t('BEFEHL.W_RADIO'); } ?>
+<tr><td><?= ax_e(ax_t($ax_bb['kachel'])) ?></td><td><span class="sm-mono"><?= ax_e($ax_bb['thema']) ?></span></td><td><?= ax_e($ax_bw) ?></td><td><?= ax_e($ax_ja($ax_bb['eingreifend'])) ?></td><td><?= (int) $ax_bb['sperre_s'] ?> s</td><td><?= ax_e($ax_bb['titel']) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-small"><?= ax_e(ax_t('MQTT.BEFEHLE_QUITTUNG')) ?></div>
+<?php } ?>
+<div class="sm-small"><?= ax_e(ax_t('LOX.M_S3_NICHTS')) ?></div>
+<div class="sm-small"><?= ax_e(ax_t('LOX.M_S3_TEXT')) ?></div>
+<div class="sm-warnung"><?= ax_e(ax_t('LOX.M_S3_HAKEN')) ?></div>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+<input data-role="none" type="hidden" name="formtoken" value="<?= ax_e(ax_formtoken($ax_cfg)) ?>">
+<div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="vm"><?= ax_e(ax_t('BEFEHL.K_VORLAGE')) ?></button>
+</div>
+</form>
+<div class="sm-small"><?= ax_e(ax_t('LOX.M_S3_VORLAGE')) ?></div>
+</div>
+<div class="sm-step"><b>4.</b> <?= ax_e(sprintf(ax_t('LOX.M_S4'), ax_gateway_name($ax_gp, 'status/zaehler'), ax_gateway_name($ax_gp, 'status/anmeldung'))) ?></div>
+<div class="sm-step" id="hue_loxone"><b>5.</b> <?= ax_e(ax_t('LOX.M_S5')) ?>
+<?php if (empty($ax_cfg['hue_ein'])) { ?><div class="sm-hinweis"><?= ax_e(ax_t('LOX.HUE_AUS')) ?> <a href="index.php?form=settings#hue_lampen"><?= ax_e(ax_t('TEST.ZU_HUE')) ?></a></div><?php } ?>
+<?php if ($ax_cfg['hue_lampen']) { ?>
+<div class="sm-breit">
+<table class="sm-tbl" id="hue_lampen_loxone">
+<tr><th style="width:22%"><?= ax_e(ax_t('TEST.T_HUE_LAMPE')) ?></th><th style="width:34%"><?= ax_e(ax_t('LOX.T_HUE_EINGAENGE')) ?></th><th style="width:44%"><?= ax_e(ax_t('LOX.T_HUE_RUECK')) ?></th></tr>
+<?php foreach ($ax_cfg['hue_lampen'] as $ax_l) { $ax_hlt = $ax_gp . '/hue/' . $ax_l['kuerzel'] . '/';
+    $ax_hart_t = array('dimmer' => 'EINST.O_HUE_DIMMER', 'licht' => 'EINST.O_HUE_LICHT', 'taster' => 'EINST.O_HUE_TASTER'); ?>
+<tr><td><?= ax_e($ax_l['name']) ?> (<?= ax_e(ax_t(isset($ax_hart_t[$ax_l['art']]) ? $ax_hart_t[$ax_l['art']] : 'EINST.O_HUE_SCHALTER')) ?>)</td>
+<td><span class="sm-mono"><?= ax_e(ax_hue_gateway_name($ax_cfg, $ax_l['kuerzel'], 'ein')) ?></span><?php if ($ax_l['art'] === 'dimmer') { ?><br><span class="sm-mono"><?= ax_e(ax_hue_gateway_name($ax_cfg, $ax_l['kuerzel'], 'helligkeit')) ?></span><?php } ?></td>
+<td><?php if ($ax_l['art'] === 'taster') { ?><?= ax_e(ax_t('LOX.M_S5_KEINE_RUECK')) ?><?php } else { ?><span class="sm-mono"><?= ax_e('publish ' . $ax_hlt . 'status 1') ?></span> / <span class="sm-mono"><?= ax_e('publish ' . $ax_hlt . 'status 0') ?></span><?php if ($ax_l['art'] === 'dimmer') { ?><br><span class="sm-mono"><?= ax_e('publish ' . $ax_hlt . 'status_helligkeit <v>') ?></span><?php } ?><?php } ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<?php } else { ?>
+<div class="sm-hinweis"><?= ax_e(ax_t('LOX.HUE_KEINE_LAMPE')) ?> <a href="index.php?form=settings#hue_lampen"><?= ax_e(ax_t('TEST.ZU_HUE')) ?></a></div>
+<?php } ?>
+<div class="sm-small"><?= ax_e(ax_t('LOX.M_S5_TASTER')) ?></div>
+<div class="sm-small"><?= ax_e(ax_t('LOX.M_S5_SPIEGEL')) ?></div>
+<details><summary><?= ax_e(ax_t('EINST.E5_TITEL')) ?></summary>
+<ol class="sm-schritte">
+<li><?= ax_e(ax_t('EINST.E5_1')) ?></li>
+<li><?= ax_e(ax_t('EINST.E5_2')) ?></li>
+<li><?= ax_e(ax_t('EINST.E5_3')) ?></li>
+</ol>
+<div class="sm-small"><?= ax_e(ax_t('EINST.E5_HINWEIS')) ?></div>
+</details>
+</div>
 <div class="sm-step"><b>6.</b> <?= ax_e(ax_t('LOX.S6')) ?>
-<?php /* Welle Bild 13 (1.0.4; Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll das Maximum leicht
-       uebernehmen koennen; Entwurf Welle 13 ax, Entscheidungen 1-14 wie empfohlen, 9 nicht): drei Seiten aus dem
-       LoxBerry-Plugins Musterprojekt, dort in Loxone Config gebaut und verbunden (Musterprojekt/baustein_listen.txt,
-       Abschnitte "Alexa NG" 32, "Alexa NG Radio" 20, "Alexa NG Lampen" 16 Zeilen, wortgleich mit den
-       Beispielnamen des Musterprojekts). Je Seite: Ueberschrift, Kasten "So uebernehmen Sie diese Seite",
-       Tabelle (je Zeile EIN Sprachschluessel LOX.Z<seite>_<nn> = "Typ | Name | Parameter | Eingaenge", jede
-       Zelle maskiert), Hinweise, Bild, Link - alle immer sichtbar. Bis 1.0.3 stand hier eine Tabelle mit
-       18 Zeilen; ihre Zeile 13 (NICHT vor dem Aus-Eingang) ist jetzt eine Flankenerkennung (Entscheidung 8). */
+<?php /* Welle Bild 13 (1.0.4): drei Seiten aus dem LoxBerry-Plugins Musterprojekt, je Seite Ueberschrift, Kasten "So
+       uebernehmen Sie diese Seite", Tabelle (je Zeile EIN Sprachschluessel LOX.Z<seite>_<nn> = "Typ | Name | Parameter |
+       Eingaenge", jede Zelle maskiert), Hinweise, Bild, Link. Gruppe 6a (1.0.6): Tabellen wortgleich zur Liste vom
+       22.10.2026 (Alexa NG 32, Radio 20, Lampen 18 Zeilen), Schritte und Hinweise fuer den MQTT-Weg. */
 $ax_bs_seiten = array(
     array('kopf' => 'LOX.BS1_H', 'seite' => 'Alexa NG', 'bild' => 'einbindung_loxone.png', 'z' => 'Z1', 'zeilen' => 32,
           'schritte' => array(
               sprintf(ax_t('LOX.BS1_S1'), ax_t('REITER.AMAZON'), ax_t('REITER.GERAETE'), ax_t('GER.K_TEST')),
               sprintf(ax_t('LOX.BS1_S2'), ax_t('REITER.EINSTELLUNGEN'), ax_t('FELD.STANDARDGERAET'), ax_t('FELD.ROUTINEN_FREI'), ax_t('REITER.GERAETE'), ax_t('GER.K_ROUTINEN')),
-              sprintf(ax_t('LOX.BS1_S3'), ax_t('LOX.H_VORLAGEN'), ax_t('LOX.K_VI'), ax_t('LOX.K_VO'), ax_t('LOX.K_VA')),
+              sprintf(ax_t('LOX.BS1_S3'), ax_t('MQTT.L_EIN'), ax_t('MQTT.L_BEFEHLE'), ax_t('MQTT.L_STEUERN'), ax_t('MQTT.L_ROUTINE')),
               ax_t('LOX.BS1_S4'),
-              ax_t('LOX.BS1_S5'),
+              sprintf(ax_t('LOX.BS1_S5'), ax_t('BEFEHL.K_VORLAGE')),
               ax_t('LOX.BS1_S6'),
               ax_t('LOX.BS1_S7'),
               sprintf(ax_t('LOX.BS1_S8'), ax_t('LOX.T_EINGAENGE'), ax_t('LOX.T_PARAMETER')),
@@ -1581,14 +1714,14 @@ $ax_bs_seiten = array(
               ax_t('LOX.BS1_H1'),
               ax_t('LOX.BS1_H2'),
               ax_t('LOX.BS1_H7'),
-              sprintf(ax_t('LOX.BS1_H3'), ax_t('LOX.K_VA')),
+              ax_t('LOX.BS1_H3'),
               ax_t('LOX.BS1_H4'),
               sprintf(ax_t('LOX.BS1_H5'), ax_t('REITER.EINSTELLUNGEN')),
               ax_t('LOX.BS1_H6'))),
     array('kopf' => 'LOX.BS2_H', 'seite' => 'Alexa NG Radio', 'bild' => 'einbindung_loxone_radio.png', 'z' => 'Z2', 'zeilen' => 20,
           'schritte' => array(
               sprintf(ax_t('LOX.BS2_S1'), ax_t('REITER.EINSTELLUNGEN'), ax_t('FELD.MUSIK_SENDER'), ax_t('FELD.RADIO_ZONEN')),
-              sprintf(ax_t('LOX.BS2_S2'), ax_t('LOX.K_VR')),
+              sprintf(ax_t('LOX.BS2_S2'), ax_t('BEFEHL.K_VORLAGE')),
               ax_t('LOX.BS2_S3'),
               ax_t('LOX.BS2_S4'),
               ax_t('LOX.BS2_S5'),
@@ -1598,16 +1731,17 @@ $ax_bs_seiten = array(
               ax_t('LOX.BS2_H2'),
               ax_t('LOX.BS2_H3'),
               ax_t('LOX.BS2_H4'))),
-    array('kopf' => 'LOX.BS3_H', 'seite' => 'Alexa NG Lampen', 'bild' => 'einbindung_loxone_lampen.png', 'z' => 'Z3', 'zeilen' => 16,
+    array('kopf' => 'LOX.BS3_H', 'seite' => 'Alexa NG Lampen', 'bild' => 'einbindung_loxone_lampen.png', 'z' => 'Z3', 'zeilen' => 18,
           'schritte' => array(
               sprintf(ax_t('LOX.BS3_S1'), ax_t('REITER.EINSTELLUNGEN'), ax_t('EINST.L_HUE'), ax_t('FELD.HUE_LAMPEN')),
-              sprintf(ax_t('LOX.BS3_S2'), ax_t('LOX.K_VH'), ax_t('LOX.K_VQH')),
+              sprintf(ax_t('LOX.BS3_S2'), ax_t('BEFEHL.K_VORLAGE')),
               ax_t('LOX.BS3_S3'),
               ax_t('LOX.BS3_S4'),
               ax_t('LOX.BS3_S5')),
           'hinweise' => array(
               ax_t('LOX.BS3_H1'),
               ax_t('LOX.BS3_H2'),
+              ax_t('LOX.BS3_H6'),
               ax_t('LOX.BS3_H3'),
               ax_t('LOX.BS3_H4'),
               sprintf(ax_t('LOX.BS3_H5'), ax_t('EINST.L_HUE_FREI')))),
@@ -1643,13 +1777,32 @@ $ax_bs_seiten = array(
 <div class="sm-small"><?= ax_e(ax_t('LOX.MUSTERPROJEKT')) ?> <a href="https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt" target="_blank" rel="noopener">LoxBerry-Plugins Musterprojekt</a></div>
 <?php } ?>
 </div>
-<div class="sm-step"><b>7.</b> <?= ax_e(ax_t('LOX.S7')) ?></div>
-<div class="sm-step"><b>8.</b> <?= ax_e(ax_t('LOX.S8_SPERRE')) ?><br>
-<span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/sperre') ?></span> <?= ax_e(ax_t('MQTT.N_SPERRE')) ?></div>
-<div class="sm-step"><b>9.</b> <?= ax_e(ax_t('LOX.S9_MUSIK')) ?><br>
+<div class="sm-step"><b>7.</b> <?= ax_e(sprintf(ax_t('LOX.M_S7'), ax_gateway_name($ax_gp, 'status/zaehler'))) ?></div>
+
+<?php /* Gruppe 6a (1.0.6): der Weg ueber HTTP fuer bestehende Anlagen und andere Plugins, zugeklappt. Inhalt wie bis
+         1.0.5 (Schritte 1-5 und 8-10, Vorlagen), die Schritte ohne Nummer; S5 nennt den Zaehler statt OK und ALTER. */ ?>
+<details class="sm-step"><summary><b><?= ax_e(ax_t('LOX.H_HTTP')) ?></b></summary>
+<div class="sm-small"><?= ax_e(ax_t('LOX.HTTP_ERKLAERUNG')) ?></div>
+<div class="sm-step"><?= ax_e(ax_t('LOX.S1')) ?></div>
+<div class="sm-step"><?= ax_e(ax_t('LOX.S2')) ?><br><span class="sm-mono"><?= ax_e($ax_basis . '?aktion=status') ?></span>
+<table class="sm-tbl">
+<tr><th style="width:22%"><?= ax_e(ax_t('LOX.T_FELD')) ?></th><th style="width:30%"><?= ax_e(ax_t('LOX.T_SUCHTEXT')) ?></th><th style="width:48%"><?= ax_e(ax_t('LOX.T_BEDEUTUNG')) ?></th></tr>
+<?php foreach (ax_status_felder() as $ax_f => $ax_d) { ?>
+<tr><td><?= ax_e($ax_f) ?></td><td><span class="sm-mono"><?= ax_e(ax_check($ax_f)) ?></span></td><td><?= ax_e(ax_t('KACHEL.' . $ax_f)) ?></td></tr>
+<?php } ?>
+</table></div>
+<div class="sm-step"><?= ax_e(ax_t('LOX.S3')) ?><br>
+<span class="sm-mono"><?= ax_e(preg_replace('#/plugins/.*$#', '', $ax_basis)) ?></span><br>
+<span class="sm-mono"><?= ax_e('/plugins/' . $ax_p['plugin'] . '/?token=' . $ax_sprech . '&aktion=sprechen&geraet=' . $ax_std . '&text=<v>') ?></span><br>
+<span class="sm-mono"><?= ax_e('/plugins/' . $ax_p['plugin'] . '/?token=' . $ax_sprech . '&aktion=lautstaerke&geraet=' . $ax_std . '&wert=<v>') ?></span></div>
+<div class="sm-step"><?= ax_e(ax_t('LOX.S4')) ?></div>
+<div class="sm-step"><?= ax_e(ax_t('LOX.S5')) ?></div>
+<div class="sm-step"><?= ax_e(ax_t('LOX.S8_SPERRE')) ?><br>
+<span class="sm-mono"><?= ax_e($ax_gp . '/befehl/sperre') ?></span> <?= ax_e(ax_t('MQTT.N_SPERRE')) ?></div>
+<div class="sm-step"><?= ax_e(ax_t('LOX.S9_MUSIK')) ?><br>
 <span class="sm-mono"><?= ax_e('/plugins/' . $ax_p['plugin'] . '/?token=' . $ax_aktion . '&aktion=musik_probe&geraet=' . $ax_std . '&nr=<v>') ?></span><br>
 <span class="sm-mono"><?= ax_e('/plugins/' . $ax_p['plugin'] . '/?token=' . $ax_aktion . '&aktion=musik_stopp&geraet=' . $ax_std) ?></span></div>
-<div class="sm-step" id="radio_loxone"><b>10.</b> <?= ax_e(ax_t('LOX.S10_RADIO')) ?>
+<div class="sm-step" id="radio_loxone"><?= ax_e(ax_t('LOX.S10_RADIO')) ?>
 <?php if (empty($ax_cfg['radio_ein'])) { ?><div class="sm-hinweis"><?= ax_e(ax_t('LOX.RADIO_AUS')) ?> <a href="index.php?form=settings#radio"><?= ax_e(ax_t('TEST.ZU_RADIO')) ?></a></div><?php } ?>
 <table class="sm-tbl">
 <tr><th style="width:5%">#</th><th style="width:95%"><?= ax_e(ax_t('LOX.T_SCHRITT')) ?></th></tr>
@@ -1676,27 +1829,8 @@ $ax_bs_seiten = array(
 <?php } else { ?>
 <div class="sm-hinweis"><?= ax_e(ax_t('LOX.RADIO_KEINE_ZONE')) ?> <a href="index.php?form=settings#radio"><?= ax_e(ax_t('TEST.ZU_RADIO')) ?></a></div>
 <?php } ?>
-<span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/radio/<zone>') ?></span> <?= ax_e(ax_t('MQTT.N_RADIO')) ?><br>
-<span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/radio/<zone>/laut') ?></span> <?= ax_e(ax_t('MQTT.N_RADIO_LAUT')) ?></div>
-<div class="sm-step" id="hue_loxone"><b>11.</b> <?= ax_e(ax_t('LOX.S11_HUE')) ?>
-<?php if (empty($ax_cfg['hue_ein'])) { ?><div class="sm-hinweis"><?= ax_e(ax_t('LOX.HUE_AUS')) ?> <a href="index.php?form=settings#hue_lampen"><?= ax_e(ax_t('TEST.ZU_HUE')) ?></a></div><?php } ?>
-<?php if ($ax_cfg['hue_lampen']) { ?>
-<div class="sm-breit">
-<table class="sm-tbl" id="hue_lampen_loxone">
-<tr><th style="width:22%"><?= ax_e(ax_t('TEST.T_HUE_LAMPE')) ?></th><th style="width:34%"><?= ax_e(ax_t('LOX.T_HUE_EINGAENGE')) ?></th><th style="width:44%"><?= ax_e(ax_t('LOX.T_HUE_RUECK')) ?></th></tr>
-<?php foreach ($ax_cfg['hue_lampen'] as $ax_l) { $ax_hlt = $ax_cfg['mqtt_praefix'] . '/hue/' . $ax_l['kuerzel'] . '/'; ?>
-<tr><td><?= ax_e($ax_l['name']) ?> (<?= ax_e(ax_t($ax_l['art'] === 'dimmer' ? 'EINST.O_HUE_DIMMER' : ($ax_l['art'] === 'licht' ? 'EINST.O_HUE_LICHT' : 'EINST.O_HUE_SCHALTER'))) ?>)</td>
-<td><span class="sm-mono"><?= ax_e(ax_hue_gateway_name($ax_cfg, $ax_l['kuerzel'], 'ein')) ?></span><?php if ($ax_l['art'] === 'dimmer') { ?><br><span class="sm-mono"><?= ax_e(ax_hue_gateway_name($ax_cfg, $ax_l['kuerzel'], 'helligkeit')) ?></span><?php } ?></td>
-<td><span class="sm-mono"><?= ax_e('publish ' . $ax_hlt . 'status 1') ?></span> / <span class="sm-mono">0</span><?php if ($ax_l['art'] === 'dimmer') { ?><br><span class="sm-mono"><?= ax_e('publish ' . $ax_hlt . 'status_helligkeit <v>') ?></span><?php } ?></td></tr>
-<?php } ?>
-</table>
 </div>
-<div class="sm-small"><?= ax_e(sprintf(ax_t('LOX.HUE_UDP'), '/dev/udp/' . ax_hue_udp_host($ax_host) . '/' . (ax_mqtt_udpport() > 0 ? ax_mqtt_udpport() : '?'))) ?></div>
-<?php } else { ?>
-<div class="sm-hinweis"><?= ax_e(ax_t('LOX.HUE_KEINE_LAMPE')) ?> <a href="index.php?form=settings#hue_lampen"><?= ax_e(ax_t('TEST.ZU_HUE')) ?></a></div>
-<?php } ?>
-</div>
-<h2><?= ax_e(ax_t('LOX.H_VORLAGEN')) ?></h2>
+<h3><?= ax_e(ax_t('LOX.H_VORLAGEN')) ?></h3>
 <div class="sm-small"><?= ax_e(ax_t('LOX.VORLAGEN_TEXT')) ?></div>
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="tab-loxone">
@@ -1706,13 +1840,13 @@ $ax_bs_seiten = array(
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="vo"><?= ax_e(ax_t('LOX.K_VO')) ?></button>
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="va"><?= ax_e(ax_t('LOX.K_VA')) ?></button>
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="vr"<?= $ax_cfg['radio_zonen'] ? '' : ' disabled' ?>><?= ax_e(ax_t('LOX.K_VR')) ?></button>
-    <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="vh"<?= $ax_cfg['hue_lampen'] ? '' : ' disabled' ?>><?= ax_e(ax_t('LOX.K_VH')) ?></button>
     <button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="vq"<?= ($ax_cfg['hue_lampen'] && ax_mqtt_udpport() > 0) ? '' : ' disabled' ?>><?= ax_e(ax_t('LOX.K_VQH')) ?></button>
 </div>
 </form>
 <div class="sm-warnung"><?= ax_e(ax_t('LOX.VO_VERTRAULICH')) ?></div>
 <div class="sm-warnung"><?= ax_e(ax_t('LOX.VR_VERTRAULICH')) ?></div>
 <div class="sm-warnung"><?= ax_e(ax_t('LOX.VA_VERTRAULICH')) ?></div>
+</details>
 <h2><?= ax_e(ax_t('LOX.H_PLUGINS')) ?></h2>
 <div class="sm-small"><?= ax_e(ax_t('LOX.PLUGINS_TEXT')) ?></div>
 <div class="sm-pre"><?= ax_e('http://{ip}/plugins/' . $ax_p['plugin'] . '/?aktion=sprechen&token=' . $ax_sprech . '&geraet={zones}&text={text}') ?></div>
@@ -1769,11 +1903,16 @@ if ($ax_p['lbhome'] === '') { $ax_zeile(-1, ax_t('TEST.F_TAKT'), ax_t('TEST.A_TA
 elseif (!$ax_cron && $ax_talter < 0) { $ax_zeile(-1, ax_t('TEST.F_TAKT'), ax_t('TEST.A_TAKT_NIE')); }
 elseif ($ax_talter >= 0 && $ax_talter <= AX_OK_GRENZE_S) { $ax_zeile(1, ax_t('TEST.F_TAKT'), sprintf(ax_t('TEST.A_TAKT_OK'), ax_dauer_text($ax_talter), implode(', ', $ax_cron) ?: '–')); }
 else { $ax_zeile(0, ax_t('TEST.F_TAKT'), sprintf(ax_t('TEST.A_TAKT_ALT'), ax_dauer_text($ax_talter), implode(', ', $ax_cron) ?: '–')); }
-if (empty($ax_cfg['befehle_mqtt_ein'])) { $ax_zeile(3, ax_t('TEST.F_BEFEHLE'), ax_t('TEST.A_BEFEHLE_AUS')); }
-else {
-    $ax_ds = $ax_kopf_dienst;   // Abfrage im Kopf (Nr. 43, 1.0.1)
-    $ax_zeile($ax_ds === null ? -1 : ($ax_ds ? 1 : 0), ax_t('TEST.F_BEFEHLE'), $ax_ds === null ? ax_t('TEST.A_BEFEHLE_NICHT') : ($ax_ds ? ax_t('TEST.A_BEFEHLE_LAEUFT') : ax_t('TEST.A_BEFEHLE_STEHT')));
+// Gruppe 6a (1.0.6): die Befehlsbruecke statt des Befehlsabos (Entwurf gemeinsam 2.11): Lauf und letzte Quittung,
+// die Einrichtung (--pruefen, nur bei offenem Reiter) und die Namenstabelle gegen die Themenliste.
+list($ax_s, $ax_a) = ax_pruef_bruecke();
+$ax_zeile($ax_s, ax_t('TEST.F_BEFEHLE'), $ax_a);
+if ($ax_tab === 'tab-test') {
+    list($ax_s, $ax_a) = ax_pruef_bruecke_einrichtung();
+    $ax_zeile($ax_s, ax_t('TEST.F_BRUECKE_EINR'), $ax_a);
 }
+list($ax_s, $ax_a) = ax_pruef_namen($ax_cfg);
+$ax_zeile($ax_s, ax_t('TEST.F_NAMEN'), $ax_a);
 // H2 (alexa4): Laeuft die Hue-Probe? Mit Selbstprobe, wenn dieser Reiter offen ist.
 // Nr. 41 (alexa5): je Art. Bei eigener Netzadresse wird Docker nur bei offenem Reiter Test gefragt.
 $ax_hart = ax_hue_art($ax_cfg);
@@ -2131,6 +2270,34 @@ $ax_hue_zeilen[] = array(ax_t('TEST.F_HUE_ABO'), $ax_hmo_t);
 <?php } ?>
 </table>
 </div>
+<?php } ?>
+<?php /* Gruppe 6a (1.0.6), EchoLox-Idee E2: "Lampe testen" - je Lampe Knoepfe Ein/Aus (Dimmer dazu 50 %, Taster nur
+         Ausloesen), POST mit Formulartoken vor </form>, Rueckfrage im Browser. Handler: ax_hue_test(). */ ?>
+<h4 class="sm-h4" id="hue_test"><?= ax_e(ax_t('TEST.H_HUE_TEST')) ?></h4>
+<div class="sm-warnung"><?= ax_e(sprintf(ax_t('TEST.HUE_TEST_TEXT'), AX_HUE_TEST_MINUTE_MAX)) ?></div>
+<?php if ($ax_cfg['hue_lampen']) {
+    $ax_htk = array('ein' => 'TEST.K_HUE_EIN', 'halb' => 'TEST.K_HUE_HALB', 'aus' => 'TEST.K_HUE_AUS', 'puls' => 'TEST.K_HUE_PULS'); ?>
+<div class="sm-breit">
+<table class="sm-tbl" id="hue_test_tabelle">
+<tr><th style="width:35%"><?= ax_e(ax_t('TEST.T_HUE_LAMPE')) ?></th><th style="width:65%"><?= ax_e(ax_t('TEST.T_HUE_TEST')) ?></th></tr>
+<?php foreach ($ax_cfg['hue_lampen'] as $ax_l) {
+    $ax_ht = ($ax_l['art'] === 'taster') ? array('puls') : (($ax_l['art'] === 'dimmer') ? array('ein', 'halb', 'aus') : array('ein', 'aus')); ?>
+<tr><td><?= ax_e($ax_l['name']) ?><br><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/hue/' . $ax_l['kuerzel'] . '/ein') ?></span></td><td>
+<form action="index.php" method="post" style="margin:0;" onsubmit="return confirm(<?= ax_e(json_encode(ax_t('TEST.HUE_TEST_FRAGE'))) ?>);">
+<input data-role="none" type="hidden" name="activetab" value="tab-test">
+<input data-role="none" type="hidden" name="hue_test_kuerzel" value="<?= ax_e($ax_l['kuerzel']) ?>">
+<div class="sm-knopfreihe">
+<?php foreach ($ax_ht as $ax_hw) { ?>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="hue_test" value="<?= ax_e($ax_hw) ?>"><?= ax_e(ax_t($ax_htk[$ax_hw])) ?></button>
+<?php } ?>
+</div>
+<input data-role="none" type="hidden" name="formtoken" value="<?= ax_e(ax_formtoken($ax_cfg)) ?>">
+</form></td></tr>
+<?php } ?>
+</table>
+</div>
+<?php } else { ?>
+<div class="sm-hinweis"><?= ax_e(ax_t('TEST.HUE_TEST_KEINE')) ?></div>
 <?php } ?>
 <div class="sm-small"><?= ax_e(sprintf(ax_t('TEST.HUE_NEBEN'), (int) $ax_hz['andere'], (int) $ax_hz['eigene']['anzahl'])) ?> <a href="index.php?form=settings#hue"><?= ax_e(ax_t('TEST.ZU_HUE')) ?></a></div>
 
