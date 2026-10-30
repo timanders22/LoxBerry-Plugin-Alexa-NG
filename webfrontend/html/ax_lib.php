@@ -5537,7 +5537,9 @@ function ax_mqtt_namen($cfg = null, $praefix = null)
     $zeile('status/ok', 'status/ok', '0 … 1', 'zahl', true, true, true);
     $zeile('status/ts', 'status/ts', 'Unix-s', 'zahl', false, false, false);
     $zeile('status/zaehler', 'status/zaehler', '0 … 999', 'zahl', true, true, false);
-    $zeile('status/befehle', 'status/befehle', '-1 … 1', 'zahl', false, true, false);
+    // Nachtwelle N7 (1.0.7): status/befehle mit Noncached wie status/ok (Vorschrift Punkt 4) - die Bruecke sendet
+    // meist denselben Wert; ohne Noncached schickt V2 ihn nach einem Neustart des Miniservers nicht neu.
+    $zeile('status/befehle', 'status/befehle', '-1 … 1', 'zahl', false, true, true);
     $zeile('status/anmeldung', 'status/anmeldung', '0 … 1', 'zahl', true, true, true);
     $zeile('geraete/anzahl', 'geraete/anzahl', '-1 … 999', 'zahl', true, true, false);
     $zeile('geraete/online', 'geraete/online', '-1 … 999', 'zahl', true, true, false);
@@ -5619,6 +5621,138 @@ function ax_pruef_namen($cfg = null, $namen = null)
         return array(0, sprintf(ax_t('TEST.A_NAMEN_FEHL'), $falsch ? implode(', ', $falsch) : '-', $fehlt ? implode(', ', $fehlt) : '-'));
     }
     return array(1, sprintf(ax_t('TEST.A_NAMEN_OK'), count($namen)));
+}
+
+/* ---------------- Gateway V2: Selbsttest der Haken (Nachtwelle N7, 1.0.7) ---------------- */
+
+/**
+ * Die Abos des MQTT-Gateways V2 aus config/system/subscriptions.json (Subscriptions[].Id je Thema, Noncached):
+ * array(Thema => Noncached ja/nein), null = nicht lesbar. Form wie MGiSmart 1.1.28 mg_v2_abos() und Govee 0.9.30
+ * gv_mqtt_v2_haken_lage(); die Datei liest ax_v2_haken_lage().
+ */
+function ax_v2_abos($daten)
+{
+    if (!is_array($daten)) {
+        return null;
+    }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) {
+            $liste = $daten[$s];
+            break;
+        }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) {
+            continue;
+        }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) {
+                $id = $e[$k];
+                break;
+            }
+        }
+        if ($id === '') {
+            continue;
+        }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+            }
+        }
+        $abo[$id] = $nc;
+    }
+    return $abo;
+}
+
+/**
+ * Soll gegen Ist, rein (liest nichts): array(1|0, fehlt[], noncached_fehlt[], noncached_zu_viel[], angehakt, soll).
+ * Soll je Zeile array('thema' => volles Thema, 'name' => Gateway-Name, 'noncached' => bool). Noncached wird in
+ * beide Richtungen verglichen: fehlt es, reicht das Gateway einen gleichen Wert nicht weiter (nach einem Neustart
+ * des Miniservers bleibt der Eingang dann leer); steht es zu viel, geht jeder Wert erneut an den Miniserver.
+ */
+function ax_v2_haken_abgleich(array $soll, array $abo)
+{
+    $fehlt = array();
+    $nc_fehlt = array();
+    $nc_zuviel = array();
+    $da = 0;
+    foreach ($soll as $e) {
+        if (!array_key_exists($e['thema'], $abo)) {
+            $fehlt[] = $e['name'];
+            continue;
+        }
+        $da++;
+        if ($e['noncached'] && !$abo[$e['thema']]) {
+            $nc_fehlt[] = $e['name'];
+        } elseif (!$e['noncached'] && $abo[$e['thema']]) {
+            $nc_zuviel[] = $e['name'];
+        }
+    }
+    return array(($fehlt || $nc_fehlt || $nc_zuviel) ? 0 : 1, $fehlt, $nc_fehlt, $nc_zuviel, $da, count($soll));
+}
+
+/**
+ * Das Soll fuer den Selbsttest: ax_mqtt_hakenliste() - DIESELBE Funktion wie die Hakenliste im Reiter Einbindung in
+ * Loxone (Regeln/07), samt letzte/grund (Texteingang der Musterseite). Noncached: status/ok, status/anmeldung und
+ * seit 1.0.7 status/befehle (Nachtwelle N7).
+ */
+function ax_v2_haken_soll(array $cfg)
+{
+    $aus = array();
+    foreach (ax_mqtt_hakenliste($cfg) as $z) {
+        $aus[] = array('thema' => $z[0], 'name' => $z[1], 'noncached' => (bool) $z[3]);
+    }
+    return $aus;
+}
+
+/**
+ * Selbsttestzeile "Gateway V2: sind alle Datenpunkte der Hakenliste angehakt?" (Nachtwelle N7, Vorschrift Punkt 4):
+ * array(1|0|2, Text ohne Markup). 1 alle Haken da und Noncached wie in der Hakenliste; 0 es fehlt ein Haken oder
+ * Noncached stimmt nicht (mit Namen); 2 trifft nicht zu (MQTT dieses Plugins aus, Gateway V1) oder nicht
+ * feststellbar (Fassung 0, keine Wurzel, subscriptions.json nicht lesbar, Hakenliste leer). Liest nur.
+ */
+function ax_v2_haken_lage($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = ax_config();
+    }
+    if (empty($cfg['mqtt_ein'])) {
+        return array(2, ax_t('TEST.V2_AUS'));
+    }
+    $g = ax_mqtt_gateway_info();
+    $fassung = $g['gefunden'] ? (int) $g['fassung'] : 0;
+    $home = (string) ax_paths()['lbhome'];
+    if ($fassung === 0 || $home === '') {
+        return array(2, ax_t('TEST.V2_UNKLAR'));
+    }
+    if ($fassung < 2) {
+        return array(2, ax_t('TEST.V2_V1'));
+    }
+    $abo = ax_v2_abos(@json_decode((string) @file_get_contents($home . '/config/system/subscriptions.json'), true));
+    if ($abo === null) {
+        return array(2, ax_t('TEST.V2_UNKLAR'));
+    }
+    $liste = ax_v2_haken_soll($cfg);
+    if (!$liste) {
+        return array(2, ax_t('TEST.V2_LEER'));   // ueber eine leere Hakenliste wird nicht geurteilt
+    }
+    list($ok, $fehlt, $nc_fehlt, $nc_zuviel, $da, $soll) = ax_v2_haken_abgleich($liste, $abo);
+    $txt = sprintf(ax_t('TEST.V2_ZAHL'), $da, $soll);
+    if ($fehlt) {
+        $txt .= ' ' . sprintf(ax_t('TEST.V2_FEHLT'), implode(', ', array_slice($fehlt, 0, 12))
+            . (count($fehlt) > 12 ? ' …' : ''));
+    }
+    if ($nc_fehlt) {
+        $txt .= ' ' . sprintf(ax_t('TEST.V2_NC_FEHLT'), implode(', ', $nc_fehlt));
+    }
+    if ($nc_zuviel) {
+        $txt .= ' ' . sprintf(ax_t('TEST.V2_NC_ZUVIEL'), implode(', ', $nc_zuviel));
+    }
+    return array($ok, $txt);
 }
 
 /* ---------------- Befehle ueber die Befehlsbruecke (bin/befehlsbruecke.php) ---------------- */

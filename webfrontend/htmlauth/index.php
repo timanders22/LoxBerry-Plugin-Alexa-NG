@@ -920,7 +920,8 @@ $ax_radio_text = implode("\n", array_map(function ($z) { return $z['zone'] . ' =
 $ax_senderliste_text = implode("\n", array_map(function ($z) { return $z['nr'] . ' = ' . $z['name'] . ' | ' . $z['anbieter']; }, $ax_cfg['musik_sender']));
 
 if (class_exists('LBWeb', false)) {
-    LBWeb::lbheader('Alexa NG', 'https://wiki.loxberry.de/', 'help.html');
+    // Nachtwelle N7 (1.0.7, Sammelstelle #7): die eigene Wiki-Seite, nicht die Startseite.
+    LBWeb::lbheader('Alexa NG', 'https://wiki.loxberry.de/plugins/alexang/start', 'help.html');
 }
 ?>
 <style>
@@ -1565,7 +1566,7 @@ $ax_hl_n = min($ax_hl_n, AX_HUE_LAMPEN_MAX + 3);
 </div>
 <?php /* Gruppe 6a / MQTT (1.0.6; Entwurf ax 2.5, Bauvorschrift Gruppe 1 Nachtrag 2): MQTT ist der Weg des LoxBerry-Plugins
    Musterprojekts, fuer Werte UND Befehle. Schritt 1 das Gateway nach seiner Fassung (V1: Abo-Zeile; V2 und "nicht
-   feststellbar": Hakenliste aus ax_mqtt_hakenliste(), status/ok und status/anmeldung mit "Noncached"), Schritt 2 die
+   feststellbar": Hakenliste aus ax_mqtt_hakenliste(), status/ok, status/anmeldung, seit 1.0.7 status/befehle mit "Noncached"), Schritt 2 die
    Namenstabelle (KEINE Importvorlage fuer Werte), Schritt 3 die Befehle aus der Befehlsbruecke (ax_bb_liste()) mit der
    Vorlage "Alexa NG MQTT-Befehle", Schritt 4 die Ausfallerkennung, Schritt 5 die Lampen (Taster, Spiegeln, E5),
    Schritt 6 die Baustein-Listen, Schritt 7 die Gegenprobe. Der Weg ueber HTTP (bis 1.0.5 die Schritte 1-5 und 8-11
@@ -1913,6 +1914,10 @@ if ($ax_tab === 'tab-test') {
 }
 list($ax_s, $ax_a) = ax_pruef_namen($ax_cfg);
 $ax_zeile($ax_s, ax_t('TEST.F_NAMEN'), $ax_a);
+// Nachtwelle N7 (1.0.7): stehen unter MQTT-Gateway V2 die Haken der Hakenliste mit dem richtigen Noncached?
+// Liest config/system/subscriptions.json; unter V1 und bei ausgeschaltetem MQTT ein Strich.
+list($ax_s, $ax_a) = ax_v2_haken_lage($ax_cfg);
+$ax_zeile($ax_s === 2 ? -1 : $ax_s, ax_t('TEST.F_V2_HAKEN'), $ax_a);
 // H2 (alexa4): Laeuft die Hue-Probe? Mit Selbstprobe, wenn dieser Reiter offen ist.
 // Nr. 41 (alexa5): je Art. Bei eigener Netzadresse wird Docker nur bei offenem Reiter Test gefragt.
 $ax_hart = ax_hue_art($ax_cfg);

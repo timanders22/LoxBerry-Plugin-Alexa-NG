@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 1.0.6
+Version 1.0.7
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -15,6 +15,25 @@ Hue-Probe auf eigener Netzadresse (ab Werk aus).
 > Routinen, Musik-Probe, Radio je Zone an einem Echo und die Hue-Nachbildung
 > mit den Lampen für Alexa – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 > Was noch aussteht, steht unter „Noch am Gerät zu messen“.
+
+## Neu in 1.0.7
+
+Pflegefassung der Nachtwelle (29.10.2026), ohne neue Funktion:
+
+* **Befehlsbrücke 1.0.2** (gemeinsame Stammfassung, bisher 1.0.0): `stop` legt als root nichts mehr an, die
+  Startausgabe wird gekappt, eine leere oder ungültige Uhr startet die Brücke bei liegender Aktualisierungsmarke
+  nicht, der Befehlsordner ist nur für das Plugin lesbar (0700). Themen, Quittungen und Haken bleiben, wie sie
+  waren. Die Vorlage der MQTT-Befehle baut dieses Plugin selbst; sie hatte schon Windows-Zeilenenden (CRLF).
+* **Reiter Test, neue Zeile „Gateway V2: sind alle Datenpunkte der Hakenliste angehakt?“** Unter MQTT-Gateway V2
+  liest das Plugin `config/system/subscriptions.json` und nennt jeden Datenpunkt der Hakenliste (Reiter
+  Einbindung in Loxone), der dort nicht angehakt ist, und jeden, bei dem „Noncached“ nicht stimmt (`status/ok`, `status/anmeldung` und `status/befehle` brauchen es, die übrigen nicht).
+  Unter Gateway V1 und bei ausgeschalteter MQTT-Veröffentlichung heißt die Zeile „trifft nicht zu“.
+* **Reiter Einbindung in Loxone, Hakenliste:** `alexang/status/befehle` (von der Befehlsbrücke) steht jetzt
+  mit „Noncached“ wie `status/ok` und `status/anmeldung`. Bitte unter Gateway V2 dort das Kästchen *Noncached*
+  setzen; sonst schickt das Gateway den gleichbleibenden Wert nach einem Neustart des Miniservers nicht neu.
+* **Hilfe-Verweis** oben rechts zeigt auf die eigene Seite im LoxBerry-Wiki (`plugins/alexang/start`) statt auf
+  die Startseite.
+* Die Ausgabeart „Alexa-NG“ der gemeinsamen Sprachausgabe anderer Plugins (Sprech-Endpunkt) ist unverändert.
 
 ## Neu in 1.0.6
 
