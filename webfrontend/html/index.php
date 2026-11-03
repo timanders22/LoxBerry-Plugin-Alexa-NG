@@ -61,7 +61,9 @@ try {
         $ax_par[$ax_k] = $ax_w;
     }
     $ax_wer = isset($_SERVER['REMOTE_ADDR']) ? preg_replace('/[^0-9a-fA-F:.]/', '', (string) $_SERVER['REMOTE_ADDR']) : '-';
-    $ax_aktion = isset($ax_par['aktion']) ? $ax_par['aktion'] : (isset($ax_par['selftest']) ? 'selftest' : 'status');
+    /* 1.0.8 (Nachzug 01.11.2026, wie Renault NG 2.1.23): !empty statt isset - bis 1.0.7 galt auch ?selftest=0 und ?selftest= als Selbsttest,
+     * und eine Adresse mit diesem Anhang tat nie etwas anderes. */
+    $ax_aktion = isset($ax_par['aktion']) ? $ax_par['aktion'] : (!empty($ax_par['selftest']) ? 'selftest' : 'status');
     $ax_kopf = array('status' => 'ALEXANG', 'geraete' => 'GERAET', 'selftest' => 'SELFTEST', 'sprechen' => 'SPRECHEN',
                      'ankuendigen' => 'ANKUENDIGEN', 'lautstaerke' => 'LAUTSTAERKE', 'routine' => 'ROUTINE',
                      'sperre' => 'SPERRE', 'musik_probe' => 'MUSIK', 'musik_stopp' => 'MUSIK',

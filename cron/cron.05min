@@ -13,6 +13,10 @@ LOGV="REPLACELBPLOGDIR"
 ERR="$LOGV/cron.err"
 mkdir -p "$LOGV" 2>/dev/null
 touch "$ERR" 2>/dev/null
+# 1.0.8 (Nachzug 01.11.2026, Bauart Renault NG 2.1.23): ist die Fehlerdatei nicht schreibbar, braeche die
+# Umlenkung den Befehl ab, BEVOR er startet - bis 1.0.7 kein Lauf und keine Spur. Dann geht die Fehlerausgabe
+# nach /dev/null, und der Lauf findet statt.
+[ -f "$ERR" ] && [ -w "$ERR" ] || ERR=/dev/null
 if [ -f "$ERR" ] && [ "$(stat -c %s "$ERR" 2>/dev/null || echo 0)" -gt 262144 ]; then
   tail -n 300 "$ERR" > "$ERR.neu" 2>/dev/null && mv -f "$ERR.neu" "$ERR"
 fi

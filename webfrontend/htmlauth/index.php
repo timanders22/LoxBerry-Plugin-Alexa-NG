@@ -474,6 +474,16 @@ if ($ax_post && isset($_POST['save'])) {
 }
 
 /* ---------------- Token neu wuerfeln (je eins, mit Warnung) ---------------- */
+/* 1.0.8: Sprachansagen, eigenes Formular, eigene Datei. Die Testansage spricht immer. */
+if ($ax_post && isset($_POST['ansage_test'])) {
+    list($ax_at, $ax_ag) = ax_ansage_test();
+    ax_ui_umleiten($ax_datadir, 'tab-settings', $ax_at ? array('meldung' => ax_t('ANSAGEPLUGIN.M_TEST_OK')) : array('fehler' => ax_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $ax_ag));
+}
+if ($ax_post && isset($_POST['ansage_speichern'])) {
+    list($ax_ao, $ax_af, $ax_ah) = ax_ansage_post($_POST);
+    if ($ax_af) { ax_ui_umleiten($ax_datadir, 'tab-settings', array('fehler' => implode(' ', $ax_af))); }
+    ax_ui_umleiten($ax_datadir, 'tab-settings', $ax_ao ? array('meldung' => trim(ax_t('ANSAGEPLUGIN.M_OK') . ' ' . implode(' ', $ax_ah))) : array('fehler' => ax_t('ANSAGEPLUGIN.M_FEHL')));
+}
 if ($ax_post && isset($_POST['token_neu'])) {
     $ax_welches = ($_POST['token_neu'] === 'aktion') ? 'aktionstoken' : 'sprechtoken';
     if (empty($_POST['token_neu_ja'])) {
@@ -1322,6 +1332,7 @@ $ax_hl_n = min($ax_hl_n, AX_HUE_LAMPEN_MAX + 3);
 <div class="sm-warnung"><?= ax_e(ax_t('EINST.TOKEN_NEU_WARNUNG')) ?></div>
 </form>
 
+<?= ax_ansage_form_html('<input data-role="none" type="hidden" name="activetab" value="tab-settings"><input data-role="none" type="hidden" name="formtoken" value="' . ax_e(ax_formtoken($ax_cfg)) . '">') ?>
 <h2><?= ax_e(ax_t('SICH.H')) ?></h2>
 <div class="sm-warnung"><?= ax_e(ax_t('SICH.WARNUNG')) ?></div>
 <form action="index.php" method="post">
