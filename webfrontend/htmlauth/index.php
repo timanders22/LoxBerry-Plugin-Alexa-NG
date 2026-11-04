@@ -256,6 +256,7 @@ if ($ax_post && isset($_POST['download'])) {
     // "Alexa NG MQTT-Befehle"; die Vorlage der Lampen-Eingaenge (vh, localhost) gibt es nicht mehr. Unbekannt: Status.
     $ax_vl = ax_vorlagen_liste($ax_host, $ax_cfg);
     $ax_v = isset($ax_vl[$ax_dl]) ? $ax_vl[$ax_dl] : $ax_vl['vi'];
+    while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: application/x-download');
     header('Content-Disposition: attachment; filename="' . $ax_v[0] . '"');
     header('Content-Length: ' . strlen($ax_v[1]));
@@ -267,6 +268,7 @@ if ($ax_post && isset($_POST['ax_sichern'])) {
     $ax_js = ax_sicherung_bauen($ax_cfg, $ax_mit);
     if ($ax_js !== false) {
         ax_log('INFO', 'Einstellungen gesichert (Download' . ($ax_mit ? ', mit Amazon-Anmeldung' : '') . ').');
+        while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="alexang_einstellungen_' . date('Ymd_His') . '.json"');
         echo $ax_js;
