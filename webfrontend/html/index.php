@@ -132,7 +132,14 @@ try {
 
     /* ---------------- Selbsttest: prueft das Token, loest nichts aus ---------------- */
     if ($ax_aktion === 'selftest') {
-        ax_ende_roh(200, 'SELFTEST;OK=1;TOKEN=OK;ART=' . ($ax_ist_akt ? 'AKTION' : 'SPRECH'));
+        /* 1.0.9: ONLINE = Zahl der Echos online laut gespeicherter Geraeteliste, -1 = die Liste ist noch nicht geholt. Nur die Datei, kein Kontakt zu Amazon. */
+        $ax_gl = ax_geraete();
+        $ax_on = -1;
+        if (is_array($ax_gl)) {
+            $ax_on = 0;
+            foreach ($ax_gl['liste'] as $ax_ge) { if (is_array($ax_ge) && !empty($ax_ge['online'])) { $ax_on++; } }
+        }
+        ax_ende_roh(200, 'SELFTEST;OK=1;TOKEN=OK;ART=' . ($ax_ist_akt ? 'AKTION' : 'SPRECH') . ';ONLINE=' . $ax_on);
     }
 
     /* Ab hier darf der Endpunkt Laufzeitdateien im Datenordner schreiben -
