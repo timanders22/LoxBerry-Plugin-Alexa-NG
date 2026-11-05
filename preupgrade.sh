@@ -150,9 +150,10 @@ esac
 if [ -e "$BESTAND" ]; then
     rm -rf "${BESTAND:?}"
     if [ -e "$BESTAND" ]; then
-        echo "<WARNING> Ein alter Bestand unter $BESTAND liess sich nicht entfernen - es wird nichts gesichert;"
-        echo "<WARNING> die Zweitschriften neben dem Konfigordner holen die Einstellungen zurueck."
-        exit 0
+        echo "<FAIL> Ein alter Bestand unter $BESTAND liess sich nicht entfernen - es wird nichts gesichert. Die Aktualisierung"
+        echo "<FAIL> wird abgebrochen, die bisherige Fassung bleibt installiert."
+        rm -f "$MARKE" 2>/dev/null
+        exit 2
     fi
 fi
 ( umask 077 && mkdir -p "$BESTAND" ) 2>/dev/null
@@ -172,6 +173,9 @@ ax_ablegen "$BASE/config/plugins/$PFOLDER/alexang.json" alexang.json
 ax_ablegen "$BASE/config/plugins/$PFOLDER/amazon.json" amazon.json
 date +%s > "$BESTAND/stand" 2>/dev/null
 if [ "$AX_FEHL" != 0 ]; then
-    echo "<WARNING> Die Zweitschriften neben dem Konfigordner holen die Einstellungen dann zurueck."
+    echo "<FAIL> Nicht alles liess sich beiseitelegen - die Aktualisierung wird abgebrochen, damit der Purge die Originale"
+    echo "<FAIL> nicht loescht. Die bisherige Fassung bleibt installiert."
+    rm -f "$MARKE" 2>/dev/null
+    exit 2
 fi
 exit 0

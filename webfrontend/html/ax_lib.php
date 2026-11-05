@@ -1079,6 +1079,8 @@ function ax_ansage_post(array $post)
         return array(false, $t, array());
     }
     $cfg['tts'] = $neu;
+    // 1.0.11: ein eingetipptes oder geloeschtes Sprechtoken ist nicht mehr vom Nachbarn; bis 1.0.10 ueberschrieb es der naechste Abgleich.
+    $cfg['ansage_token_herkunft'] = ansage_token_herkunft_formular($post, isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array());
     $cfg['ansage_regeln'] = $r;
     $cfg['ansage_haken'] = $hk;
     $t = array();
@@ -2225,9 +2227,16 @@ function ax_sequenz_sprechen(array $ziele, array $teile, $kunde, $laut, array $v
 {
     $schritte = array();
     if ($laut !== null) {
+        // 1.0.11 (AX-1): ohne bekannten Vorwert bleibt die Lautstaerke dieses Geraets unangetastet - die Ansage kommt in
+        // der aktuellen Lautstaerke. Bis 1.0.10 ging Lautstaerke 80 auch ohne Rueckweg hinaus (Abfrage scheitert mit 429,
+        // 5xx, Zeitgrenze, Geraet fehlt in der Antwort), und der Echo blieb dauerhaft laut. LAUT_ZURUECK nennt die Zahl.
         $k = array();
-        foreach ($ziele as $g) { $k[] = ax_knoten('Alexa.DeviceControls.Volume', $g, $kunde, array('value' => (string) $laut)); }
-        $schritte[] = ax_parallel($k);
+        foreach ($ziele as $g) {
+            if (isset($vorher[$g['serial']]) && $vorher[$g['serial']] >= 0) {
+                $k[] = ax_knoten('Alexa.DeviceControls.Volume', $g, $kunde, array('value' => (string) $laut));
+            }
+        }
+        if ($k) { $schritte[] = ax_parallel($k); }
     }
     foreach ($teile as $t) {
         $k = array();
@@ -2245,6 +2254,33 @@ function ax_sequenz_sprechen(array $ziele, array $teile, $kunde, $laut, array $v
     }
     if (count($schritte) === 1) { return ax_sequenz($schritte[0]); }
     return ax_sequenz(array('@type' => 'com.amazon.alexa.behaviors.model.SerialNode', 'nodesToExecute' => $schritte));
+}
+
+/**
+ * 1.0.11 (AX-2): laeuft auf einem Geraet noch eine Ansage mit laut=, ist der gelesene Wert ihr Ansagepegel. Gilt dann der
+ * gemerkte echte Vorwert - bis 1.0.10 stellte die zweite Ansage danach auf den lauten Pegel "zurueck", dauerhaft.
+ */
+function ax_laut_vorher(array $vorher, array $lauf, array $ziele, $jetzt)
+{
+    foreach ($ziele as $z) {
+        $e = isset($lauf[$z['serial']]) ? $lauf[$z['serial']] : null;
+        if (is_array($e) && isset($e['vorher'], $e['bis']) && (int) $e['bis'] > (int) $jetzt) {
+            $vorher[$z['serial']] = (int) $e['vorher'];
+        }
+    }
+    return $vorher;
+}
+
+/** 1.0.11 (AX-2): grob die Sprechdauer nach oben (10 Zeichen je Sekunde, 15 s Zuschlag); Amazon meldet kein Ende. */
+function ax_laut_merken(array $lauf, array $vorher, array $ziele, $laenge, $jetzt)
+{
+    $bis = (int) $jetzt + (int) ceil((int) $laenge / 10) + 15;
+    foreach ($ziele as $z) {
+        if (isset($vorher[$z['serial']]) && $vorher[$z['serial']] >= 0) {
+            $lauf[$z['serial']] = array('vorher' => (int) $vorher[$z['serial']], 'bis' => $bis);
+        }
+    }
+    return $lauf;
 }
 
 /** Ankuendigen [ungemessen]: ein AlexaAnnouncement-Knoten fuer alle Geraete. */
@@ -2320,7 +2356,7 @@ function ax_bremse_lesen()
     $p = ax_paths();
     $b = ax_json_lesen($p['datadir'] . '/bremse.json');
     if (!is_array($b)) { $b = array(); }
-    foreach (array('fenster', 'abstand', 'stunde', 'musik_stunde') as $k) {
+    foreach (array('fenster', 'abstand', 'stunde', 'musik_stunde', 'laut_lauf') as $k) {
         if (!isset($b[$k]) || !is_array($b[$k])) { $b[$k] = array(); }
     }
     if (!isset($b['letzter_preview'])) { $b['letzter_preview'] = 0; }
@@ -2343,6 +2379,9 @@ function ax_bremse_schreiben(array $b)
             $t = is_array($e) && isset($e['t']) ? (int) $e['t'] : 0;
             if ($jetzt - $t > 3600) { unset($b[$k][$sch]); }
         }
+    }
+    foreach ($b['laut_lauf'] as $sch => $e) {
+        if (!is_array($e) || !isset($e['bis']) || (int) $e['bis'] <= $jetzt) { unset($b['laut_lauf'][$sch]); }
     }
     return ax_write_json($p['datadir'] . '/bremse.json', $b, 0600);
 }
@@ -3371,6 +3410,7 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
                     }
                 }
             }
+            $vorher = ax_laut_vorher($vorher, $b['laut_lauf'], $ziele, $jetzt);     // 1.0.11 (AX-2)
             $zurueck = 0;
             foreach ($ziele as $z) { if (isset($vorher[$z['serial']])) { $zurueck++; } }
             $zusatz['LAUT_ZURUECK'] = $zurueck;
@@ -3441,7 +3481,9 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
         foreach ($ziele as $z) {
             $b['fenster'][($musik ? 'musik' : $aktion) . '|' . $z['serial']] = array('h' => $hash, 't' => time());
             if ($aktion === 'sprechen' || $aktion === 'ankuendigen') { $b['abstand'][$z['serial']] = array('t' => time()); }
+            if ($aktion === 'lautstaerke') { unset($b['laut_lauf'][$z['serial']]); }     // 1.0.11: der Befehl von aussen gilt
         }
+        if ($aktion === 'sprechen' && $laut !== null) { $b['laut_lauf'] = ax_laut_merken($b['laut_lauf'], $vorher, $ziele, $laenge, time()); }
     }
     ax_bremse_schreiben($b);
     ax_sperre_frei($sp);
