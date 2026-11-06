@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 1.0.11
+Version 1.0.12
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -15,6 +15,12 @@ Hue-Probe auf eigener Netzadresse (ab Werk aus).
 > Routinen, Musik-Probe, Radio je Zone an einem Echo und die Hue-Nachbildung
 > mit den Lampen für Alexa – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 > Was noch aussteht, steht unter „Noch am Gerät zu messen“.
+
+## Neu in 1.0.12
+
+- **Wiederholte Ansagen werden gesprochen.** Bis 1.0.11 verwarf die Wiederholbremse denselben Text an dasselbe Gerät 30 Sekunden lang – und meldete trotzdem `OK=1`. Das aufrufende Plugin zeigte „ok“, der Echo sprach nicht. Für `sprechen` und `ankuendigen` gilt jetzt höchstens 5 Sekunden (echte Doppelauslösung), auch wenn in den Einstellungen ein größerer Wert steht, und die Antwort ist ehrlich: `429 SPRECHEN;OK=0;…;GRUND=DOPPELT`. Routine, Lautstärke und Musik behalten die eingestellte Bremse und `200 UNVERAENDERT`. Ab Werk steht die Bremse jetzt auf 5 s.
+- **`OK=1` nur, wenn die Ansage an Amazon ging.** Sperre aus Loxone und Ruhezeit antworten `409 OK=0;UEBERSPRUNGEN=1;GRUND=GESPERRT` bzw. `GRUND=RUHEZEIT` statt `200 OK=1` – gewollt, aber nicht gesprochen. `dringend=1` geht weiter durch. Über die Befehlsbrücke (MQTT) bleibt die Quittung an Loxone wie bisher.
+- **Sprachmodul 1.4.2:** Wird eine Ansage bewusst nicht gesprochen (gerade schon gesagt, Sperre aus Loxone, Ruhezeit), steht das im Protokoll nicht mehr als Fehler, sondern als „nicht gesprochen“ mit Grund – und kein anderer Lautsprecher springt ein.
 
 ## Neu in 1.0.11
 
@@ -551,9 +557,10 @@ leerer Text ergibt 200 `UEBERSPRUNGEN=1` (für den Statusbaustein). `<` oder
 `>` nur mit `ssml=1`, und dann `<speak>…</speak>` mit höchstens 250 Zeichen.
 **`dringend=1`** übergeht die Ruhezeit, nicht die Bremse.
 
-**Antwortcodes:** 200 gesendet, übersprungen oder unverändert · 400 Parameter
+**Antwortcodes:** 200 gesendet, leerer Text (`TEXT_NULL`) oder unverändert (Routine, Lautstärke, Musik) · 400 Parameter
 falsch · 403 Token · 404 Gerät unbekannt · 409 Plugin aus bzw. nicht
-freigegeben · 429 Bremse (`BREMSE;WARTE=s`, `STUNDENGRENZE`) · 503 Anmeldung
+freigegeben, Sperre aus Loxone (`GESPERRT`) oder Ruhezeit (`RUHEZEIT`) – seit 1.0.12, bis dahin 200 · 429 Bremse (`BREMSE;WARTE=s`, `STUNDENGRENZE`) oder
+derselbe Ansagetext binnen 5 s (`DOPPELT`, seit 1.0.12; bis dahin 200 `UNVERAENDERT`) · 503 Anmeldung
 fehlt oder abgelaufen, Amazon gestört (`AMAZON`, `AMAZON_RATE`, `NETZ`,
 `AMAZON_UNERWARTET`), beschäftigt · 500 interner Fehler.
 
@@ -572,7 +579,7 @@ Ab Werk aus (Reiter **Einstellungen**, Haken „Sperre aus Loxone annehmen“).
 Loxone setzt sie etwa bei Abwesend, Gäste oder Schlafen:
 `?aktion=sperre&token=<Aktionstoken>&wert=1`, aufheben mit `wert=0`, oder über
 MQTT `alexang/befehl/sperre` mit `1`/`0` (Befehlseingang nötig). Gesperrt
-antworten `sprechen` und `ankuendigen` mit `200 UEBERSPRUNGEN=1;GRUND=GESPERRT`;
+antworten `sprechen` und `ankuendigen` mit `409 OK=0;UEBERSPRUNGEN=1;GRUND=GESPERRT` (bis 1.0.11 `200 OK=1`);
 `dringend=1` geht durch. Lautstärke, Routinen und die Musik-Probe gelten
 weiter. Der letzte Wert bleibt erhalten; nach einem Update ist er weg (er liegt
 im Datenordner), dann gilt „offen“, bis Loxone ihn neu setzt — der Reiter
@@ -928,7 +935,7 @@ auf `…/ein` zurück (höchstens dreimal je Lampe und Minute, danach zehn Minut
   Schlösser öffnen oder Einkäufe auslösen — nur eintragen, was aus dem
   Heimnetz ausgelöst werden darf.
 * **Nur amazon.de.**
-* **Höchstens 60 Befehle je Stunde** ab Werk (10–240), Wiederholbremse 30 s,
+* **Höchstens 60 Befehle je Stunde** ab Werk (10–240), Wiederholbremse 5 s (für Ansagen höchstens 5 s, dann `429 GRUND=DOPPELT`),
   mindestens 1 s zwischen zwei Aufrufen an Amazon. Musik-Probe und Radio je
   Zone zählen zusammen getrennt (ab Werk 30 je Stunde).
 * **Sperre aus Loxone, Musik-Probe, Radio je Zone** und

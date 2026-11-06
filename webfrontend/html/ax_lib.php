@@ -51,6 +51,7 @@ define('AX_MUSIK_NR_MAX', 50);       // Senderliste: Nummern 1..50 (Entscheidung
 define('AX_SENDER_MAX', 100);        // Zeichen je Sendername (Bauliste B1)
 define('AX_RADIO_ZONEN_MAX', 24);    // Radio je Zone: Zonen 1..24 (Bauliste alexa3 Z1)
 define('AX_RADIO_GLEICH_S', 60);     // gleicher Sollwert je Zone binnen 60 s -> UNVERAENDERT (X-7, Z4)
+define('AX_DOPPELT_S', 5);          // 1.0.12: Ansagen/Ankuendigungen - gleicher Text binnen 5 s = Doppelausloesung (429 DOPPELT)
 define('AX_RADIO_PAUSE_S', 60);      // nach AMAZON_RATE: Musik-Pause (Radio und Musik-Probe), kein Wiederholen (Z4, alexa4 N3)
 define('AX_HUE_PORT', 8380);         // Hue-Probe: HTTP-Port ab Werk - nicht 80, Apache bleibt unberuehrt (alexa4 H1)
 define('AX_HUE_D_BAU_S', 1800);      // Hue-Probe auf eigener Netzadresse: so lange darf docker build dauern (Nr. 41)
@@ -254,9 +255,11 @@ function ax_vorgaben()
         'standardgeraet' => '',
         // Eigene Gruppen: Liste von array('name' => 'unten', 'geraete' => 'kueche,flur').
         'gruppen' => array(),
-        // Wiederholbremse (ab Werk an): derselbe Text an dasselbe Geraet
-        // innerhalb dieses Fensters wird nicht erneut gesprochen. 0 = aus.
-        'bremse_fenster_s' => 30,
+        // Wiederholbremse (ab Werk an): derselbe Befehl an dasselbe Geraet
+        // innerhalb dieses Fensters wird nicht erneut gesendet. 0 = aus.
+        // 1.0.12: ab Werk 5 (bis 1.0.11: 30); fuer Ansagen und Ankuendigungen
+        // gilt hoechstens AX_DOPPELT_S, auch bei einem gespeicherten groesseren Wert.
+        'bremse_fenster_s' => 5,
         // Mindestabstand fuer einen ANDEREN Text am selben Geraet. Ab Werk aus
         // (Entscheidung 14 sinngemaess): mit 429 gingen Ansagen verloren.
         'mindestabstand_s' => 0,
@@ -3207,7 +3210,8 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
             preg_match('/^.{0,60}/su', trim($par['text']), $mt);
             $zeile .= ', Text: ' . str_replace(array("\r", "\n"), ' ', $mt[0]);
         }
-        ax_log($felder['OK'] ? 'INFO' : 'WARN', $zeile);
+        // 1.0.12: bewusst nicht gesprochen (Sperre, Ruhezeit, Doppelausloesung) ist kein Fehler - INFO wie bisher.
+        ax_log(($felder['OK'] || !empty($felder['UEBERSPRUNGEN']) || $grund === 'DOPPELT') ? 'INFO' : 'WARN', $zeile);
         if ($versucht) {
             $letzte = array('zeit' => time(), 'aktion' => $aktion, 'geraet' => $namen ? implode(',', $namen) : '-',
                             'laenge' => (int) $laenge, 'ergebnis' => (int) $felder['OK'], 'grund' => ($grund === '' ? '-' : $grund),
@@ -3256,11 +3260,12 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
         }
         if (isset($par['dringend']) && !in_array($par['dringend'], array('0', '1'), true)) { $f['GRUND'] = 'DRINGEND'; return $ende(400, $f); }
         // K1: die Sperre aus Loxone haelt Ansagen und Ankuendigungen an; dringend=1 geht durch.
+        // 1.0.12: gewollt, aber nicht gesprochen - also kein OK=1 (bis 1.0.11: 200 OK=1 UEBERSPRUNGEN).
         if (ax_loxsperre_wirkt($cfg) && !(isset($par['dringend']) && $par['dringend'] === '1')) {
-            return $ende(200, array('OK' => 1, 'UEBERSPRUNGEN' => 1, 'GRUND' => 'GESPERRT'));
+            return $ende(409, array('OK' => 0, 'UEBERSPRUNGEN' => 1, 'GRUND' => 'GESPERRT'));
         }
         if (ax_ruhezeit($cfg) && !(isset($par['dringend']) && $par['dringend'] === '1')) {
-            return $ende(200, array('OK' => 1, 'UEBERSPRUNGEN' => 1, 'GRUND' => 'RUHEZEIT'));
+            return $ende(409, array('OK' => 0, 'UEBERSPRUNGEN' => 1, 'GRUND' => 'RUHEZEIT'));
         }
         if ($aktion === 'ankuendigen' && isset($par['titel'])) {
             if (!is_string($par['titel']) || strlen($par['titel']) > 80 || preg_match('/[\x00-\x1F\x7F<>]/', $par['titel'])
@@ -3353,14 +3358,20 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
     $hash = hash('sha256', $aktion . '|' . $text . '|' . ($laut === null ? '' : $laut) . '|' . (isset($par['name']) ? $par['name'] : '')
                  . ($musik ? '|' . $sender . '|' . $anbieter : ''));
     $unveraendert = 0;
-    if ((int) $cfg['bremse_fenster_s'] > 0) {
+    /* 1.0.12 (Befund Hausherr 05.11.2026): bis 1.0.11 verwarf das Fenster (ab Werk 30 s) denselben Ansagetext und antwortete
+     * 200 OK=1 GRUND=UNVERAENDERT - der Verbraucher meldete "ok", der Echo sprach nicht. Fuer Ansagen und Ankuendigungen jetzt
+     * hoechstens AX_DOPPELT_S (echte Doppelausloesung) und ehrlich 429 OK=0 GRUND=DOPPELT; Routine, Lautstaerke, Musik wie bisher. */
+    $ax_ansage = ($aktion === 'sprechen' || $aktion === 'ankuendigen');
+    $ax_fenster = (int) $cfg['bremse_fenster_s'];
+    if ($ax_ansage && $ax_fenster > AX_DOPPELT_S) { $ax_fenster = AX_DOPPELT_S; }
+    if ($ax_fenster > 0) {
         $rest = array();
         foreach ($ziele as $z) {
             // Musik: EIN Merker je Geraet fuer Start und Stopp - Start, Stopp,
             // Start desselben Senders wird so nicht verschluckt.
             $k = ($musik ? 'musik' : $aktion) . '|' . $z['serial'];
             $e = isset($b['fenster'][$k]) ? $b['fenster'][$k] : null;
-            if (is_array($e) && isset($e['h'], $e['t']) && $e['h'] === $hash && $jetzt - (int) $e['t'] < (int) $cfg['bremse_fenster_s']) {
+            if (is_array($e) && isset($e['h'], $e['t']) && $e['h'] === $hash && $jetzt - (int) $e['t'] < $ax_fenster) {
                 $unveraendert++;
                 continue;
             }
@@ -3368,6 +3379,10 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
         }
         if (!$rest) {
             ax_sperre_frei($sp);
+            if ($ax_ansage) {
+                return $ende(429, array('OK' => 0, 'GERAETE' => 0, 'UNVERAENDERT' => $unveraendert, 'FENSTER' => $ax_fenster,
+                                        'GRUND' => 'DOPPELT'), false, $ziele, $laenge);
+            }
             return $ende(200, array('OK' => 1, 'GERAETE' => 0, 'UNVERAENDERT' => $unveraendert, 'GRUND' => 'UNVERAENDERT'), false, $ziele, $laenge);
         }
         $ziele = $rest;
@@ -6277,10 +6292,16 @@ function ax_v2_haken_lage($cfg = null)
  * Die Rueckgabe von ax_befehl_ausfuehren(), ax_radio_ausfuehren() oder ax_loxsperre_setzen() - array(http, felder) -
  * fuer die Bruecke: array(bool, Grund). Angenommen heisst HTTP 200 mit OK=1, auch UEBERSPRUNGEN (GESPERRT, RUHEZEIT,
  * TEXT_NULL, UNVERAENDERT; der Grund steht im Protokoll). Sonst der GRUND der Felder in die Quittung (Entwurf ax 3.3).
+ * 1.0.12: GESPERRT, RUHEZEIT (409) und DOPPELT (429) antworten am Endpunkt jetzt OK=0; fuer die Bruecke bleiben sie
+ * angenommen wie bis 1.0.11 (Grund im Protokoll) - die Quittung an Loxone aendert sich nicht.
  */
 function ax_befehl_bruecke($r)
 {
     if (is_array($r) && isset($r[0], $r[1]) && (int) $r[0] === 200 && is_array($r[1]) && !empty($r[1]['OK'])) { return array(true, ''); }
+    if (is_array($r) && isset($r[0], $r[1]) && is_array($r[1]) && isset($r[1]['GRUND'])
+        && in_array(array((int) $r[0], (string) $r[1]['GRUND']), array(array(409, 'GESPERRT'), array(409, 'RUHEZEIT'), array(429, 'DOPPELT')), true)) {
+        return array(true, '');
+    }
     $g = (is_array($r) && isset($r[1]) && is_array($r[1]) && isset($r[1]['GRUND'])) ? (string) $r[1]['GRUND'] : '';
     return array(false, $g !== '' ? $g : 'FEHLER');
 }
