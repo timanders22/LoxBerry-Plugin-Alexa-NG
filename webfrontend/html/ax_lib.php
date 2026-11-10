@@ -4826,6 +4826,23 @@ function ax_hue_docker_merk_schreiben(array $m)
     return ax_write_json($p['datadir'] . '/hue_docker.json', $m, 0600);
 }
 
+/**
+ * 1.0.13: Zeitangabe aus docker inspect (State.StartedAt) als Unix-Zeit, false wenn unlesbar. Docker schreibt bis zu
+ * neun Nachkommastellen ("2026-11-07T21:46:20.707384631Z", Endnullen fallen weg); strtotime() von PHP 7.4 - der
+ * Fassung von LoxBerry 3.0 bis 4.0 - liefert bei neun Stellen false, bei acht und weniger nicht; PHP 8.4 rechnet beides
+ * (am Geraet und unter 7.4.33/8.4.27 gemessen 10.11.2026, Bauart wie Audioserver NG 0.9.8). Damit stand im Reiter Test bei fast
+ * jedem Start "Container ... laeuft seit noch nie".
+ * Die Bruchteile der Sekunde zaehlen hier nicht.
+ */
+function ax_docker_zeit($s)
+{
+    if (!is_string($s) || $s === '' || strpos($s, '0001-01-01') === 0) {
+        return false;   // Docker meldet einen nie gestarteten Container als 0001-01-01T00:00:00Z
+    }
+    $t = strtotime(preg_replace('/(\d{2}:\d{2}:\d{2})\.\d+/', '$1', $s));
+    return ($t !== false && $t > 0) ? $t : false;
+}
+
 /** Kurzfassung eines Containers aus docker inspect. */
 function ax_hue_docker_kurz(array $info)
 {
@@ -4836,7 +4853,7 @@ function ax_hue_docker_kurz(array $info)
     $ip = function ($n) use ($netze) {
         return (isset($netze[$n]['IPAddress']) && ax_ipv4_zahl($netze[$n]['IPAddress']) !== null) ? $netze[$n]['IPAddress'] : '';
     };
-    $start = isset($s['StartedAt']) && is_string($s['StartedAt']) ? strtotime($s['StartedAt']) : false;
+    $start = isset($s['StartedAt']) && is_string($s['StartedAt']) ? ax_docker_zeit($s['StartedAt']) : false;
     return array(
         'id' => (isset($info['Id']) && is_string($info['Id'])) ? substr($info['Id'], 0, 12) : '',
         'laeuft' => !empty($s['Running']) && empty($s['Restarting']),

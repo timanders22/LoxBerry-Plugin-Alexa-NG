@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 1.0.12
+Version 1.0.13
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -15,6 +15,10 @@ Hue-Probe auf eigener Netzadresse (ab Werk aus).
 > Routinen, Musik-Probe, Radio je Zone an einem Echo und die Hue-Nachbildung
 > mit den Lampen für Alexa – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 > Was noch aussteht, steht unter „Noch am Gerät zu messen“.
+
+## Neu in 1.0.13
+
+- **Fehler behoben: „läuft seit“ der Hue-Probe auf eigener Netzadresse.** Das Plugin liest die Startzeit des Containers aus `docker inspect`. Docker schreibt sie meist mit neun Nachkommastellen (`2026-11-07T21:46:20.707384631Z`), und PHP 7.4 – die Fassung von LoxBerry 3.0 bis 4.0 – kann das nicht lesen (PHP 8.4 schon). Am Gerät gemessen am 10.11.2026. Im Reiter Test stand deshalb fast immer „Container … läuft seit noch nie“. Betroffen war nur diese Anzeige; Anlegen und Überwachen des Containers hängen nicht an der Startzeit.
 
 ## Neu in 1.0.12
 
