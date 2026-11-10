@@ -11,7 +11,7 @@
 #   2. Befehlsabo anhalten (dienst.sh der ALTEN Fassung bis 1.0.5: status, dann stop)
 #      bzw. die Befehlsbruecke (befehlsbruecke.sh, ab 1.0.6), ebenso die Hue-Probe
 #      (hue_dienst.sh, ab 0.9.4); einen laufenden Hue-Vorgang samt Prozessgruppe
-#      beenden, BEVOR Container und Netz entfernt werden (F7, 1.0.6).
+#      beenden, BEVOR der Container entfernt wird (F7, 1.0.6); das Netz bleibt (1.0.14).
 #   3. Einen alten Bestand erst wegraeumen, dann Einstellungen und
 #      Anmeldung frisch nach data/plugins/<ordner>.upgrade_bestand/ (0700,
 #      Dateien 0600) sichern und mit cmp nachsehen. Die Zweitschriften
@@ -131,15 +131,40 @@ if [ "$AX_VRC" != 0 ]; then
 elif [ "$AX_VG" != 0 ]; then
     echo "<OK> Laufenden Hue-Vorgang (Anlegen bzw. docker build) samt Prozessgruppe fuer das Update beendet."
 fi
-PHP=$(command -v php 2>/dev/null)
-TAKT="$BASE/bin/plugins/$PFOLDER/ax_takt.php"
-if [ -n "$PHP" ] && [ -f "$TAKT" ] && grep -q -- '--hue-entfernen' "$TAKT" 2>/dev/null; then
-    AX_AUS=$(LBHOMEDIR="$BASE" LBPPLUGINDIR="$PFOLDER" timeout 150 "$PHP" "$TAKT" --hue-entfernen 2>/dev/null)
-    case "$AX_AUS" in
-        HUE_ENTFERNT*) echo "<OK> Hue-Probe auf eigener Netzadresse fuer das Update entfernt (${AX_AUS}); der Takt legt sie danach neu an, wenn sie eingeschaltet ist." ;;
-        HUE_NICHTS*|HUE_KEIN_DOCKER*) ;;
-        *) echo "<WARNING> Hue-Probe auf eigener Netzadresse: Container oder Netz nicht entfernt (${AX_AUS:-keine Antwort}). Von Hand: docker rm -f lb-$PFOLDER-hue; docker network rm lb-$PFOLDER-macvlan" ;;
-    esac
+# Hue-Probe auf eigener Netzadresse (Nr. 41): fuer das Update NUR den Container entfernen (1.0.14).
+# Der Container bindet bin/ax_hue.php und bin/ax_hue_container.php ein; der Installer loescht und schreibt diese
+# Dateien neu, und das Label de.loxberry.plugin.def haengt an den Pfaden, nicht am Inhalt - ein weiterlaufender
+# Container fuehre also mit dem alten Skript weiter, und der Takt saehe keinen Grund, ihn neu anzulegen. Das Netz
+# dagegen traegt keine Plugin-Datei: der Takt benutzt es nach dem Update wieder. Bis 1.0.13 wurde es hier ebenfalls
+# entfernt; nutzt Audioserver NG es mit ("vorhandenes Netz mitnutzen"), scheiterte das mit NETZ_ENTFERNEN|1 und
+# einem falschen Rat (Alexa NG 1.0.12 -> 1.0.13, 10.11.2026), und bei angehaltenem Nachbarn naehme es ihm das Netz.
+# Hier und nicht ueber ax_takt.php --hue-entfernen: preupgrade ruft die ALTE, installierte Fassung des Takts.
+# Gemeldet wird: <OK> entfernt und nachgesehen; <WARNING> wenn er danach noch da ist oder Docker nicht antwortet,
+# obwohl die Merkdatei einen angelegten Container nennt. Kein Docker oder kein Container: still.
+AX_DOCKER=$(command -v docker 2>/dev/null)
+AX_MERK="$BASE/data/plugins/$PFOLDER/hue_docker.json"
+if [ -n "$AX_DOCKER" ]; then
+    AX_FILTER=(--filter "label=de.loxberry.plugin.folder=$PFOLDER" --filter "label=de.loxberry.plugin.name=$PFOLDER-hue")
+    AX_IDS=$(timeout 20 "$AX_DOCKER" ps -a -q --no-trunc "${AX_FILTER[@]}" 2>/dev/null); AX_RC=$?
+    if [ "$AX_RC" != 0 ]; then
+        if grep -q '"angelegt": *1' "$AX_MERK" 2>/dev/null; then
+            echo "<WARNING> Hue-Probe auf eigener Netzadresse: Docker antwortet nicht (rc $AX_RC) - der Container wurde fuer das Update nicht entfernt."
+            echo "<WARNING> Nach dem Update im Reiter Test nachsehen; laeuft er mit der alten Fassung weiter: docker rm -f lb-$PFOLDER-hue (der Takt legt ihn neu an)."
+        fi
+    elif [ -n "$AX_IDS" ]; then
+        AX_N=0
+        for AX_ID in $AX_IDS; do
+            timeout 40 "$AX_DOCKER" stop -t 10 "$AX_ID" >/dev/null 2>&1
+            timeout 30 "$AX_DOCKER" rm -f "$AX_ID" >/dev/null 2>&1
+            AX_N=$((AX_N + 1))
+        done
+        AX_REST=$(timeout 20 "$AX_DOCKER" ps -a -q --no-trunc "${AX_FILTER[@]}" 2>/dev/null); AX_RC=$?
+        if [ "$AX_RC" = 0 ] && [ -z "$AX_REST" ]; then
+            echo "<OK> Hue-Probe auf eigener Netzadresse: Container fuer das Update entfernt und nachgesehen ($AX_N); das Netz lb-$PFOLDER-macvlan bleibt. Der Takt legt den Container danach neu an, wenn sie eingeschaltet ist."
+        else
+            echo "<WARNING> Hue-Probe auf eigener Netzadresse: Container nicht entfernt (rc $AX_RC, noch da: $(echo "$AX_REST" | wc -w)). Von Hand: docker rm -f lb-$PFOLDER-hue (der Takt legt ihn neu an)."
+        fi
+    fi
 fi
 
 BESTAND="$BASE/data/plugins/$PFOLDER.upgrade_bestand"

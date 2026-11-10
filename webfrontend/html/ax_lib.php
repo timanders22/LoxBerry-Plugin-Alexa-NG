@@ -4899,6 +4899,26 @@ function ax_hue_docker_weg($ref)
 }
 
 /**
+ * 1.0.14: Welche Container haengen am Netz $netz - laufende UND angehaltene (docker ps -a --filter network=)?
+ * Rueckgabe array(ok, namen). Anlass: Audioserver NG kann ein vorhandenes macvlan-Netz mitnutzen ("netz_name");
+ * am Geraet hing lb-audioserverng-sonn am Netz lb-alexang-macvlan (gemessen 10.11.2026). "docker network rm"
+ * scheiterte daran mit rc 1, und preupgrade meldete NETZ_ENTFERNEN samt dem Rat, das Netz von Hand zu loeschen.
+ * Ein angehaltener Nachbar haelt das Netz nicht fest - Docker entfernt es dann, und der Nachbar startet nicht mehr.
+ * Deshalb wird vor jedem "network rm" gefragt, und ein mitgenutztes Netz bleibt.
+ */
+function ax_hue_netz_nutzer($netz)
+{
+    list($rc, $out, ) = ax_docker(array('ps', '-a', '--no-trunc', '--filter', 'network=' . $netz, '--format', '{{.Names}}'), 20);
+    if ($rc !== 0) { return array(false, array()); }
+    $namen = array();
+    foreach (preg_split('/\s+/', trim($out)) as $n) {
+        if ($n === '') { continue; }
+        $namen[] = preg_match('/^[A-Za-z0-9][A-Za-z0-9_.\-]{0,127}\z/', $n) ? $n : '?';
+    }
+    return array(true, $namen);
+}
+
+/**
  * Den Container anlegen - vom Hintergrundvorgang gerufen; $schritt($name)
  * schreibt den Stand. Rueckgabe array(ok, grund, text, ergebnis).
  * Reihenfolge: Docker erreichbar -> Netz der Schnittstelle und eigene IP ->
@@ -4975,6 +4995,10 @@ function ax_hue_docker_anlegen($schritt)
                 if (!$ok) { return array(false, $g, $t, 'CONTAINER'); }
                 $da = false;
             }
+            // 1.0.14: ein mitgenutztes Netz wird nicht umgebaut - der andere Container verloere es (ax_hue_netz_nutzer).
+            list($nok, $nutzer) = ax_hue_netz_nutzer($def['netz']);
+            if (!$nok) { return array(false, 'DOCKER_FEHLER|0', 'docker ps --filter network=' . $def['netz'], 'NETZ'); }
+            if ($nutzer) { return array(false, 'NETZ_GETEILT|' . $def['netz'] . '|' . count($nutzer), implode(', ', $nutzer), 'NETZ'); }
             list($rc, , $err) = ax_docker(array('network', 'rm', $def['netz']), 30);
             if ($rc !== 0) { return array(false, 'NETZ_ENTFERNEN|' . $rc, ax_letzte_zeile($err), 'NETZ'); }
             $netz = null;
@@ -5067,20 +5091,28 @@ function ax_hue_docker_entfernen($schritt)
     }
     $schritt('netz');
     $weg_n = 0;
+    $bleibt = '';
     list($rc, $out, $err) = ax_docker(array('network', 'inspect', $nm['netz']), 15);
     $netz = $rc === 0 ? ax_docker_json($out) : null;
     if ($rc !== 0 && stripos($err, 'not found') === false && stripos($err, 'no such') === false) {
         return array(false, 'DOCKER_FEHLER|' . $rc, ax_letzte_zeile($err), 'NETZ');
     }
     if ($netz !== null && ax_hue_docker_eigen($netz)) {
-        list($rc, , $err) = ax_docker(array('network', 'rm', $nm['netz']), 30);
-        list($rc2, , ) = ax_docker(array('network', 'inspect', $nm['netz']), 15);
-        if ($rc2 === 0) { return array(false, 'NETZ_ENTFERNEN|' . $rc, ax_letzte_zeile($err), 'NETZ'); }
-        $weg_n = 1;
+        // 1.0.14: ein Netz, an dem noch ein anderer Container haengt (laufend oder angehalten), bleibt - kein Fehler.
+        list($nok, $nutzer) = ax_hue_netz_nutzer($nm['netz']);
+        if (!$nok) { return array(false, 'DOCKER_FEHLER|0', 'docker ps --filter network=' . $nm['netz'], 'NETZ'); }
+        if ($nutzer) {
+            $bleibt = 'NETZ_BLEIBT=' . implode(',', $nutzer);
+        } else {
+            list($rc, , $err) = ax_docker(array('network', 'rm', $nm['netz']), 30);
+            list($rc2, , ) = ax_docker(array('network', 'inspect', $nm['netz']), 15);
+            if ($rc2 === 0) { return array(false, 'NETZ_ENTFERNEN|' . $rc, ax_letzte_zeile($err), 'NETZ'); }
+            $weg_n = 1;
+        }
     }
     ax_hue_docker_merk_schreiben(array('angelegt' => 0, 'id' => '', 'def' => '', 'ip' => '', 'wirt' => $m['wirt'],
                                        'bild' => $m['bild'] !== '' ? $m['bild'] : $nm['bild']));
-    return array(true, '', '', ($weg_c + $weg_n) > 0 ? 'ENTFERNT|' . $weg_c . '|' . $weg_n : 'NICHTS');
+    return array(true, '', $bleibt, ($weg_c + $weg_n) > 0 ? 'ENTFERNT|' . $weg_c . '|' . $weg_n : 'NICHTS');
 }
 
 /* ---------------- Der Hintergrundvorgang (bin/hue_vorgang.php) ---------------- */
@@ -5164,6 +5196,11 @@ function ax_hue_vorgang_satz(array $v)
     $cfg = ax_config();
     if ($v['zustand'] === 'fertig') {
         $e = explode('|', $v['ergebnis']);
+        if (in_array($e[0], array('ENTFERNT', 'NICHTS'), true) && strpos($v['text'], 'NETZ_BLEIBT=') === 0) {
+            // 1.0.14: das Netz wird von einem anderen Container mitgenutzt und blieb deshalb (ax_hue_docker_entfernen)
+            return sprintf(ax_t('MELDUNG.HUE_D_NETZ_BLEIBT'), $nm['container'], $nm['netz'], str_replace(',', ', ', substr($v['text'], 12)),
+                           $m['bild'] !== '' ? $m['bild'] : $nm['bild']);
+        }
         if ($e[0] === 'ANGELEGT') { return sprintf(ax_t('MELDUNG.HUE_D_GESTARTET'), $cfg['hue_ip'], $nm['container']); }
         if ($e[0] === 'UNVERAENDERT') { return sprintf(ax_t('MELDUNG.HUE_D_UNVERAENDERT'), $cfg['hue_ip'], $nm['container']); }
         if ($e[0] === 'ENTFERNT') { return sprintf(ax_t('MELDUNG.HUE_D_ENTFERNT'), $nm['container'], $nm['netz'], $m['bild'] !== '' ? $m['bild'] : $nm['bild']); }

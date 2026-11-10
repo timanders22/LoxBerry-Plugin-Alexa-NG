@@ -158,14 +158,22 @@ if [ -n "$PHP" ] && [ -f "$BIN/ax_takt.php" ]; then
     AX_RC=$?
     case "$AX_AUS" in
         HUE_KEIN_DOCKER*) echo "<INFO> Hue-Probe auf eigener Netzadresse: Docker ist nicht installiert - kein Container von diesem Plugin." ;;
-        HUE_NICHTS*) echo "<INFO> Hue-Probe auf eigener Netzadresse: kein Container und kein Netz dieses Plugins (nachgesehen)." ;;
+        HUE_NICHTS*) echo "<INFO> Hue-Probe auf eigener Netzadresse: kein Container dieses Plugins (nachgesehen)." ;;
         HUE_ENTFERNT*)
-            echo "<OK> Hue-Probe auf eigener Netzadresse: Container und Netz entfernt und nachgesehen (${AX_AUS})."
+            echo "<OK> Hue-Probe auf eigener Netzadresse: entfernt und nachgesehen (${AX_AUS})."
             echo "<INFO> Das Abbild bleibt (es kann geteilt sein). Von Hand: docker image rm ${AX_AUS##*BILD=}" ;;
         *)
             [ "$AX_RC" = 124 ] && AX_AUS="keine Antwort nach 150 s"
             echo "<WARNING> Hue-Probe auf eigener Netzadresse: Container oder Netz nicht entfernt (${AX_AUS:-rc $AX_RC})."
-            echo "<WARNING> Von Hand: docker rm -f lb-$PFOLDER-hue; docker network rm lb-$PFOLDER-macvlan" ;;
+            echo "<WARNING> Von Hand: docker rm -f lb-$PFOLDER-hue - und das Netz mit docker network rm lb-$PFOLDER-macvlan nur, wenn"
+            echo "<WARNING> docker ps -a --filter network=lb-$PFOLDER-macvlan keinen anderen Container mehr zeigt (Audioserver NG kann es mitnutzen)." ;;
+    esac
+    # 1.0.14: Ein Netz, das ein anderer Container mitnutzt (Audioserver NG, Einstellung "vorhandenes Netz mitnutzen"),
+    # bleibt stehen - es zu entfernen, nahme ihm das Netz. Gesagt wird es, damit niemand es fuer einen Rest haelt.
+    case "$AX_AUS" in
+        HUE_NICHTS*NETZ_BLEIBT=*|HUE_ENTFERNT*NETZ_BLEIBT=*)
+            AX_BL="${AX_AUS#*NETZ_BLEIBT=}"; AX_BL="${AX_BL%%;*}"
+            echo "<INFO> Das Netz lb-$PFOLDER-macvlan bleibt, weil es noch mitgenutzt wird von: $AX_BL." ;;
     esac
 fi
 

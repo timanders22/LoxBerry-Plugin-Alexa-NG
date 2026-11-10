@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 1.0.13
+Version 1.0.14
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -15,6 +15,12 @@ Hue-Probe auf eigener Netzadresse (ab Werk aus).
 > Routinen, Musik-Probe, Radio je Zone an einem Echo und die Hue-Nachbildung
 > mit den Lampen für Alexa – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 > Was noch aussteht, steht unter „Noch am Gerät zu messen“.
+
+## Neu in 1.0.14
+
+- **Fehlalarm beim Update behoben: Hue-Probe auf eigener Netzadresse.** Audioserver NG kann das macvlan-Netz von Alexa NG mitnutzen. Dann ließ sich das Netz beim Update nicht entfernen, und das Installationsprotokoll meldete `Container oder Netz nicht entfernt (HUE_FEHL;GRUND=NETZ_ENTFERNEN|1)` samt dem Rat, das Netz von Hand zu löschen – obwohl die Hue-Probe nach dem Update wieder lief. Am Gerät gemessen beim Update von 1.0.12 auf 1.0.13 am 10.11.2026. Das Update entfernt jetzt nur noch den Container, denn er bindet Dateien des Plugins ein. Das Netz bleibt stehen und wird danach wieder benutzt.
+- **Ein mitgenutztes Netz bleibt.** Beim Ausschalten der Hue-Probe und bei der Deinstallation wird das Netz nur entfernt, wenn kein anderer Container daran hängt, auch kein angehaltener. Sonst sagen Meldung und Protokoll, wer es noch nutzt. Bisher meldete das Ausschalten in diesem Fall einen Fehler. Ein Netz mit angehaltenem Nachbarn wäre gelöscht worden, und der Nachbar hätte nicht mehr starten können.
+- Schnittstelle oder Heimnetz der Hue-Probe lassen sich nicht ändern, solange ein anderer Container das Netz nutzt. Die Meldung nennt dann den Grund (`NETZ_GETEILT`).
 
 ## Neu in 1.0.13
 

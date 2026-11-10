@@ -65,8 +65,8 @@ if (in_array('--mqtt-raeumen', $ax_schalter, true)) {
     exit(($ax_n >= 0 && $ax_uebrig === 0) ? 0 : 1);
 }
 
-/* Nr. 41: Container und Netz der Hue-Probe entfernen (Deinstallation, preupgrade).
- * Ausgabe HUE_ENTFERNT;CONTAINER=n;NETZ=n;BILD=<abbild> | HUE_NICHTS |
+/* Nr. 41: Container und Netz der Hue-Probe entfernen (Deinstallation; preupgrade.sh rief das bis 1.0.13, ab 1.0.14 nicht mehr).
+ * Ausgabe HUE_ENTFERNT;CONTAINER=n;NETZ=n[;NETZ_BLEIBT=<container,...>];BILD=<abbild> | HUE_NICHTS[;NETZ_BLEIBT=...] |
  * HUE_KEIN_DOCKER | HUE_FEHL;GRUND=<grund> (rc 1). */
 if (in_array('--hue-entfernen', $ax_schalter, true)) {
     // Fremdbefund F7 (1.0.6): zuerst einen laufenden hue_vorgang.php samt Prozessgruppe (docker build) beenden -
@@ -77,10 +77,13 @@ if (in_array('--hue-entfernen', $ax_schalter, true)) {
     $ax_e = explode('|', $ax_erg);
     if (!$ax_ok) { echo 'HUE_FEHL;GRUND=' . $ax_g . "\n"; exit(1); }
     if ($ax_e[0] === 'KEIN_DOCKER') { echo "HUE_KEIN_DOCKER\n"; exit(0); }
-    if ($ax_e[0] === 'NICHTS') { echo "HUE_NICHTS\n"; exit(0); }
+    // 1.0.14: ein mitgenutztes Netz bleibt; dann steht ";NETZ_BLEIBT=<container,...>" in der Ausgabe (kein Fehler).
+    $ax_bl = strpos($ax_txt, 'NETZ_BLEIBT=') === 0 ? ';' . $ax_txt : '';
+    if ($ax_e[0] === 'NICHTS') { echo 'HUE_NICHTS' . $ax_bl . "\n"; exit(0); }
     $ax_nm = ax_hue_docker_namen();
-    ax_log('INFO', 'Hue-Probe (eigene Netzadresse): Container und Netz entfernt (' . $ax_erg . ').');
-    echo 'HUE_ENTFERNT;CONTAINER=' . (int) $ax_e[1] . ';NETZ=' . (int) $ax_e[2] . ';BILD=' . $ax_nm['bild'] . "\n";
+    ax_log('INFO', 'Hue-Probe (eigene Netzadresse): ' . ($ax_bl === '' ? 'Container und Netz entfernt' : 'Container entfernt, Netz bleibt ('
+        . $ax_txt . ')') . ' (' . $ax_erg . ').');
+    echo 'HUE_ENTFERNT;CONTAINER=' . (int) $ax_e[1] . ';NETZ=' . (int) $ax_e[2] . $ax_bl . ';BILD=' . $ax_nm['bild'] . "\n";
     exit(0);
 }
 
