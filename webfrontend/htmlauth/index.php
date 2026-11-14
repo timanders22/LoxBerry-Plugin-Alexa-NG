@@ -266,7 +266,7 @@ if ($ax_post && isset($_POST['download'])) {
 if ($ax_post && isset($_POST['ax_sichern'])) {
     $ax_mit = !empty($_POST['sich_amazon']);
     $ax_js = ax_sicherung_bauen($ax_cfg, $ax_mit);
-    if ($ax_js !== false) {
+    if ($ax_js !== '') {
         ax_log('INFO', 'Einstellungen gesichert (Download' . ($ax_mit ? ', mit Amazon-Anmeldung' : '') . ').');
         while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
@@ -676,32 +676,49 @@ if ($ax_post && isset($_POST['save_mqtt'])) {
 if ($ax_post && isset($_POST['ax_zurueck'])) {
     $ax_hw = array();
     $ax_erg = array();
-    if (!isset($_FILES['ax_sicherung']) || !is_array($_FILES['ax_sicherung']) || !isset($_FILES['ax_sicherung']['tmp_name'])
-        || !is_string($_FILES['ax_sicherung']['tmp_name']) || !@is_uploaded_file($_FILES['ax_sicherung']['tmp_name'])) {
-        $ax_hw[] = ax_t('SICH.KEINE_DATEI');
-    } elseif ((int) $_FILES['ax_sicherung']['size'] > 65536) {
-        $ax_hw[] = ax_t('SICH.ZU_GROSS');
+    /* 1.0.16: Haken, hochgeladene Datei und Groessengrenze prueft das gemeinsame Sicherungsmodul
+     * (sicherung_eingang(), Modul 1.1.0, Entscheidung des Hausherrn 12.11.2026) - in jeder Linie gleich, und
+     * vor is_uploaded_file() steht der Haken zurueck_ok: ohne ihn wird nichts gelesen und nichts geaendert. */
+    list($ax_ein_roh, $ax_ein_ab) = sicherung_eingang(ax_sicherung_beschreibung(), $_POST, $_FILES, 'ax_sicherung');
+    if ($ax_ein_ab !== null) {
+        $ax_ein_m = sicherung_meldungen(ax_sicherung_beschreibung(), $ax_ein_ab);
+        foreach ($ax_ein_m['fehler'] as $ax_ein_x) { $ax_hw[] = $ax_ein_x; }
     } else {
-        list($ax_neu, $ax_meld, $ax_n, $ax_amz) = ax_sicherung_lesen((string) @file_get_contents($_FILES['ax_sicherung']['tmp_name']));
-        if ($ax_neu === null) {
-            $ax_hw[] = ax_t('SICH.ABGELEHNT') . ' ' . implode(' ', $ax_meld);
-        } elseif (ax_config_speichern($ax_neu)) {
-            $ax_erg['meldung'] = sprintf(ax_t('SICH.UEBERNOMMEN'), $ax_n);
-            foreach ($ax_meld as $ax_m) { $ax_hw[] = $ax_m; }
-            if ($ax_amz !== null) {
-                $ax_hw[] = ax_amazon_speichern($ax_amz) ? ax_t('SICH.AMAZON_UEBERNOMMEN') : ax_t('SICH.AMAZON_FEHL');
+        /* 1.0.16: das gemeinsame Sicherungsmodul liest und prueft (Kennzeichen, jeder Wert), verwirft Unbekanntes mit
+         * Namen, laesst bei einem leeren Wert den bisherigen stehen (auch beide Token und die Amazon-Anmeldung) und
+         * aendert bei einer Beanstandung GAR NICHTS. Die Schritte davor und danach stehen in den Rueckrufen, dieselben
+         * wie bis 1.0.15: Vermerke aus dem geltenden Stand, Speichern samt Zweitschrift, dann Amazon-Anmeldung, MQTT
+         * neu senden, Befehlsabo und Hue-Probe nachziehen - und die Meldung sagt, was geschah. */
+        $ax_b = ax_sicherung_beschreibung();
+        $ax_b['vorbereiten'] = function ($neu) {
+            $j = ax_ansage_cfg();
+            $neu['ansage_token_herkunft'] = isset($j['ansage_token_herkunft']) && is_array($j['ansage_token_herkunft'])
+                ? $j['ansage_token_herkunft'] : array();
+            $neu['ansage_aus_datei'] = 1;
+            return $neu;
+        };
+        $ax_b['speichern'] = function ($neu) { return ax_config_speichern($neu); };
+        $ax_b['zweitschrift'] = function () { $q = ax_paths(); return array($q['config'], $q['backup']); };
+        $ax_b['nachziehen'] = function ($neu, $vorher, $r) use ($ax_datadir) {
+            $h = array();
+            $amz = isset($r['teile']['amazon']) && is_array($r['teile']['amazon']) ? $r['teile']['amazon'] : null;
+            if ($amz !== null) {
+                $h[] = ax_amazon_speichern($amz) ? ax_t('SICH.AMAZON_UEBERNOMMEN') : ax_t('SICH.AMAZON_FEHL');
             } else {
-                $ax_hw[] = ax_t('SICH.OHNE_AMAZON');
+                $h[] = ax_t('SICH.OHNE_AMAZON');
             }
             if (is_file($ax_datadir . '/mqtt_letzte.json')) { @unlink($ax_datadir . '/mqtt_letzte.json'); }
-            ax_abo_datei($ax_neu['mqtt_praefix'], true);
-            ax_log('INFO', 'Konfiguration: Sicherung zurueckgespielt (' . (int) $ax_n . ' Werte' . ($ax_amz !== null ? ', mit Anmeldung' : '') . ').');
-            $ax_hw[] = ax_t('SICH.DIENST_NACHGEZOGEN');
-            $ax_hue_t = ax_hue_nachziehen($ax_neu, $ax_cfg);
-            if ($ax_hue_t !== '') { $ax_hw[] = $ax_hue_t; }
-        } else {
-            $ax_hw[] = ax_t('SICH.SCHREIBFEHLER');
-        }
+            ax_abo_datei($neu['mqtt_praefix'], true);
+            $h[] = ax_t('SICH.DIENST_NACHGEZOGEN');
+            $t = ax_hue_nachziehen($neu, $vorher);
+            if ($t !== '') { $h[] = $t; }
+            return $h;
+        };
+        $ax_r = sicherung_zurueckspielen($ax_b, $ax_ein_roh);
+        $ax_m = sicherung_meldungen($ax_b, $ax_r);
+        if ($ax_m['fehler']) { $ax_erg['fehler'] = implode(' ', $ax_m['fehler']); }
+        if ($ax_m['hinweise']) { $ax_erg['meldung'] = array_shift($ax_m['hinweise']); }
+        foreach ($ax_m['hinweise'] as $ax_x) { $ax_hw[] = $ax_x; }
     }
     $ax_erg['hinweise'] = $ax_hw;
     ax_ui_umleiten($ax_datadir, 'tab-settings', $ax_erg);
@@ -1350,6 +1367,7 @@ $ax_hl_n = min($ax_hl_n, AX_HUE_LAMPEN_MAX + 3);
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <input data-role="none" type="hidden" name="formtoken" value="<?= ax_e(ax_formtoken($ax_cfg)) ?>">
 <input data-role="none" type="file" name="ax_sicherung" accept=".json,application/json">
+<?= sicherung_haken_zeile(ax_sicherung_beschreibung()) ?>
 <div class="sm-knopfreihe">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ax_zurueck" value="1"><?= ax_e(ax_t('SICH.K_ZURUECK')) ?></button>
 </div>

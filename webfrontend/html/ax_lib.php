@@ -1,5 +1,10 @@
 <?php
 require_once __DIR__ . '/sprachausgabe.php';     // Stamm, fuer die Vorgaben der Sprachansagen schon beim ersten Lesen der Konfiguration
+/* 1.0.16: Das gemeinsame Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des Hausherrn
+ * 12.11.2026): Einstellungen sichern und zurueckspielen nach denselben Regeln wie in den anderen Linien. Es legt beim
+ * Laden nur Funktionen an und antwortet bei direktem Aufruf mit 403. Die Beschreibung dieser Linie steht in
+ * ax_sicherung_beschreibung(). */
+require_once __DIR__ . '/sicherung.php';
 /**
  * Alexa NG - gemeinsame Bibliothek (Oberflaeche, Endpunkt, Takt, Befehlsabo)
  *
@@ -933,47 +938,11 @@ function ax_ansage_wert($k, $w)
     return false;
 }
 
-/** Fuer die Sicherung: nie ein Sprechtoken, nie der Herkunftsvermerk. Ausgabeart, Ziele, Regeln und Haken reisen mit. */
-function ax_ansage_fuer_sicherung(array $c)
-{
-    unset($c['ansage_token_herkunft'], $c['ansage_aus_datei']);
-    if (isset($c['tts']) && is_array($c['tts'])) { $c['tts'] = ansage_sicherung_bereinigen($c['tts']); }
-    return $c;
-}
-
-/**
- * Vor dem Zurueckspielen. Eine Datei mit Sprechtoken wird abgewiesen (der Block wird unbrauchbar gemacht, die Wertpruefung nennt ihn). Die geltenden Token und der Vermerk bleiben.
- * Fehlt ein Schluessel (Sicherung einer aelteren Fassung), gilt der geltende Wert: Ein bewusstes AUS geht beim Zurueckspielen nicht verloren.
- */
-function ax_ansage_sicherung_vor($roh)
-{
-    $d = json_decode((string) $roh, true);
-    if (!is_array($d)) { return $roh; }
-    $inhalt = false;
-    foreach (array_keys($d) as $k) { if ((string) $k !== '' && ((string) $k)[0] !== '_') { $inhalt = true; } }
-    if (!$inhalt) { return $roh; }
-    $j = ax_ansage_cfg();
-    unset($d['ansage_token_herkunft'], $d['ansage_aus_datei']);
-    $jt = isset($j['tts']) && is_array($j['tts']) ? $j['tts'] : array();
-    if (array_key_exists('tts', $d)) {
-        $g = '';
-        $p = is_array($d['tts']) ? ansage_wert_pruefen($d['tts'], $g, ax_ansage_modi()) : null;
-        if (ansage_sicherung_mangel($d['tts']) || $p === null) {
-            $d['tts'] = 'ABGEWIESEN';
-        } else {
-            list($tv) = ansage_vervollstaendigen($p, 'aus');
-            $d['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
-        }
-    } else {
-        $d['tts'] = ax_tts($j);
-    }
-    foreach (array_diff(ax_ansage_schluessel(), array('tts', 'ansage_token_herkunft', 'ansage_aus_datei')) as $k) {
-        if (!array_key_exists($k, $d) && array_key_exists($k, $j)) { $d[$k] = $j[$k]; }
-    }
-    $d['ansage_token_herkunft'] = isset($j['ansage_token_herkunft']) && is_array($j['ansage_token_herkunft']) ? $j['ansage_token_herkunft'] : array();
-    $d['ansage_aus_datei'] = 1;
-    return (string) json_encode($d);
-}
+/* 1.0.16: ax_ansage_fuer_sicherung() und ax_ansage_sicherung_vor() sind in die Beschreibung fuer das gemeinsame
+ * Sicherungsmodul gewandert (Bauart Beschattung_Fensterbilanz 0.12.32): nie ein Sprechtoken eines Ziels und nie der
+ * Herkunftsvermerk in der Datei ('sichern' und 'nie_aus_datei' in ax_sicherung_beschreibung()), der Block tts vor der
+ * Pruefung in ax_sicherung_vorbehandeln(), fehlende Schluessel behalten den geltenden Wert ('fehlt' => 'behalten'),
+ * Vermerk und Herkunft setzt 'vorbereiten' aus dem geltenden Stand. */
 
 /**
  * Die Hauptkonfiguration. Liegt eine ansage.json aus einer Probe vom 01.11., wird sie EINMAL uebernommen (Vermerk ansage_aus_datei) und bleibt liegen.
@@ -4216,7 +4185,8 @@ function ax_mqtt_udpport()
     return (preg_match('/^[0-9]{1,5}\z/', $v) && (int) $v > 0 && (int) $v < 65536) ? (int) $v : 0;
 }
 
-/** Der Name, unter dem das MQTT-Gateway ein Thema als virtuellen Eingang anlegt (/ und % werden _, Regeln/07). */
+/** Der Name, unter dem das MQTT-Gateway ein Thema einem Virtuellen Eingang zuordnet (/ und % werden _, Regeln/07); den
+ *  Eingang legt man in Loxone Config mit genau diesem Titel an - das Gateway ordnet nur ueber den Namen zu. */
 function ax_hue_gateway_name(array $cfg, $kuerzel, $feld)
 {
     return ax_gateway_name($cfg['mqtt_praefix'], 'hue/' . $kuerzel . '/' . $feld);   // Gruppe 6a: eine Regel fuer alle Themen
@@ -5748,120 +5718,181 @@ function ax_vorlage_aktionen($host, array $cfg)
 
 /* ==================================================================
  * Sicherung (Regeln/05; Entscheidung 18: Anmeldung nur mit Haken)
+ * 1.0.16: ueber das gemeinsame Sicherungsmodul (sicherung.php)
  * ================================================================== */
 
-/** Die Sicherungsdatei: lesbarer Kopf, alle Schluessel, Amazon nur mit Haken. */
-function ax_sicherung_bauen(array $cfg, $mit_amazon)
+/**
+ * 1.0.16: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul.
+ *
+ * Kennzeichen 'alexang': so schreibt es der Sichern-Knopf seit 0.9.0 (gemessen 12.11.2026 an 0.9.0 bis 1.0.16).
+ * Jede Sicherung dieser Linie traegt es; ein Uebersetzer fuer Dateien ohne Kennzeichen entfaellt.
+ *
+ * Inhalt: alle Schluessel von ax_vorgaben() samt BEIDER eigener Token. Das Sprechtoken ist das Token, mit dem
+ * Loxone und andere Plugins ueber den eigenen Endpunkt sprechen (webfrontend/html/index.php vergleicht token mit
+ * sprechtoken bzw. aktionstoken) - also ein Aktionstoken dieses Plugins, kein uebernommenes fremdes; es gehoert
+ * hinein. Nie darin: die Sprechtoken der Ziele im Block tts ('sichern' => ansage_sicherung_bereinigen) und die
+ * Vermerke ansage_token_herkunft, ansage_aus_datei ('nie_aus_datei'). Mit dem Haken "Amazon-Anmeldung mitsichern"
+ * kommt der Teil amazon dazu (Erneuerungs-Token, Weg, Seriennummer); bis 1.0.15 hiess er _amazon und wird beim
+ * Lesen umbenannt (seit Modul 1.2.0 ueber 'umbenennen'), denn ein Kopfschluessel mit _ ist im Modul keine
+ * Einstellung.
+ *
+ * Wie bis 1.0.15: Grundlage ist der geltende Stand - was die Datei nicht traegt, behaelt seinen Wert und wird
+ * genannt ('fehlt' => 'behalten'); fehlt befehle_mqtt_steuern, gilt der Wert von befehle_mqtt_ein aus derselben
+ * Datei (Gruppe 6a, ax_uebergang()). Jeder Wert geht durch ax_wert_pruefen() und wird in dessen Normalform
+ * gespeichert; Sprech- und Aktionstoken duerfen nicht gleich sein; die Querpruefungen von Radio, Hue-Adresse,
+ * Echo-Liste und naechster Lampen-ID bleiben. Listen tragen ihre Felder (Regel 2 auch dort) und einen
+ * Zuordnungsschluessel, der in der Linie eindeutig ist (gruppen name, hue_lampen id, musik_sender nr, radio_zonen zone).
+ */
+function ax_sicherung_beschreibung($mit_amazon = false)
 {
-    $kopf = array(
-        '_plugin' => 'alexang',
-        '_stand' => date('Y-m-d H:i:s'),
-        '_hinweis' => 'Enthaelt Sprech- und Aktionstoken' . ($mit_amazon ? ' UND die Amazon-Anmeldung' : '')
-                    . '. Wie ein Passwort behandeln.',
+    $p = ax_paths();
+    $tts = array_merge(array_keys(ansage_werk_block()), ansage_geheim());
+    $knoten = array(
+        'tts' => sicherung_block($tts, array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))))
+                 + array('sichern' => 'ansage_sicherung_bereinigen'),
+        'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())),
+        'ansage_haken' => sicherung_block(array('abgelaufen')),
+        'gruppen' => sicherung_liste(array('name', 'geraete'), 'name'),
+        'hue_lampen' => sicherung_liste(array('id', 'name', 'art', 'kuerzel', 'frei'), 'id'),
+        'musik_sender' => sicherung_liste(array('nr', 'name', 'anbieter'), 'nr'),
+        'radio_zonen' => sicherung_liste(array('zone', 'ziel'), 'zone'),
     );
-    // X-3: Was ax_config() beim Lesen abwies, steht in der Datei als Vorgabe -
-    // die Datei sagt es (dieselbe Pruefung wie beim Zurueckspielen).
-    $lage = ax_config_lage();
-    if ($lage['abgewiesen']) {
-        $kopf['_warnung'] = 'Gespeicherte Werte abgewiesen, in dieser Datei steht dafuer die Vorgabe: '
-            . implode(', ', array_keys($lage['abgewiesen']));
+    $schluessel = array();
+    foreach (array_keys(ax_vorgaben()) as $k) {
+        $n = isset($knoten[$k]) ? $knoten[$k] : array();
+        $n['fehlt'] = 'behalten';
+        $n['wandeln'] = function ($w) use ($k) { $g = ''; $x = ax_wert_pruefen($k, $w, $g); return $x === null ? $w : $x; };
+        $schluessel[$k] = $n;
     }
-    $d = array();
-    foreach (array_keys(ax_vorgaben()) as $k) { $d[$k] = $cfg[$k]; }
-    $d = ax_ansage_fuer_sicherung($d);     // 1.0.8: nie ein Sprechtoken der Ziele
-    if ($mit_amazon) {
-        $a = ax_amazon();
-        if ($a) { $d['_amazon'] = array('refresh_token' => $a['refresh_token'], 'weg' => $a['weg'], 'device_serial' => $a['device_serial']); }
-    }
-    return json_encode($kopf + $d, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    /* Gruppe 6a: fehlt der zweite Haken, setzt ax_sicherung_vorbehandeln() ihn aus befehle_mqtt_ein derselben
+     * Datei; seit Modul 1.2.2 bleibt dieser Wert auch bei 'behalten', und die Meldung nennt die Uebergangsregel.
+     * Fehlen beide, behaelt er den geltenden Wert. Bis Modul 1.2.1 stand hier 'vorgabe', damit 'behalten' die
+     * Regel nicht ueberschrieb, und die Meldung sagte faelschlich "Werkseinstellung" (Entscheidung des Hausherrn
+     * 13.11.2026: "Weg (b), Modul 1.2.2"). */
+    $schluessel['befehle_mqtt_steuern']['fehlt'] = 'behalten';
+    $schluessel['amazon'] = sicherung_block(array('refresh_token', 'weg', 'device_serial'));
+    return array(
+        'kennzeichen' => 'alexang',
+        'hinweis' => ax_t('SICH.KOPF') . ($mit_amazon ? ' ' . ax_t('SICH.KOPF_AMAZON') : ''),
+        'fassung' => 'ax_pluginversion',
+        'vorgaben' => ax_vorgaben(),
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array('ansage_token_herkunft', 'ansage_aus_datei'),
+        'teile' => array('amazon' => 'ax_sicherung_amazon_lesen'),
+        /* Eine Sicherung bis 1.0.15 traegt die Amazon-Anmeldung unter _amazon; ein Schluessel mit _ ist im Modul
+         * Kopf. Seit Modul 1.2.0 benennt das Modul ihn um (bis dahin ax_sicherung_umbenennen() vor dem Lesen);
+         * steht beides in der Datei, gilt amazon. */
+        'umbenennen' => array('_amazon' => 'amazon'),
+        'teile_jetzt' => array('amazon' => function () {
+            $a = ax_amazon();
+            return $a ? array('refresh_token' => $a['refresh_token'], 'weg' => $a['weg'], 'device_serial' => $a['device_serial']) : array();
+        }),
+        'pruefen' => function ($k, $w) {
+            $g = '';
+            return ax_wert_pruefen($k, $w, $g) === null ? sprintf(ax_t('SICH.WERT'), $k, ax_grund_text($g)) : '';
+        },
+        'vorbehandeln' => 'ax_sicherung_vorbehandeln',
+        'quer' => 'ax_sicherung_quer',
+        'jetzt' => 'ax_config',
+        'log' => function ($z) { ax_log('INFO', $z); },
+        't' => 'ax_t',
+        // Die Seite maskiert jede Meldung bei der Ausgabe (ax_e); hier nicht ein zweites Mal.
+        'e' => function ($s) { return (string) $s; },
+        'home' => $p['lbhome'],
+        'ordner' => $p['plugin'],
+        'plugin_cfg' => dirname(dirname(__DIR__)) . '/plugin.cfg',
+    );
 }
 
 /**
- * Eine Sicherung lesen: Fremdes ablehnen, jeden Wert pruefen, eine halb
- * gueltige Datei aendert GAR NICHTS. Grundlage ist der jetzige Stand.
- * Rueckgabe: array(cfg|null, meldungen, anzahl, amazon|null).
+ * Vor der Pruefung (nach dem Verwerfen unbekannter Unterschluessel): der Block tts wie bis 1.0.15
+ * ax_ansage_sicherung_vor() - ein Block mit Sprechtoken oder mit unzulaessigem Wert wird unbrauchbar gemacht (die
+ * Wertpruefung nennt ihn), sonst vervollstaendigt, und die geltenden Sprechtoken der Ziele bleiben. Und Gruppe 6a.
  */
-function ax_sicherung_lesen($roh)
+function ax_sicherung_vorbehandeln($bereit, $jetzt, $daten)
 {
-    $roh = ax_ansage_sicherung_vor($roh);     // 1.0.8: Token und Vermerk bleiben die geltenden
-    $mangel = array();
-    $hinweise = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten) || ($daten !== array() && array_keys($daten) === range(0, count($daten) - 1))) {
-        return array(null, array(ax_t('SICH.KEIN_JSON')), 0, null);
-    }
-    $jetzt = ax_config();
-    $vorgaben = ax_vorgaben();
-    $neu = array();
-    foreach (array_keys($vorgaben) as $k) { $neu[$k] = $jetzt[$k]; }
-    $anzahl = 0;
-    $gesehen = array();
-    $amazon = null;
-    foreach ($daten as $k => $w) {
-        $k = (string) $k;
-        if ($k === '_amazon') {
-            if (!is_array($w) || !isset($w['refresh_token']) || !ax_refresh_form_ok($w['refresh_token'])
-                || !isset($w['weg']) || !in_array($w['weg'], array('a', 'b'), true)
-                || (isset($w['device_serial']) && (!is_string($w['device_serial'])
-                    || ($w['device_serial'] !== '' && !preg_match('/^[A-Za-z0-9]{8,64}\z/', $w['device_serial']))))) {
-                $mangel[] = ax_t('SICH.AMAZON_UNGUELTIG');
-                continue;
-            }
-            $amazon = array('refresh_token' => $w['refresh_token'], 'weg' => $w['weg'],
-                            'device_serial' => isset($w['device_serial']) ? $w['device_serial'] : '');
-            continue;
-        }
-        if ($k !== '' && $k[0] === '_') { continue; }   // lesbarer Kopf: uebergangen, nicht beanstandet
-        if (!array_key_exists($k, $vorgaben)) { $mangel[] = sprintf(ax_t('SICH.FREMD'), $k); continue; }
+    if (array_key_exists('tts', $bereit)) {
+        $j = ax_ansage_cfg();
+        $jt = isset($j['tts']) && is_array($j['tts']) ? $j['tts'] : array();
         $g = '';
-        $wert = ax_wert_pruefen($k, $w, $g);
-        if ($wert === null) { $mangel[] = sprintf(ax_t('SICH.WERT'), $k, ax_grund_text($g)); continue; }
-        $neu[$k] = $wert;
-        $gesehen[$k] = 1;
-        $anzahl++;
-    }
-    // Gruppe 6a (1.0.6): Uebergang wie in ax_config() - eine Sicherung bis 1.0.5 traegt befehle_mqtt_ein, aber nicht
-    // den zweiten Haken; dann gilt ihr Wert von befehle_mqtt_ein (nicht der jetzige Stand).
-    if (!isset($gesehen['befehle_mqtt_steuern']) && isset($gesehen['befehle_mqtt_ein'])) {
-        $neu['befehle_mqtt_steuern'] = $neu['befehle_mqtt_ein'];
-    }
-    if ($anzahl === 0) { $mangel[] = ax_t('SICH.LEER'); }
-    foreach (array('sprechtoken', 'aktionstoken') as $tk) {
-        if (isset($gesehen[$tk]) && $neu[$tk] === '' && (string) $jetzt[$tk] !== '') {
-            $neu[$tk] = $jetzt[$tk];
-            $hinweise[] = sprintf(ax_t('SICH.TOKEN_BEHALTEN'), $tk);
+        $pr = is_array($bereit['tts']) ? ansage_wert_pruefen($bereit['tts'], $g, ax_ansage_modi()) : null;
+        if (!is_array($bereit['tts']) || ansage_sicherung_mangel($bereit['tts']) || $pr === null) {
+            $bereit['tts'] = 'ABGEWIESEN';
+        } else {
+            list($tv) = ansage_vervollstaendigen($pr, 'aus');
+            $bereit['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
         }
     }
-    if ($neu['sprechtoken'] !== '' && $neu['sprechtoken'] === $neu['aktionstoken']) {
-        $mangel[] = ax_t('SICH.TOKEN_GLEICH');
+    /* Gruppe 6a: fehlt befehle_mqtt_steuern in der Datei, gilt befehle_mqtt_ein derselben Datei. Fehlen beide,
+     * setzt die Regel nichts, und das Modul behaelt den geltenden Wert ('fehlt' => 'behalten', Modul 1.2.2); bis
+     * Modul 1.2.1 setzte sie dann selbst den geltenden Wert aus ax_config(). */
+    if ((!is_array($daten) || !array_key_exists('befehle_mqtt_steuern', $daten)) && array_key_exists('befehle_mqtt_ein', $bereit)) {
+        $bereit['befehle_mqtt_steuern'] = $bereit['befehle_mqtt_ein'];
     }
-    // Radio (Z1): eine Zone auf eine eigene Gruppe braucht diese Gruppe (aus der
-    // Sicherung oder, fehlt sie dort, aus dem jetzigen Stand).
-    $fg = ax_radio_gruppen_fehlen($neu['radio_zonen'], $neu['gruppen']);
-    if ($fg) { $mangel[] = sprintf(ax_t('SICH.RADIO_GRUPPE'), implode(', ', $fg)); }
-    // Nr. 41: eigene Netzadresse - dieselbe Pruefung wie beim Speichern, wenn die
-    // Sicherung einen der drei Werte traegt (ohne Belegt-Probe: die macht der
-    // Vorgang vor dem Anlegen). Eine Sicherung von 0.9.4 traegt keinen.
-    if (ax_hue_art($neu) === 'docker' && (isset($gesehen['hue_art']) || isset($gesehen['hue_ip']) || isset($gesehen['hue_schnittstelle']))) {
+    return $bereit;
+}
+
+/** Die Querpruefungen wie bis 1.0.15. Rueckgabe fuer das Modul: Liste von array(Name, Text). */
+function ax_sicherung_quer($neu, $r)
+{
+    $aus = array();
+    $in_datei = function ($k) use ($r) { return !in_array($k, $r['fehlt_behalten'], true); };
+    if (is_string($neu['sprechtoken']) && $neu['sprechtoken'] !== '' && $neu['sprechtoken'] === $neu['aktionstoken']) {
+        $aus[] = array('sprechtoken', ax_t('SICH.TOKEN_GLEICH'));
+    }
+    // Radio (Z1): eine Zone auf eine eigene Gruppe braucht diese Gruppe (aus der Sicherung oder dem geltenden Stand).
+    if (is_array($neu['radio_zonen']) && is_array($neu['gruppen'])) {
+        $fg = ax_radio_gruppen_fehlen($neu['radio_zonen'], $neu['gruppen']);
+        if ($fg) { $aus[] = array('radio_zonen', sprintf(ax_t('SICH.RADIO_GRUPPE'), implode(', ', $fg))); }
+    }
+    // Nr. 41: eigene Netzadresse - wie beim Speichern, wenn die Datei einen der drei Werte traegt (ohne Belegt-Probe).
+    if (ax_hue_art($neu) === 'docker' && ($in_datei('hue_art') || $in_datei('hue_ip') || $in_datei('hue_schnittstelle'))
+        && is_string($neu['hue_ip']) && is_string($neu['hue_schnittstelle'])) {
         $hg = ax_hue_ip_pruefen($neu['hue_ip'], $neu['hue_schnittstelle'], false);
-        if ($hg !== '') { $mangel[] = sprintf(ax_t('SICH.WERT'), ax_hue_ip_feld($hg), ax_grund_text($hg)); }
+        if ($hg !== '') { $aus[] = array('hue_ip', sprintf(ax_t('SICH.WERT'), ax_hue_ip_feld($hg), ax_grund_text($hg))); }
     }
-    // Fassung 2 (alexa6): die freigegebenen Echos im Netz der Schnittstelle (wie beim Speichern) und
-    // die naechste Lampen-ID ueber jeder vergebenen (sonst erbte eine neue Lampe die Kennung einer alten).
-    if (isset($gesehen['hue_echos']) && $neu['hue_echos']) {
+    // Fassung 2 (alexa6): freigegebene Echos im Netz der Schnittstelle; die naechste Lampen-ID ueber jeder vergebenen.
+    if ($in_datei('hue_echos') && is_array($neu['hue_echos']) && $neu['hue_echos'] && is_string($neu['hue_schnittstelle'])) {
         $eg = ax_hue_echos_pruefen($neu['hue_echos'], $neu['hue_schnittstelle']);
-        if ($eg !== '') { $mangel[] = sprintf(ax_t('SICH.WERT'), 'hue_echos', ax_grund_text($eg)); }
+        if ($eg !== '') { $aus[] = array('hue_echos', sprintf(ax_t('SICH.WERT'), 'hue_echos', ax_grund_text($eg))); }
     }
-    foreach ($neu['hue_lampen'] as $hl) {
-        if ($hl['id'] >= $neu['hue_lampe_naechste']) {
-            $mangel[] = sprintf(ax_t('SICH.WERT'), 'hue_lampe_naechste', ax_grund_text('LAMPE_NAECHSTE|' . $hl['id']));
-            break;
+    if (is_array($neu['hue_lampen'])) {
+        foreach ($neu['hue_lampen'] as $hl) {
+            if (is_array($hl) && isset($hl['id']) && (int) $hl['id'] >= (int) $neu['hue_lampe_naechste']) {
+                $aus[] = array('hue_lampe_naechste', sprintf(ax_t('SICH.WERT'), 'hue_lampe_naechste', ax_grund_text('LAMPE_NAECHSTE|' . $hl['id'])));
+                break;
+            }
         }
     }
-    if ($mangel) { return array(null, $mangel, $anzahl, null); }
-    $fehlend = array_values(array_diff(array_keys($vorgaben), array_keys($gesehen)));
-    if ($fehlend) { $hinweise[] = sprintf(ax_t('SICH.FEHLEND'), count($fehlend), implode(', ', $fehlend)); }
-    return array($neu, $hinweise, $anzahl, $amazon);
+    return $aus;
+}
+
+/**
+ * Der Teil amazon der Sicherung (nur mit dem Haken beim Sichern). Er gehoert nicht in die Konfiguration, sondern in
+ * amazon.json (0600). Unbekannte Felder hat das Modul schon verworfen und genannt, ein leeres Feld traegt den
+ * geltenden Wert (Regel 3). Rueckgabe fuer das Modul: array(Anmeldung|null, Beanstandungen[]).
+ */
+function ax_sicherung_amazon_lesen($w)
+{
+    if (!is_array($w) || !isset($w['refresh_token']) || !ax_refresh_form_ok($w['refresh_token'])
+        || !isset($w['weg']) || !in_array($w['weg'], array('a', 'b'), true)
+        || (isset($w['device_serial']) && (!is_string($w['device_serial'])
+            || ($w['device_serial'] !== '' && !preg_match('/^[A-Za-z0-9]{8,64}\z/', $w['device_serial']))))) {
+        return array(null, array(ax_t('SICH.AMAZON_UNGUELTIG')));
+    }
+    return array(array('refresh_token' => $w['refresh_token'], 'weg' => $w['weg'],
+                       'device_serial' => isset($w['device_serial']) ? $w['device_serial'] : ''), array());
+}
+
+/** Die Sicherungsdatei: lesbarer Kopf, alle Schluessel, Amazon nur mit Haken. '' wenn sie sich nicht bilden laesst. */
+function ax_sicherung_bauen(array $cfg, $mit_amazon)
+{
+    $teile = array();
+    if ($mit_amazon) {
+        $a = ax_amazon();
+        if ($a) { $teile['amazon'] = array('refresh_token' => $a['refresh_token'], 'weg' => $a['weg'], 'device_serial' => $a['device_serial']); }
+    }
+    return sicherung_json(sicherung_bauen(ax_sicherung_beschreibung($mit_amazon), $cfg, $teile));
 }
 
 /* ==================================================================
@@ -6082,7 +6113,8 @@ function ax_uebergang($roh)
     return $w === null ? array() : array('befehle_mqtt_steuern' => $w);
 }
 
-/** Der Name, unter dem das MQTT-Gateway ein Thema als Virtuellen Eingang anlegt: / % und Leerzeichen werden _ (Regeln/07). */
+/** Der Name, unter dem das MQTT-Gateway ein Thema einem Virtuellen Eingang zuordnet: / % und Leerzeichen werden _ (Regeln/07);
+ *  den Eingang legt man in Loxone Config mit genau diesem Titel an - das Gateway ordnet nur ueber den Namen zu. */
 function ax_gateway_name($praefix, $thema)
 {
     return str_replace(array('/', '%', ' '), '_', (string) $praefix . '/' . (string) $thema);

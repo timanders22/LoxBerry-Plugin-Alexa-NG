@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 1.0.15
+Version 1.0.16
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -15,6 +15,22 @@ Hue-Probe auf eigener Netzadresse (ab Werk aus).
 > Routinen, Musik-Probe, Radio je Zone an einem Echo und die Hue-Nachbildung
 > mit den Lampen für Alexa – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 > Was noch aussteht, steht unter „Noch am Gerät zu messen“.
+
+## Neu in 1.0.16
+
+- **Verhalten geändert – Einstellungen sichern und zurückspielen nach der gemeinsamen Vorlage:** Die Knöpfe „Einstellungen sichern“ und „Einstellungen zurückspielen“ arbeiten jetzt mit demselben Sicherungsmodul wie die übrigen Plugins dieser Reihe. Für den Anwender ändert sich:
+  - Die Sicherungsdatei trägt im Kopf wie bisher das Kennzeichen des Plugins (`_plugin`, `alexang`) und neu die Fassung (`_fassung`). Eine Datei eines anderen Plugins und eine Datei ohne Kennzeichen werden als Ganzes abgewiesen; es ändert sich dann nichts. Sicherungen dieses Plugins tragen das Kennzeichen seit 0.9.0 und werden weiter angenommen.
+  - Eine Einstellung, die diese Fassung nicht kennt, wird nicht übernommen und mit ihrem Namen gemeldet, nie mit ihrem Wert – oben in der Datei und in den Blöcken (Sprachansagen, Ansageregeln, Haken, Amazon-Anmeldung) und in den Listen (Gruppen, Lampen, Sender, Radiozonen). Die übrigen Einstellungen werden zurückgespielt. Bis 1.0.15 wies ein unbekannter Name die ganze Datei ab.
+  - Ein leerer Wert in der Sicherung überschreibt keinen bestehenden; der bisherige Wert bleibt, und die Meldung nennt den Namen. Bisher galt das nur für Sprech- und Aktionstoken.
+  - Die Amazon-Anmeldung steht in der Datei jetzt unter `amazon` (bis 1.0.15 `_amazon`). Sicherungen bis 1.0.15 werden weiter gelesen, und ihre Anmeldung wird übernommen.
+- Unverändert: Eine Datei mit einem unzulässigen Wert ändert gar nichts, und alle Beanstandungen werden genannt. Beide Token gehören in die Datei – das Sprechtoken ist das Token, mit dem Loxone und andere Plugins über dieses Plugin sprechen –, die Sprechtoken der Ansageziele nicht; die Amazon-Anmeldung nur mit Haken. Was die Datei nicht trägt, behält seinen Wert. Nach dem Zurückspielen zieht die Zweitschrift mit, die MQTT-Werte werden neu gesendet, Befehlsabo und Hue-Probe werden nachgezogen, und die Meldung sagt es.
+- **Texte zum MQTT-Gateway berichtigt:** Reiter *MQTT* sagte, unter Gateway Fassung 1 lege das Gateway für Befehle und Ansagetexte eigene Eingänge an. Das ist nicht gemessen; das Gateway ordnet nur über den Namen zu, einen Eingang gibt es nur, wenn er in Loxone Config mit genau diesem Titel angelegt ist.
+- **Verhalten geändert – Zurückspielen nur mit Haken:** Zwischen dem Feld für die Sicherungsdatei und dem Knopf „Einstellungen zurückspielen“ steht ein Haken „Ja, die geltenden Einstellungen durch die Sicherung ersetzen“, ab Werk aus. Ohne ihn wird die Datei nicht gelesen und nichts geändert, und die Meldung sagt es. Haken, Text und die Prüfung der hochgeladenen Datei (über das Formular gekommen, höchstens 256 KB) kommen aus dem gemeinsamen Sicherungsmodul 1.1.0 und sind in allen Plugins dieser Reihe gleich. Die Grenze für die Datei lag bis 1.0.15 bei 64 KB.
+- **Gemeinsames Sicherungsmodul 1.2.0:** Das Modul kann jetzt, was einzelne Plugins dieser Reihe bisher selbst darum herum gebaut haben (Entscheidung „Einheitlichkeit“). Die Amazon-Anmeldung einer Sicherung bis 1.0.15 (`_amazon`) benennt jetzt das Modul um; am Verhalten ändert sich nichts. Bekommt eine Einstellung beim Zurückspielen die Werkseinstellung, weil die Sicherung aus einer Fassung stammt, die sie noch nicht kannte, nennt die Meldung jetzt ihren Namen.
+- **Gemeinsames Sicherungsmodul 1.2.1:** Ein Vermerk, der nie aus einer Sicherungsdatei kommt (etwa, dass ein Sprechtoken aus einem Nachbar-Plugin übernommen wurde), behält beim Zurückspielen seinen geltenden Wert. An diesem Plugin ändert sich dadurch nichts; es setzte den Vermerk schon bisher selbst wieder ein.
+- **Gemeinsames Sicherungsmodul 1.2.2:** Fehlt eine Einstellung in der Sicherung und setzt das Plugin ihren Wert nach einer eigenen Übergangsregel (etwa aus einer verwandten Einstellung derselben Sicherung), bleibt dieser Wert beim Zurückspielen, und die Meldung nennt ihn als nach einer Übergangsregel abgeleitet – nicht als Werkseinstellung und nicht als bisherigen Wert. An diesem Plugin betrifft das eine Einstellung (nächster Punkt).
+- **Verhalten geändert – Meldung beim Zurückspielen einer Sicherung vor 1.0.6 berichtigt:** Fehlt in der Sicherung die Einstellung „Echos über MQTT steuern“ (`befehle_mqtt_steuern`, seit 1.0.6), gilt wie bisher der Wert von „Befehle über MQTT annehmen“ (`befehle_mqtt_ein`) aus derselben Sicherung; fehlen beide, behält sie ihren geltenden Wert. Die Meldung nennt sie jetzt als nach einer Übergangsregel abgeleitet bzw. als behalten; bis Modul 1.2.1 sagte sie fälschlich, die Einstellung sei auf die Werkseinstellung gesetzt (Entscheidung „Weg (b), Modul 1.2.2“).
+- Gemessen mit einem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, der über einen Webserver die echten Knöpfe drückt, mit den Sicherungen der Fassungen 1.0.15, 1.0.5 und 0.9.0; am Gerät nicht gemessen.
 
 ## Neu in 1.0.15
 
