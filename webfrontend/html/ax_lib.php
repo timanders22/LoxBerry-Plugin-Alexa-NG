@@ -353,10 +353,34 @@ function ax_config_roh($datei = null)
     return array($d, 'ok');
 }
 
+/**
+ * Frage 46 (Entscheidung des Hausherrn 18.11.2026). Diese Funktion steht wortgleich in sieben Linien:
+ * Abfahrtsassistent, Alexa-NG, AudiConnect, BYD-Autos, Beschattungswaechter, Skoda-Connect-NG und VolkswagenID.
+ * Ein unbekannter Unterschluessel im Block tts wird verworfen und mit Namen genannt, nie mit Wert; die uebrigen
+ * Eintraege bleiben samt Sprechtoken. Unbekannt heisst: die Pruefung der Linie ($pruefen, ein Eintrag allein,
+ * Rueckgabe der Grund oder '') nennt ihn mit TTS_EINTRAG. Ein bekannter Eintrag mit ungueltigem Wert bleibt stehen;
+ * ihn weist die Pruefung des ganzen Blocks ab, wie bisher. Bliebe nichts Bekanntes uebrig, bleibt der Block, wie er
+ * ist. Rueckgabe: array(Block, Liste der Namen 'tts.<eintrag>').
+ */
+function tts_unbekannte_verwerfen($tts, $pruefen)
+{
+    if (!is_array($tts)) { return array($tts, array()); }
+    $rest = $tts;
+    $namen = array();
+    foreach ($tts as $s => $w) {
+        $g = (string) call_user_func($pruefen, array($s => $w));
+        if (strpos($g, 'TTS_EINTRAG|') === 0) {
+            unset($rest[$s]);
+            $namen[] = 'tts.' . substr($g, strlen('TTS_EINTRAG|'));
+        }
+    }
+    return ($namen && $rest) ? array($rest, $namen) : array($tts, array());
+}
+
 /** Was ax_config() beim letzten Lesen abgewiesen hat und was fehlte. */
 function ax_config_lage($neu = null)
 {
-    static $lage = array('zustand' => 'fehlt', 'abgewiesen' => array(), 'fehlend' => array());
+    static $lage = array('zustand' => 'fehlt', 'abgewiesen' => array(), 'fehlend' => array(), 'verworfen' => array());
     if ($neu !== null) { $lage = $neu; }
     return $lage;
 }
@@ -371,6 +395,19 @@ function ax_config()
     if (!is_array($cfg)) { $cfg = array(); }
     $vorgaben = ax_vorgaben();
     $abgewiesen = array();
+    /* 1.0.18 (Frage 12, Entscheidung des Hausherrn 18.11.2026): ein unbekannter Unterschluessel im Block tts wird
+     * verworfen und mit Namen genannt (ax_config_lage(), ax_config_heilen()); der Block bleibt samt Sprechtoken. Bis
+     * 1.0.17 wies ansage_wert_pruefen() den ganzen Block ab, es galt der Werksblock, und beim Zurueckspielen waren die
+     * Sprechtoken leer. Unbekannt heisst: das Sprachmodul nennt den Eintrag allein mit TTS_EINTRAG. Bliebe nichts
+     * Bekanntes uebrig, bleibt der Block wie er ist (und wird wie bisher abgewiesen). Frage 46: seit dem
+     * 18.11.2026 ueber tts_unbekannte_verwerfen(), wortgleich in sieben Linien. */
+    $verworfen = array();
+    if (isset($cfg['tts']) && is_array($cfg['tts'])) {
+        list($cfg['tts'], $verworfen) = tts_unbekannte_verwerfen($cfg['tts'], function ($t) {
+            $g = '';
+            return ansage_wert_pruefen($t, $g, ax_ansage_modi()) === null ? $g : '';
+        });
+    }
     foreach ($vorgaben as $k => $v) {
         if (!array_key_exists($k, $cfg)) { continue; }
         $grund = '';
@@ -383,7 +420,8 @@ function ax_config()
         }
     }
     $fehlend = array_values(array_diff(array_keys($vorgaben), array_keys($cfg)));
-    ax_config_lage(array('zustand' => $zustand, 'abgewiesen' => $abgewiesen, 'fehlend' => $fehlend));
+    if (isset($abgewiesen['tts'])) { $verworfen = array(); }     // 1.0.18: der ganze Block ist abgewiesen und genannt
+    ax_config_lage(array('zustand' => $zustand, 'abgewiesen' => $abgewiesen, 'fehlend' => $fehlend, 'verworfen' => $verworfen));
     $cfg += ax_uebergang($cfg);   // Gruppe 6a: zweiter Haken fehlt -> Wert von befehle_mqtt_ein
     $cfg += $vorgaben;
     if ($cfg['mqtt_praefix'] === '') { $cfg['mqtt_praefix'] = 'alexang'; }
@@ -740,6 +778,10 @@ function ax_config_heilen($token_anlegen = false)
     $lage = ax_config_lage();
     foreach ($lage['abgewiesen'] as $k => $g) {
         $meld[] = sprintf(ax_t('MELDUNG.CFG_WERT_ABGEWIESEN'), $k, ax_grund_text($g));
+    }
+    // 1.0.18 (Frage 12): ein verworfener unbekannter Unterschluessel wird genannt - nur der Name, nie der Wert
+    foreach ((isset($lage['verworfen']) ? $lage['verworfen'] : array()) as $n) {
+        $meld[] = sprintf(ax_t('MELDUNG.CFG_EINTRAG_VERWORFEN'), $n);
     }
     return $meld;
 }
@@ -5749,7 +5791,22 @@ function ax_sicherung_beschreibung($mit_amazon = false)
     $tts = array_merge(array_keys(ansage_werk_block()), ansage_geheim());
     $knoten = array(
         'tts' => sicherung_block($tts, array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))))
-                 + array('sichern' => 'ansage_sicherung_bereinigen'),
+                 + array('sichern' => 'ansage_sicherung_bereinigen',
+                         /* Frage 47 (Entscheidung des Hausherrn 18.11.2026): ein bekannter Eintrag mit ungueltigem
+                          * Wert weist die ganze Datei ab, und die Meldung nennt den Eintrag mit Grund. Dieselbe
+                          * Pruefung wie bisher (ax_ansage_wert()); den Grund hat ax_sicherung_vorbehandeln() schon
+                          * ermittelt ('ABGEWIESEN|<Grund>'). Bis 1.0.18 hiess er in der Meldung nur "ANSAGE"; ein
+                          * Block mit Sprechtoken heisst weiterhin so. */
+                         'pruefen' => function ($w) {
+                             $g = '';
+                             if (is_array($w)) {
+                                 if (ansage_wert_pruefen($w, $g, ax_ansage_modi()) !== null) { return ''; }
+                             } elseif (is_string($w) && strpos($w, 'ABGEWIESEN|') === 0) {
+                                 $g = substr($w, strlen('ABGEWIESEN|'));
+                             }
+                             return sprintf(ax_t('SICH.WERT'), 'tts',
+                                 $g !== '' ? ansage_kennung_text($g, ax_ansage_k()) : ax_grund_text('ANSAGE'));
+                         }),
         'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())),
         'ansage_haken' => sicherung_block(array('abgelaufen')),
         'gruppen' => sicherung_liste(array('name', 'geraete'), 'name'),
@@ -5794,9 +5851,9 @@ function ax_sicherung_beschreibung($mit_amazon = false)
         'vorbehandeln' => 'ax_sicherung_vorbehandeln',
         'quer' => 'ax_sicherung_quer',
         // 1.0.17 (Modul 1.2.9, Bauform vom 15.11.2026): das Modul sieht die geltende Konfiguration ungefiltert -
-        // ax_config() weist einen Block tts mit unbekanntem Unterschluessel ganz ab (ansage_wert_pruefen()); was
-        // die Datei im Block sonst traegt, haengt hier an, damit das Zurueckspielen es beim Namen nennt, statt es
-        // still wegfallen zu lassen. Oben laesst ax_config() Unbekanntes ohnehin stehen.
+        // ax_config() verwirft seit 1.0.18 einen unbekannten Unterschluessel im Block tts (bis 1.0.17 den ganzen
+        // Block); was die Datei im Block sonst traegt, haengt hier an, damit das Zurueckspielen es beim Namen nennt,
+        // statt es still wegfallen zu lassen. Oben laesst ax_config() Unbekanntes ohnehin stehen.
         'jetzt' => function () {
             $j = ax_config();
             list($w) = ax_config_roh();
@@ -5825,8 +5882,10 @@ function ax_sicherung_vorbehandeln($bereit, $jetzt, $daten)
         $jt = isset($j['tts']) && is_array($j['tts']) ? $j['tts'] : array();
         $g = '';
         $pr = is_array($bereit['tts']) ? ansage_wert_pruefen($bereit['tts'], $g, ax_ansage_modi()) : null;
-        if (!is_array($bereit['tts']) || ansage_sicherung_mangel($bereit['tts']) || $pr === null) {
+        if (!is_array($bereit['tts']) || ansage_sicherung_mangel($bereit['tts'])) {
             $bereit['tts'] = 'ABGEWIESEN';
+        } elseif ($pr === null) {
+            $bereit['tts'] = 'ABGEWIESEN|' . $g;     // Frage 47: der Grund bleibt fuer die Meldung (Knoten 'pruefen')
         } else {
             list($tv) = ansage_vervollstaendigen($pr, 'aus');
             $bereit['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);

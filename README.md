@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 1.0.17
+Version 1.0.18
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -15,6 +15,15 @@ Hue-Probe auf eigener Netzadresse (ab Werk aus).
 > Routinen, Musik-Probe, Radio je Zone an einem Echo und die Hue-Nachbildung
 > mit den Lampen für Alexa – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 > Was noch aussteht, steht unter „Noch am Gerät zu messen“.
+
+## Neu in 1.0.18
+
+- **Verhalten geändert – unbekannter Eintrag im Block der Sprachausgabe:** Steht in den gespeicherten Einstellungen im Block `tts` ein Eintrag, den diese Fassung nicht kennt (etwa aus einer Bearbeitung von Hand), wird nur dieser Eintrag verworfen und mit seinem Namen gemeldet, nie mit seinem Wert. Die übrigen Einstellungen der Sprachausgabe gelten weiter, und die hinterlegten Sprechtoken der Ziele bleiben erhalten, auch beim Zurückspielen einer Sicherung. Bis 1.0.17 wurde in diesem Fall der ganze Block abgewiesen: Es galt die Werkseinstellung der Sprachausgabe, und nach dem Zurückspielen waren die Sprechtoken leer. Beim nächsten Speichern fällt der unbekannte Eintrag aus der Datei weg.
+- Ein ungültiger Wert eines bekannten Eintrags weist den Block weiterhin als Ganzes ab, wie bisher.
+- **Meldung beim Zurückspielen genauer:** Steht in einer Sicherungsdatei im Block `tts` ein bekannter Eintrag mit ungültigem Wert, wird die ganze Datei wie bisher abgewiesen, und die Einstellungen bleiben unverändert. Die Meldung nennt jetzt den Eintrag und den Grund (etwa „tts.volume: nicht zwischen 1 und 100“); bisher stand dort nur „ANSAGE“. Die Prüfung auf unbekannte Einträge steht in einer Funktion, die in sieben Plugins des Hauses wortgleich ist; an ihrem Verhalten ändert sich nichts. Gemessen auf dem Arbeitsrechner unter PHP 7.4 und 8.4 an einer nachgestellten Konfiguration und Sicherung; am Gerät nicht gemessen.
+- Gemessen auf dem Arbeitsrechner unter PHP 7.4 und 8.4 an einer nachgestellten Konfiguration; am Gerät nicht gemessen.
+- **Einstellungen sichern und zurückspielen mit dem gemeinsamen Sicherungsmodul 1.2.11 statt 1.2.9:** Neu in 1.2.10 ist, dass ein leerer Wert auch in einem Teil der Sicherung, der nur aus einem einzelnen Wert besteht (etwa einem Zugangsschlüssel in einer eigenen Datei), einen gesetzten Wert nicht mehr überschreibt; er bleibt stehen und wird in der Meldung genannt. Dieses Plugin führt keinen solchen Teil; an seinem Verhalten ändert sich dadurch nichts. Gemessen mit dem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4 (3 Vorfassungen zurückgespielt). Am Gerät nicht gemessen.
+- **Sicherungsmodul 1.2.11:** Wandelt ein Plugin beim Zurückspielen eine Sicherung aus einer Textdatei um, sagt die Meldung das jetzt mit einem gemeinsamen Satz, und Mängel darin werden in allen Plugins mit denselben Bezeichnungen genannt. Dieses Plugin wandelt keine Textdateien um; an seinem Verhalten ändert sich dadurch nichts. Gemessen mit dem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4. Am Gerät nicht gemessen.
 
 ## Neu in 1.0.17
 
