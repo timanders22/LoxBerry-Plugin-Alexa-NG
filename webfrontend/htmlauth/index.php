@@ -1172,8 +1172,8 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
 <tr><th style="width:30%"><?= ax_e(ax_t('EINST.T_GRUPPE')) ?></th><th style="width:70%"><?= ax_e(ax_t('EINST.T_GERAETE')) ?></th></tr>
 <?php for ($ax_i = 0; $ax_i < 10; $ax_i++) {
     $ax_z = isset($ax_cfg['gruppen'][$ax_i]) ? $ax_cfg['gruppen'][$ax_i] : array('name' => '', 'geraete' => ''); ?>
-<tr><td><input data-role="none" type="text" name="gruppe_name[<?= (int) $ax_i ?>]" value="<?= ax_e(ax_ui_w('gruppe_name', $ax_z['name'], $ax_i)) ?>"<?= ax_ui_m('gruppe_name', $ax_i) ?> placeholder="unten"></td>
-    <td><input data-role="none" type="text" name="gruppe_geraete[<?= (int) $ax_i ?>]" value="<?= ax_e(ax_ui_w('gruppe_geraete', $ax_z['geraete'], $ax_i)) ?>"<?= ax_ui_m('gruppe_geraete', $ax_i) ?> placeholder="kueche,wohnzimmer"></td></tr>
+<tr><td><input data-role="none" type="text" name="gruppe_name[<?= (int) $ax_i ?>]" value="<?= ax_e(ax_ui_w('gruppe_name', $ax_z['name'], $ax_i)) ?>"<?= ax_ui_m('gruppe_name', $ax_i) ?> placeholder="<?= ax_e(ax_t('EINST.P_GRUPPE_NAME')) ?>"></td>
+    <td><input data-role="none" type="text" name="gruppe_geraete[<?= (int) $ax_i ?>]" value="<?= ax_e(ax_ui_w('gruppe_geraete', $ax_z['geraete'], $ax_i)) ?>"<?= ax_ui_m('gruppe_geraete', $ax_i) ?> placeholder="<?= ax_e(ax_t('EINST.P_GRUPPE_GERAETE')) ?>"></td></tr>
 <?php } ?>
 </table>
 </div>
@@ -1921,7 +1921,7 @@ else {
     $ax_zeile($ax_vw ? 2 : 1, ax_t('TEST.F_VERSCHWUNDEN'), $ax_vw ? sprintf(ax_t('TEST.A_VERSCHWUNDEN'), implode(', ', $ax_vw)) : ax_t('TEST.A_VERSCHWUNDEN_KEINE'));
 }
 $ax_zeile(is_array($ax_letzte) ? ((int) $ax_letzte['ergebnis'] ? 1 : 2) : -1, ax_t('TEST.F_LETZTE'), is_array($ax_letzte)
-    ? sprintf(ax_t('TEST.A_LETZTE'), $ax_zeit($ax_letzte['zeit']), (string) $ax_letzte['aktion'], (string) $ax_letzte['geraet'], (int) $ax_letzte['ergebnis'], ax_grund_text((string) $ax_letzte['grund']))
+    ? sprintf(ax_t('TEST.A_LETZTE'), $ax_zeit($ax_letzte['zeit']), ax_kennung_wort('TEST.AKT_', $ax_letzte['aktion']), (string) $ax_letzte['geraet'], (int) $ax_letzte['ergebnis'], ax_grund_text((string) $ax_letzte['grund']))
     : ax_t('TEST.A_LETZTE_KEINE'));
 if ($ax_tab === 'tab-test') {
     list($ax_s, $ax_a) = ax_selbstprobe($ax_cfg);
@@ -1983,8 +1983,9 @@ $ax_zeile($ax_s, ax_t('TEST.F_SPERRE'), $ax_a);
 $ax_eb = ax_config_erstbefund();
 $ax_heilzeile = in_array('kaputt', $ax_eb['schritte'], true) || in_array('kaputt_fest', $ax_eb['schritte'], true) ? 0
               : (in_array('aus_zweit', $ax_eb['schritte'], true) || in_array('token_aus_zweit', $ax_eb['schritte'], true) ? 2 : 1);
-$ax_zeile($ax_heilzeile, ax_t('TEST.F_HEIL'), sprintf(ax_t('TEST.A_HEIL'), $ax_eb['zustand'] !== '' ? $ax_eb['zustand'] : '-',
-    $ax_eb['schritte'] ? implode(', ', $ax_eb['schritte']) : '-', $ax_eb['datei'] !== '' ? $ax_eb['datei'] : '-'));
+$ax_heilschritte = array_map(function ($s) { return ax_kennung_wort('TEST.HEIL_S_', $s); }, $ax_eb['schritte']);
+$ax_zeile($ax_heilzeile, ax_t('TEST.F_HEIL'), sprintf(ax_t('TEST.A_HEIL'), $ax_eb['zustand'] !== '' ? ax_kennung_wort('TEST.HEIL_Z_', $ax_eb['zustand']) : '-',
+    $ax_heilschritte ? implode(', ', $ax_heilschritte) : '-', $ax_eb['datei'] !== '' ? $ax_eb['datei'] : '-'));
 list($ax_roh) = ax_config_roh();
 $ax_vorg = array_keys(ax_vorgaben());
 $ax_dab = is_array($ax_roh) ? array_intersect($ax_vorg, array_keys($ax_roh)) : array();
