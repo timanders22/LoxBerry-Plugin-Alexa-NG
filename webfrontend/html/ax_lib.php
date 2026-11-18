@@ -5793,7 +5793,16 @@ function ax_sicherung_beschreibung($mit_amazon = false)
         },
         'vorbehandeln' => 'ax_sicherung_vorbehandeln',
         'quer' => 'ax_sicherung_quer',
-        'jetzt' => 'ax_config',
+        // 1.0.17 (Modul 1.2.9, Bauform vom 15.11.2026): das Modul sieht die geltende Konfiguration ungefiltert -
+        // ax_config() weist einen Block tts mit unbekanntem Unterschluessel ganz ab (ansage_wert_pruefen()); was
+        // die Datei im Block sonst traegt, haengt hier an, damit das Zurueckspielen es beim Namen nennt, statt es
+        // still wegfallen zu lassen. Oben laesst ax_config() Unbekanntes ohnehin stehen.
+        'jetzt' => function () {
+            $j = ax_config();
+            list($w) = ax_config_roh();
+            if (is_array($w) && isset($w['tts']) && is_array($w['tts']) && is_array($j['tts'])) { $j['tts'] += $w['tts']; }
+            return $j;
+        },
         'log' => function ($z) { ax_log('INFO', $z); },
         't' => 'ax_t',
         // Die Seite maskiert jede Meldung bei der Ausgabe (ax_e); hier nicht ein zweites Mal.
