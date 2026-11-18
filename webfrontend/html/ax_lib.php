@@ -63,7 +63,10 @@ define('AX_HUE_D_BAU_S', 1800);      // Hue-Probe auf eigener Netzadresse: so la
 define('AX_HUE_D_WARTE_S', 20);      // so lange wartet die Seite nach dem Speichern auf den Vorgang (Nr. 41)
 define('AX_HUE_LAMPEN_MAX', 50);     // Fassung 2: hoechstens 50 Lampen in der Freigabeliste
 define('AX_HUE_NAME_MAX', 32);       // Fassung 2: Zeichen je Lampenname
-define('AX_HUE_ECHOS_MAX', 20);      // Fassung 2: freigegebene Echo-Adressen
+define('AX_HUE_ECHOS_MAX', 20);
+define('AX_TEXTBEFEHLE_MAX', 20);        // 1.0.20 (1.2-d): Eintraege der Freigabeliste fuer Textbefehle
+define('AX_TEXTBEFEHL_ZEICHEN_MAX', 200); // 1.0.20: Zeichen je Satz
+define('AX_UHR_GRENZE_S', 30);           // 1.0.20: ab dieser Abweichung gegen Amazon eine gelbe Zeile (nur Hinweis)      // Fassung 2: freigegebene Echo-Adressen
 
 /* ==================================================================
  * Pfade
@@ -278,6 +281,10 @@ function ax_vorgaben()
         'ankuendigen_ein' => 0,
         // Routinen nur aus dieser Freigabeliste, ab Werk leer (E3).
         'routinen_frei' => array(),
+        // 1.0.20 (Entwurf 1.2-d, E6): Textbefehl - ein Satz, den Alexa ausfuehrt, als waere er gesprochen. Nur aus
+        // dieser Freigabeliste (name => satz), nur mit dem Aktionstoken; ab Werk aus, Liste leer.
+        'textbefehl_ein' => 0,
+        'textbefehle_frei' => array(),
         // Ansagetexte protokollieren (gekuerzt), ab Werk aus (E8).
         'texte_protokollieren' => 0,
         // Sperre aus Loxone (K1, Entscheidung 29): Loxone setzt sie per HTTP
@@ -319,6 +326,13 @@ function ax_vorgaben()
         'hue_lampen' => array(),
         'hue_lampe_naechste' => 2,
         'hue_echos' => array(),
+        // 1.0.20 (Entwurf 1.1-a, E3; Entscheidung des Hausherrn 18.11.2026): die Sperre aus Loxone gilt mit diesem Haken
+        // auch fuer Befehle von Alexa an Loxone (Lampen der Nachbildung und Probe-Lampe; Hue-Fehler 901, kein MQTT).
+        // Wirkt nur zusammen mit sperre_ein. Ab Werk aus; ein unbekannter Zustand der Sperre gilt als offen.
+        'hue_sperre_ein' => 0,
+        // 1.0.20 (Entwurf 1.2-c, E6): Knopf "Geraete suchen" im Reiter Test ueber den Amazon-Zugang des Plugins.
+        // Ab Werk aus; die Adresse ist nur aus Fremdcode bekannt, am eigenen Konto nicht gemessen.
+        'hue_suchen_ein' => 0,
         // MQTT ab Werk an (Hausstandard); der Befehlseingang ab Werk aus.
         'mqtt_ein' => 1,
         'mqtt_praefix' => 'alexang',
@@ -506,6 +520,9 @@ function ax_wert_pruefen($schluessel, $wert, &$grund = '')
         case 'radio_ein':
         case 'hue_ein':
         case 'hue_probe_lampe':
+        case 'hue_sperre_ein':
+        case 'hue_suchen_ein':
+        case 'textbefehl_ein':
             return $schalter($wert);
         case 'bremse_fenster_s': return $zahl($wert, 0, 3600);
         case 'mindestabstand_s': return $zahl($wert, 0, 600);
@@ -544,7 +561,11 @@ function ax_wert_pruefen($schluessel, $wert, &$grund = '')
              * Zeichen, eindeutig), art (schalter|licht|dimmer|taster; licht
              * seit alexa7, Nr. 42; taster seit 1.0.6, E1), kuerzel
              * (a-z/0-9/_, eindeutig) und frei (Haken "bewusst freigeben",
-             * Pflicht bei Tuer/Tor/Garage/Alarm/Schloss). Hoechstens 50. */
+             * Pflicht bei Tuer/Tor/Garage/Alarm/Schloss). Hoechstens 50.
+             * 1.0.20 (Entwurf 1.1-c): dazu aktiv (0/1) - eine nicht aktive Lampe
+             * bleibt in der Liste, die Nachbildung zeigt sie dem Echo nicht.
+             * Fehlt aktiv (Konfiguration bis 1.0.19), gilt 1: so verhielt sich
+             * jede Lampe bisher (Vervollstaendigung, keine Aenderung). */
             if (!is_array($wert)) { $grund = 'KEINE_LISTE'; return null; }
             if (count($wert) > AX_HUE_LAMPEN_MAX) { $grund = 'MEHR_ZEILEN|' . AX_HUE_LAMPEN_MAX; return null; }
             $aus = array();
@@ -552,7 +573,8 @@ function ax_wert_pruefen($schluessel, $wert, &$grund = '')
             $namen = array();
             $kz = array();
             foreach (array_values($wert) as $i => $z) {
-                if (!is_array($z) || count($z) !== 5 || !isset($z['id'], $z['name'], $z['art'], $z['kuerzel'])
+                $z_aktiv = is_array($z) && array_key_exists('aktiv', $z);
+                if (!is_array($z) || count($z) !== ($z_aktiv ? 6 : 5) || !isset($z['id'], $z['name'], $z['art'], $z['kuerzel'])
                     || !array_key_exists('frei', $z)) {
                     $grund = 'LAMPE_ZEILE|' . ($i + 1); return null;
                 }
@@ -575,10 +597,42 @@ function ax_wert_pruefen($schluessel, $wert, &$grund = '')
                 }
                 $gw = ax_hue_gefahr($z['name']);
                 if (!$frei && $gw !== '') { $grund = 'LAMPE_GEFAHR|' . str_replace('|', '/', $z['name']) . '|' . $gw; return null; }
+                $aktiv = 1;
+                if ($z_aktiv) {
+                    if ($z['aktiv'] === true || $z['aktiv'] === 1 || $z['aktiv'] === '1') {
+                        $aktiv = 1;
+                    } elseif ($z['aktiv'] === false || $z['aktiv'] === 0 || $z['aktiv'] === '0') {
+                        $aktiv = 0;
+                    } else {
+                        $grund = 'LAMPE_ZEILE|' . ($i + 1); return null;
+                    }
+                }
                 $ids[$z['id']] = 1;
                 $namen[$nn] = 1;
                 $kz[$z['kuerzel']] = 1;
-                $aus[] = array('id' => $z['id'], 'name' => $z['name'], 'art' => $z['art'], 'kuerzel' => $z['kuerzel'], 'frei' => $frei);
+                $aus[] = array('id' => $z['id'], 'name' => $z['name'], 'art' => $z['art'], 'kuerzel' => $z['kuerzel'], 'frei' => $frei, 'aktiv' => $aktiv);
+            }
+            return $aus;
+        case 'textbefehle_frei':
+            /* 1.0.20 (Entwurf 1.2-d): je Eintrag genau name (a-z, 0-9, _, hoechstens 40, eindeutig - so steht er in
+             * aktion=textbefehl&name=...) und text (der Satz, 1 bis 200 Zeichen UTF-8, keine Steuerzeichen).
+             * Hoechstens AX_TEXTBEFEHLE_MAX. Abgewiesen wird, nie zurechtgebogen. */
+            if (!is_array($wert)) { $grund = 'KEINE_LISTE'; return null; }
+            if (count($wert) > AX_TEXTBEFEHLE_MAX) { $grund = 'MEHR_ZEILEN|' . AX_TEXTBEFEHLE_MAX; return null; }
+            $aus = array();
+            $namen = array();
+            foreach (array_values($wert) as $i => $z) {
+                if (!is_array($z) || count($z) !== 2 || !isset($z['name'], $z['text']) || !is_string($z['name']) || !is_string($z['text'])) {
+                    $grund = 'TEXTBEFEHL_ZEILE|' . ($i + 1); return null;
+                }
+                if (!preg_match('/^[a-z0-9_]{1,40}\z/', $z['name'])) { $grund = 'TEXTBEFEHL_NAME|' . ($i + 1); return null; }
+                if (isset($namen[$z['name']])) { $grund = 'TEXTBEFEHL_DOPPELT|' . $z['name']; return null; }
+                $tz = ax_hue_zeichenzahl($z['text']);
+                if ($tz < 1 || $tz > AX_TEXTBEFEHL_ZEICHEN_MAX || trim($z['text']) !== $z['text'] || preg_match('/[\x00-\x1F\x7F]/', $z['text'])) {
+                    $grund = 'TEXTBEFEHL_TEXT|' . $z['name']; return null;
+                }
+                $namen[$z['name']] = 1;
+                $aus[] = array('name' => $z['name'], 'text' => $z['text']);
             }
             return $aus;
         case 'ruhe_von':
@@ -1421,13 +1475,14 @@ function ax_useragent()
  */
 function ax_http($methode, $url, array $kopf = array(), $rumpf = null, $zeit = AX_HTTP_ZEIT_S)
 {
-    $aus = array('code' => 0, 'rumpf' => '', 'cookies' => array(), 'fehler' => '', 'dauer_ms' => 0);
+    $aus = array('code' => 0, 'rumpf' => '', 'cookies' => array(), 'fehler' => '', 'dauer_ms' => 0, 'datum' => 0);
     if (!function_exists('curl_init')) { $aus['fehler'] = 'CURL_FEHLT'; return $aus; }
     $t0 = microtime(true);
     $ch = curl_init($url);
     $kopf[] = 'User-Agent: ' . ax_useragent();
     $kopf[] = 'Accept-Language: de-DE,de;q=0.9';
     $kekse = array();
+    $datum = 0;   // 1.0.20: Kopfzeile Date der Antwort (Unixzeit) fuer die Pruefzeile zur Systemuhr
     curl_setopt_array($ch, array(
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_FOLLOWLOCATION => false,
@@ -1437,9 +1492,13 @@ function ax_http($methode, $url, array $kopf = array(), $rumpf = null, $zeit = A
         CURLOPT_HTTPHEADER => $kopf,
         CURLOPT_CUSTOMREQUEST => $methode,
         CURLOPT_PROTOCOLS => CURLPROTO_HTTP | CURLPROTO_HTTPS,
-        CURLOPT_HEADERFUNCTION => function ($c, $zeile) use (&$kekse) {
+        CURLOPT_HEADERFUNCTION => function ($c, $zeile) use (&$kekse, &$datum) {
             if (preg_match('/^Set-Cookie:\s*([^=;\s]+)=([^;\r\n]*)/i', $zeile, $m)) {
                 $kekse[$m[1]] = trim($m[2], '"');
+            }
+            if (preg_match('/^Date:\s*([A-Za-z0-9 ,:\-]{20,40})\s*$/i', $zeile, $m)) {
+                $t = strtotime($m[1]);
+                if ($t !== false && $t > 0) { $datum = $t; }
             }
             return strlen($zeile);
         },
@@ -1456,7 +1515,59 @@ function ax_http($methode, $url, array $kopf = array(), $rumpf = null, $zeit = A
     if (PHP_VERSION_ID < 80000) { curl_close($ch); }
     $aus['cookies'] = $kekse;
     $aus['dauer_ms'] = (int) round((microtime(true) - $t0) * 1000);
+    $aus['datum'] = $datum;
     return $aus;
+}
+
+/**
+ * 1.0.20 (Abgleich Nr. 25): die Abweichung der Systemuhr gegen die Kopfzeile Date einer Antwort von Amazon merken
+ * (data/uhr.json, 0644). Date traegt ganze Sekunden; verglichen wird mit der Mitte der Anfrage, also +-1 s Unschaerfe.
+ * Geschrieben nur bei einer Aenderung um mindestens 2 s oder wenn der letzte Eintrag aelter als 10 Minuten ist.
+ */
+function ax_uhr_merken(array $r)
+{
+    if (empty($r['datum']) || ax_nur_lesen()) { return; }
+    $mitte = time() - (int) round(((int) $r['dauer_ms']) / 2000);
+    $ab = $mitte - (int) $r['datum'];
+    $p = ax_paths();
+    if ($p['lbhome'] === '' || !is_dir($p['datadir'])) { return; }
+    $f = $p['datadir'] . '/uhr.json';
+    $alt = ax_json_lesen($f);
+    if (is_array($alt) && isset($alt['abweichung_s'], $alt['zeit']) && abs((int) $alt['abweichung_s'] - $ab) < 2 && time() - (int) $alt['zeit'] < 600) { return; }
+    ax_write_json($f, array('abweichung_s' => $ab, 'zeit' => time(), 'quelle' => 'alexa.' . AX_DOMAIN), 0644);
+}
+
+/** 1.0.20: die zuletzt gemessene Abweichung, oder null. */
+function ax_uhr_lesen()
+{
+    $p = ax_paths();
+    $d = ax_json_lesen($p['datadir'] . '/uhr.json');
+    if (!is_array($d) || !isset($d['abweichung_s'], $d['zeit']) || !is_int($d['abweichung_s']) || !is_int($d['zeit'])) { return null; }
+    return array('abweichung_s' => $d['abweichung_s'], 'zeit' => $d['zeit']);
+}
+
+/**
+ * 1.0.20: die Pruefzeile "Ist die Systemuhr synchron?" (nur melden, nichts blockieren). Massgeblich ist die Abweichung
+ * gegen Amazon; timedatectl steht nur dabei: am Geraet des Hausherrn meldete es am 18.11.2026 NTPSynchronized=no,
+ * waehrend die Uhr auf 1 s mit Amazon uebereinstimmte (DietPi gleicht die Uhr selbst ab, systemd-timesyncd ruht).
+ * Rueckgabe array(stand, text) wie die uebrigen Zeilen des Reiters Test.
+ */
+function ax_uhr_pruefzeile()
+{
+    $u = ax_uhr_lesen();
+    $ntp = '';
+    if (DIRECTORY_SEPARATOR !== '\\') {
+        list($rc, $out, ) = ax_aufruf(array('timedatectl', 'show', '-p', 'NTPSynchronized', '--value'), 5);
+        $w = trim((string) $out);
+        if ($rc === 0 && ($w === 'yes' || $w === 'no')) { $ntp = $w; }
+    }
+    $ntp_t = sprintf(ax_t('TEST.A_UHR_NTP'), $ntp !== '' ? $ntp : ax_t('TEST.A_UHR_NTP_UNBEKANNT'));
+    if ($u === null) { return array(-1, ax_t('TEST.A_UHR_NIE') . ' ' . $ntp_t); }
+    $alter = max(0, time() - $u['zeit']);
+    if (abs($u['abweichung_s']) <= AX_UHR_GRENZE_S) {
+        return array(1, sprintf(ax_t('TEST.A_UHR_OK'), $u['abweichung_s'], ax_dauer_text($alter)) . ' ' . $ntp_t);
+    }
+    return array(2, sprintf(ax_t('TEST.A_UHR_ABWEICHUNG'), $u['abweichung_s'], ax_dauer_text($alter), AX_UHR_GRENZE_S) . ' ' . $ntp_t);
 }
 
 /** Klasse einer Antwort (Bauplan 2.5): eine Zahl-Antwort, nie eine Textsuche. */
@@ -1637,6 +1748,7 @@ function ax_alexa($methode, $pfad, $rumpf = null, $bei_429_nochmal = true)
         sleep(2);
         $r = ax_http($methode, ax_amazon_url('alexa', $pfad), ax_alexa_kopf($s, $json), $rumpf);
     }
+    ax_uhr_merken($r);   // 1.0.20: Abweichung der Systemuhr gegen Amazon (Reiter Test)
     if ($r['code'] >= 200 && $r['code'] < 300) {
         // Jede erfolgreiche Amazon-Antwort (Ansage, Geraeteliste, Status) bestaetigt
         // die Anmeldung - "zuletzt bestaetigt" stand sonst auf dem letzten Statustakt
@@ -2358,6 +2470,18 @@ function ax_sequenz_ankuendigen(array $ziele, $text, $titel, $kunde)
     ));
 }
 
+/**
+ * 1.0.20 (Entwurf 1.2-d): Textbefehl - Alexa fuehrt den Satz aus, als waere er am Geraet gesprochen. Knoten
+ * Alexa.TextCommand mit skillId amzn1.ask.1p.tellalexa und operationPayload.text, wie das Plugin Alexa2Lox
+ * ihn in alexa_remote_control.sh (Zeilen 441 bis 444 der gelesenen Fassung) baut [Fremdcode, am eigenen Echo nicht gemessen].
+ */
+function ax_sequenz_textbefehl(array $ziel, $satz, $kunde)
+{
+    $k = ax_knoten('Alexa.TextCommand', $ziel, $kunde, array('text' => (string) $satz));
+    $k['skillId'] = 'amzn1.ask.1p.tellalexa';
+    return ax_sequenz($k);
+}
+
 /** Lautstaerke: ein ParallelNode (ARC:431-439). */
 function ax_sequenz_lautstaerke(array $ziele, $wert, $kunde)
 {
@@ -2544,6 +2668,7 @@ function ax_loxsperre_setzen($wert, $quelle, $absender = '')
          ? 'http:' . preg_replace('/[^0-9a-fA-F:.]/', '', (string) $_SERVER['REMOTE_ADDR']) : (string) $quelle;
     $d = array('gesperrt' => $neu, 'seit' => $gleich ? $alt['seit'] : time(), 'zuletzt' => time(), 'quelle' => $wer);
     if (!ax_write_json($p['datadir'] . '/loxsperre.json', $d, 0644)) { $f['GRUND'] = 'SPEICHERN'; return $ergebnis(503, $f); }
+    ax_hue_sperre_spiegeln();   // 1.0.20: der Container der Nachbildung sieht nur data/hue
     if (!$gleich) {
         ax_log('INFO', 'Sperre aus Loxone: ' . ($neu ? 'gesperrt' : 'offen') . ' (von ' . $wer . ').');
     }
@@ -3277,7 +3402,7 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
         return array($http, $felder);
     };
 
-    if (!in_array($aktion, array('sprechen', 'ankuendigen', 'lautstaerke', 'routine', 'musik_probe', 'musik_stopp'), true)) {
+    if (!in_array($aktion, array('sprechen', 'ankuendigen', 'lautstaerke', 'routine', 'musik_probe', 'musik_stopp', 'textbefehl'), true)) {
         $f['GRUND'] = 'AKTION';
         return $ende(400, $f);
     }
@@ -3286,6 +3411,9 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
     if ($aktion === 'ankuendigen' && empty($cfg['ankuendigen_ein'])) { $f['GRUND'] = 'ANKUENDIGEN_AUS'; return $ende(409, $f); }
     $musik = ($aktion === 'musik_probe' || $aktion === 'musik_stopp');
     if ($musik && empty($cfg['musik_ein'])) { $f['GRUND'] = 'MUSIK_AUS'; return $ende(409, $f); }
+    // 1.0.20 (Entwurf 1.2-d): Textbefehl nur mit Haken (ab Werk aus) und nur aus der Freigabeliste.
+    if ($aktion === 'textbefehl' && empty($cfg['textbefehl_ein'])) { $f['GRUND'] = 'TEXTBEFEHL_AUS'; return $ende(409, $f); }
+    $tb_satz = '';
 
     // ---- Parameter pruefen: abweisen, nie zurechtbiegen ----
     $text = '';
@@ -3338,6 +3466,16 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
                 return $ende($mh, $f);
             }
         }
+    } elseif ($aktion === 'textbefehl') {
+        // Der Name waehlt einen Eintrag der Freigabeliste; einen Satz nimmt der Endpunkt nie an (kein Parameter text).
+        if (!isset($par['name']) || !is_string($par['name']) || !preg_match('/^[a-z0-9_]{1,40}\z/', $par['name'])) {
+            $f['GRUND'] = 'TEXTBEFEHL_NAME_FORM'; return $ende(400, $f);
+        }
+        if (isset($par['text'])) { $f['GRUND'] = 'TEXTBEFEHL_KEIN_TEXT'; return $ende(400, $f); }
+        foreach ($cfg['textbefehle_frei'] as $tb) {
+            if ($tb['name'] === $par['name']) { $tb_satz = $tb['text']; break; }
+        }
+        if ($tb_satz === '') { $f['GRUND'] = 'TEXTBEFEHL_NICHT_FREIGEGEBEN'; return $ende(409, $f); }
     } else {
         if (!isset($par['name']) || !is_string($par['name']) || trim($par['name']) === '' || strlen($par['name']) > 80
             || preg_match('/[\x00-\x1F\x7F]/', $par['name']) || preg_match('//u', $par['name']) !== 1) {
@@ -3388,7 +3526,7 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
         if ($g === 'GERAETE_OFFLINE') { $f['OFFLINE'] = $offline; }
         return $ende($h, $f);
     }
-    if ($aktion === 'routine' && count($ziele) !== 1) {
+    if (($aktion === 'routine' || $aktion === 'textbefehl') && count($ziele) !== 1) {
         ax_sperre_frei($sp);
         $f['GRUND'] = 'EIN_GERAET';
         return $ende(400, $f);
@@ -3500,6 +3638,9 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
     } elseif ($aktion === 'musik_stopp') {
         $seq = ax_sequenz_musik_stopp($ziele[0], $s['kunde']);
         $zusatz = array('GERAET' => $ziele[0]['normal'], 'STOPP' => 1);
+    } elseif ($aktion === 'textbefehl') {
+        $seq = ax_sequenz_textbefehl($ziele[0], $tb_satz, $s['kunde']);
+        $zusatz = array('NAME' => $par['name']);
     } else {
         // Dieselbe Abfrage wie "Routinen bei Amazon anzeigen" (R3).
         list($oka, $ga, $liste) = ax_amazon_routinen();
@@ -4067,6 +4208,9 @@ function ax_hue_lesen($art = null)
             if (count($aus['abgewiesen']['absender']) >= 10) { break; }
         }
     }
+    // 1.0.20 (1.1-a): von der Sperre abgewiesene Schaltbefehle (Hue-Fehler 901, kein MQTT).
+    $x = isset($d['gesperrt']) ? $d['gesperrt'] : null;
+    $aus['gesperrt'] = array('anzahl' => $zahl($x, 'anzahl'), 'ip' => $ip($x, 'ip'), 'zeit' => $zahl($x, 'zeit'));
     $x = isset($d['mqtt_abo']) ? $d['mqtt_abo'] : null;
     $aus['mqtt_abo'] = array('verbunden' => $zahl($x, 'verbunden') === 1 ? 1 : 0, 'seit' => $zahl($x, 'seit'),
         'fehler' => (is_array($x) && isset($x['fehler']) && is_string($x['fehler']) && preg_match('/^[A-Z_]{0,20}\z/', $x['fehler'])) ? $x['fehler'] : '',
@@ -4128,6 +4272,7 @@ function ax_hue_lampen_kurz(array $cfg)
 {
     $aus = array();
     foreach ((isset($cfg['hue_lampen']) && is_array($cfg['hue_lampen'])) ? $cfg['hue_lampen'] : array() as $l) {
+        if (!ax_hue_lampe_aktiv($l)) { continue; }   // 1.0.20 (1.1-c): nicht aktiv - der Echo sieht sie nicht
         $aus[] = array('id' => (int) $l['id'], 'name' => (string) $l['name'], 'art' => (string) $l['art'], 'kuerzel' => (string) $l['kuerzel']);
     }
     return $aus;
@@ -4159,13 +4304,51 @@ function ax_hue_lokale_netze()
     return $netze;
 }
 
+/** 1.0.20 (1.1-c): ist eine Lampe der Liste aktiv? Ein fehlender Schluessel heisst aktiv (Konfiguration bis 1.0.19). */
+function ax_hue_lampe_aktiv(array $l)
+{
+    return !array_key_exists('aktiv', $l) || !empty($l['aktiv']);
+}
+
+/**
+ * 1.0.20 (Entwurf 1.1-a, E3): gilt die Sperre aus Loxone fuer Alexa -> Loxone? ein = beide Haken (sperre_ein und
+ * hue_sperre_ein); bekannt = Loxone hat einen Wert gesetzt; gesperrt nur bei bekanntem Wert 1. Unbekannt gilt offen.
+ */
+function ax_hue_sperre_lage(array $cfg)
+{
+    $l = ax_loxsperre_lesen();
+    return array('ein' => (!empty($cfg['sperre_ein']) && !empty($cfg['hue_sperre_ein'])) ? 1 : 0, 'bekannt' => $l['bekannt'] ? 1 : 0,
+                 'gesperrt' => ($l['bekannt'] && $l['gesperrt'] === 1) ? 1 : 0);
+}
+
+/**
+ * 1.0.20: der Zustand der Sperre fuer den Container (data/hue/loxsperre.json, 0644). Der Container sieht nur
+ * data/plugins/<ordner>/hue (gemessen am 18.11.2026 an 1.0.16: eingehaengt sind /hue, /log und die beiden Skripte,
+ * ax_hue_docker_anlegen()). Geschrieben bei jedem Setzen der Sperre und mit hue_container.json; nur wenn der Ordner
+ * schon da ist (er wird hier nie angelegt). Ohne gesetzten Wert wird der Spiegel entfernt - dann gilt offen.
+ */
+function ax_hue_sperre_spiegeln()
+{
+    $dir = ax_hue_dockerdir();
+    if (!is_dir($dir)) { return false; }
+    $f = $dir . '/loxsperre.json';
+    $l = ax_loxsperre_lesen();
+    if (!$l['bekannt']) {
+        if (is_file($f)) { @unlink($f); }
+        return !is_file($f);
+    }
+    $d = array('gesperrt' => $l['gesperrt'], 'seit' => $l['seit']);
+    if (ax_json_lesen($f) === $d) { return true; }
+    return ax_write_json($f, $d, 0644);
+}
+
 /** Die Lage fuer den Dienst auf dem LoxBerry (gleiche Form wie ax_hue_container_lage() im Container). */
 function ax_hue_lb_lage(array $cfg)
 {
     return array('lampen' => ax_hue_lampen_kurz($cfg), 'probe' => empty($cfg['hue_probe_lampe']) ? 0 : 1,
                  'echos' => (isset($cfg['hue_echos']) && is_array($cfg['hue_echos'])) ? array_values($cfg['hue_echos']) : array(),
                  'netze' => ax_hue_lokale_netze(), 'wirt' => '', 'mqtt_ein' => empty($cfg['mqtt_ein']) ? 0 : 1,
-                 'praefix' => $cfg['mqtt_praefix'], 'broker' => ax_broker());
+                 'praefix' => $cfg['mqtt_praefix'], 'broker' => ax_broker(), 'sperre' => ax_hue_sperre_lage($cfg));
 }
 
 /** Die Zeitzone, in der dieses Plugin protokolliert - der Container bekommt dieselbe (B2). */
@@ -4223,7 +4406,9 @@ function ax_hue_erwartete_lampen(array $cfg)
 {
     $s = array();
     if (!empty($cfg['hue_probe_lampe'])) { $s['1'] = 'Loxone Probe'; }
-    foreach ((isset($cfg['hue_lampen']) && is_array($cfg['hue_lampen'])) ? $cfg['hue_lampen'] : array() as $l) { $s[(string) $l['id']] = $l['name']; }
+    foreach ((isset($cfg['hue_lampen']) && is_array($cfg['hue_lampen'])) ? $cfg['hue_lampen'] : array() as $l) {
+        if (ax_hue_lampe_aktiv($l)) { $s[(string) $l['id']] = $l['name']; }   // 1.0.20: nicht aktive zeigt sie nicht
+    }
     return $s;
 }
 
@@ -4847,10 +5032,14 @@ function ax_hue_docker_datei(array $cfg, array $def, $wirt)
                // alexa6: Fassung 2 und B2 (die Zeitzone, in der dieses Plugin protokolliert)
                'zeitzone' => ax_hue_zeitzone(), 'netz' => $def['subnetz'], 'wirt' => (string) $wirt,
                'probe_lampe' => empty($cfg['hue_probe_lampe']) ? 0 : 1, 'lampen' => ax_hue_lampen_kurz($cfg),
-               'echos' => (isset($cfg['hue_echos']) && is_array($cfg['hue_echos'])) ? array_values($cfg['hue_echos']) : array());
+               'echos' => (isset($cfg['hue_echos']) && is_array($cfg['hue_echos'])) ? array_values($cfg['hue_echos']) : array(),
+               // 1.0.20 (1.1-a): gilt die Sperre aus Loxone auch fuer Alexa -> Loxone? Den Zustand liest der Container
+               // aus loxsperre.json in seinem Ordner (ax_hue_sperre_spiegeln()).
+               'sperre_hue' => (!empty($cfg['sperre_ein']) && !empty($cfg['hue_sperre_ein'])) ? 1 : 0);
     $dir = ax_hue_dockerdir();
     if (!is_dir($dir)) { @mkdir($dir, 0750, true); }
     if (!is_dir($dir)) { return false; }
+    ax_hue_sperre_spiegeln();
     $f = $dir . '/hue_container.json';
     if (ax_json_lesen($f) === $d) { return true; }
     return ax_write_json($f, $d, 0600);
@@ -4915,6 +5104,7 @@ function ax_hue_docker_kurz(array $info)
         'fehler' => (isset($s['Error']) && is_string($s['Error'])) ? ax_kurztext($s['Error'], 160) : '',
         'neustarts' => isset($info['RestartCount']) ? (int) $info['RestartCount'] : 0,
         'seit' => ($start !== false && $start > 0) ? max(0, time() - $start) : -1,
+        'start' => ($start !== false && $start > 0) ? (int) $start : 0,   // 1.0.20: fuer den Knopf "neu starten"
         'def' => (isset($l['de.loxberry.plugin.def']) && is_string($l['de.loxberry.plugin.def'])) ? $l['de.loxberry.plugin.def'] : '',
         'bild' => (isset($info['Config']['Image']) && is_string($info['Config']['Image'])) ? $info['Config']['Image'] : '',
         'ip' => $ip($nm['netz']),
@@ -5420,6 +5610,98 @@ function ax_hue_docker_befund(array $cfg, $fragen)
 }
 
 /**
+ * 1.0.20 (Abgleich Nr. 26, Forum #141-#142.1): die Nachbildung auf Knopfdruck neu starten. Nachgesehen wird die
+ * Wirkung, nicht der Rueckgabewert: Art "eigene Netzadresse" - die Startzeit des eigenen Containers (docker inspect,
+ * State.StartedAt) vorher und nachher, docker restart nur an einem Container mit beiden eigenen Labels; Art "auf dem
+ * LoxBerry" - die Startzeit im Messstand (data/hue_probe.json, schreibt nur der Dienst) vorher und nachher. Rueckgabe
+ * array(ok, grund, vorher, nachher) mit Unixzeiten (0 = unbekannt).
+ */
+function ax_hue_neustart(array $cfg)
+{
+    if (empty($cfg['aktiv']) || empty($cfg['hue_ein'])) { return array(false, 'HUE_AUS', 0, 0); }
+    if (DIRECTORY_SEPARATOR === '\\' || !function_exists('exec')) { return array(false, 'NICHT_MOEGLICH', 0, 0); }
+    if (ax_hue_art($cfg) === 'docker') {
+        $v = ax_hue_vorgang();
+        if (in_array($v['zustand'], array('gestartet', 'laeuft'), true)) { return array(false, 'HUE_VORGANG_LAEUFT', 0, 0); }
+        $nm = ax_hue_docker_namen();
+        list($da, $eigen, $k) = ax_hue_docker_container();
+        if ($da === null) { return array(false, 'DOCKER_FEHLER|0', 0, 0); }
+        if (!$da) { return array(false, 'HUE_KEIN_CONTAINER|' . $nm['container'], 0, 0); }
+        if (!$eigen) { return array(false, 'CONTAINER_FREMD|' . $nm['container'], 0, 0); }
+        $vor = (int) $k['start'];
+        list($rc, , $err) = ax_docker(array('restart', '-t', '5', $nm['container']), 45);
+        list($da2, $eigen2, $k2) = ax_hue_docker_container();
+        $nach = ($da2 && $eigen2) ? (int) $k2['start'] : 0;
+        $gut = $da2 && $eigen2 && $k2['laeuft'] && $nach > 0 && $nach !== $vor;
+        ax_log($gut ? 'INFO' : 'WARN', 'Hue: Nachbildung (Container ' . $nm['container'] . ') auf Wunsch neu gestartet - docker restart rc ' . $rc
+            . ', Start vorher ' . ($vor ? date('H:i:s', $vor) : '-') . ', nachher ' . ($nach ? date('H:i:s', $nach) : '-')
+            . ($gut ? '.' : ' - keine Wirkung nachweisbar' . ($rc !== 0 ? ' (' . ax_letzte_zeile($err) . ')' : '') . '.'));
+        return array($gut, $gut ? '' : ($rc !== 0 ? 'HUE_NEUSTART_RC|' . $rc : 'HUE_NEUSTART_OHNE_WIRKUNG'), $vor, $nach);
+    }
+    $vor = (int) ax_hue_lesen('loxberry')['start'];
+    $lief = ax_hue_dienst_status();
+    if ($lief) { ax_hue_dienst('stop'); }
+    list($ok, $text) = ax_hue_dienst('start');
+    $nach = 0;
+    $ende = microtime(true) + 8;
+    do {
+        $z = ax_hue_lesen('loxberry');
+        if ((int) $z['start'] > 0 && (int) $z['start'] !== $vor && (int) $z['ende'] === 0) { $nach = (int) $z['start']; break; }
+        usleep(250000);
+    } while (microtime(true) < $ende);
+    $gut = $nach > 0 && ax_hue_dienst_status() === true;
+    ax_log($gut ? 'INFO' : 'WARN', 'Hue: Nachbildung (Dienst auf dem LoxBerry) auf Wunsch neu gestartet - Start vorher '
+        . ($vor ? date('H:i:s', $vor) : '-') . ', nachher ' . ($nach ? date('H:i:s', $nach) : '-') . ($gut ? '.' : ' - keine Wirkung nachweisbar (' . ax_kurztext($text, 80) . ').'));
+    return array($gut, $gut ? '' : 'HUE_NEUSTART_OHNE_WIRKUNG', $vor, $nach);
+}
+
+/**
+ * 1.0.20 (Entwurf 1.2-c, E6): "Geraete suchen" - Alexa sucht neue Smart-Home-Geraete, wie der Knopf in der App.
+ * POST /api/phoenix/discovery mit dem Rumpf {} [Fremdcode alexa-remote, gelesen 14.10.2026; am eigenen Konto NICHT
+ * gemessen - der Hausherr prueft es selbst]. Gemessen am 18.11.2026 nur lesend ueber den Zugang dieses Plugins:
+ * GET /api/phoenix antwortete mit HTTP 299 und leerem Rumpf; /api/behaviors/entities?skillId=amzn1.ask.1p.smarthome
+ * nannte 13 Geraete, aber keine Lampe dieser Nachbildung. Deshalb gibt es "In Alexa loeschen" nicht: eigene Geraete
+ * (uniqueid dieser Bridge) sind in keiner der beiden Antworten zu erkennen, und ein Loeschen ohne sichere Erkennung
+ * traefe womoeglich fremde Geraete. Wirkung nachgesehen: die Zahl der SSDP-Suchen vorher wird gemerkt
+ * (data/hue_suche.json); der Reiter Test zeigt, ob danach eine Suche eines Echos ankam. Rueckgabe array(ok, grund, http).
+ */
+function ax_hue_alexa_suchen(array $cfg)
+{
+    if (empty($cfg['hue_suchen_ein'])) { return array(false, 'HUE_SUCHEN_AUS', 0); }
+    if (empty($cfg['aktiv'])) { return array(false, 'PLUGIN_AUS', 0); }
+    if (empty($cfg['hue_ein'])) { return array(false, 'HUE_AUS', 0); }
+    if (!ax_amazon()) { return array(false, 'ANMELDUNG', 0); }
+    if (!function_exists('curl_init')) { return array(false, 'CURL_FEHLT', 0); }
+    $hz = ax_hue_lesen(ax_hue_art($cfg));
+    $sp = ax_sperre();
+    if (!$sp) { return array(false, 'BESCHAEFTIGT', 0); }
+    list($ok, $g, $r) = ax_alexa('POST', '/api/phoenix/discovery', '{}', false);
+    ax_sperre_frei($sp);
+    $code = is_array($r) ? (int) $r['code'] : 0;
+    $p = ax_paths();
+    ax_write_json($p['datadir'] . '/hue_suche.json', array('zeit' => time(), 'http' => $code, 'ok' => $ok ? 1 : 0,
+        'suchen_vorher' => (int) $hz['suchen']['anzahl'], 'suche_zuletzt_vorher' => (int) $hz['suchen']['zeit']), 0644);
+    ax_log($ok ? 'INFO' : 'WARN', 'Hue: "Geraete suchen" bei Amazon ausgeloest - HTTP ' . $code . ($ok ? '' : ', ' . $g)
+        . '; ob ein Echo danach sucht, zeigt der Reiter Test.');
+    return array($ok, $ok ? '' : $g, $code);
+}
+
+/** 1.0.20: die Zeile zur letzten ausgeloesten Suche fuer den Reiter Test, oder null (noch nie ausgeloest). */
+function ax_hue_suche_zeile(array $hz)
+{
+    $p = ax_paths();
+    $d = ax_json_lesen($p['datadir'] . '/hue_suche.json');
+    if (!is_array($d) || !isset($d['zeit'], $d['http'], $d['suchen_vorher']) || !is_int($d['zeit'])) { return null; }
+    $wann = date('d.m.Y H:i:s', $d['zeit']);
+    $neu = (int) $hz['suchen']['anzahl'] - (int) $d['suchen_vorher'];
+    if ((int) $hz['suchen']['zeit'] >= $d['zeit'] && $neu > 0) {
+        return array(1, sprintf(ax_t('TEST.A_HUE_SUCHE_AUSGELOEST_JA'), $wann, (int) $d['http'], $neu, $hz['suchen']['ip']));
+    }
+    if (time() - $d['zeit'] < 300) { return array(-1, sprintf(ax_t('TEST.A_HUE_SUCHE_AUSGELOEST_WARTE'), $wann, (int) $d['http'])); }
+    return array(2, sprintf(ax_t('TEST.A_HUE_SUCHE_AUSGELOEST_NEIN'), $wann, (int) $d['http']));
+}
+
+/**
  * Selbstprobe aus dem Reiter Test fuer den Container: description.xml und
  * Lampenliste ueber die Brueckenadresse des Containers (die eigene Adresse im
  * Heimnetz ist vom LoxBerry aus nicht erreichbar - macvlan). Rueckgabe
@@ -5794,6 +6076,14 @@ function ax_vorlage_aktionen($host, array $cfg)
                             'on' => $pfad . '&aktion=routine&name=' . rawurlencode($r));
         }
     }
+    // 1.0.20 (1.2-d): je Eintrag der Freigabeliste "Alexa Textbefehl <name>" - nur mit Haken (ab Werk aus), sonst wie bisher.
+    if (!empty($cfg['textbefehl_ein']) && isset($cfg['textbefehle_frei']) && is_array($cfg['textbefehle_frei'])) {
+        foreach ($cfg['textbefehle_frei'] as $tb) {
+            if (!is_array($tb) || !isset($tb['name']) || !is_string($tb['name']) || $tb['name'] === '') { continue; }
+            $cmds[] = array('title' => 'Alexa Textbefehl ' . $tb['name'], 'comment' => sprintf(ax_t('LOX.VA_C_TEXTBEFEHL'), $tb['name']),
+                            'analog' => false, 'on' => $pfad . '&aktion=textbefehl&name=' . rawurlencode($tb['name']));
+        }
+    }
     $basis = ax_endpunkt_basis($host);
     return array('VQ_alexang_aktionen.xml', ax_xml_virtual_out(array('title' => 'Alexa NG Aktionen',
         'comment' => ax_t('LOX.VA_KOMMENTAR') . ' (' . date('d.m.Y') . ')',
@@ -5852,7 +6142,8 @@ function ax_sicherung_beschreibung($mit_amazon = false)
         'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())),
         'ansage_haken' => sicherung_block(array('abgelaufen')),
         'gruppen' => sicherung_liste(array('name', 'geraete'), 'name'),
-        'hue_lampen' => sicherung_liste(array('id', 'name', 'art', 'kuerzel', 'frei'), 'id'),
+        'hue_lampen' => sicherung_liste(array('id', 'name', 'art', 'kuerzel', 'frei', 'aktiv'), 'id'),
+        'textbefehle_frei' => sicherung_liste(array('name', 'text'), 'name'),
         'musik_sender' => sicherung_liste(array('nr', 'name', 'anbieter'), 'nr'),
         'radio_zonen' => sicherung_liste(array('zone', 'ziel'), 'zone'),
     );

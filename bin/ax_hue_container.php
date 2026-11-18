@@ -188,7 +188,7 @@ function ax_hue_lesen($art = null)
     $d = json_decode((string) @file_get_contents($p['datadir'] . '/hue_probe.json'), true);
     if (!is_array($d)) { return array(); }
     $aus = array();
-    foreach (array('beschreibung', 'abfragen', 'eigene', 'schalten', 'suchen', 'lampen', 'abgewiesen') as $k) {
+    foreach (array('beschreibung', 'abfragen', 'eigene', 'schalten', 'suchen', 'lampen', 'abgewiesen', 'gesperrt') as $k) {
         if (isset($d[$k]) && is_array($d[$k])) { $aus[$k] = $d[$k]; }
     }
     if (isset($aus['suchen']['absender']) && !is_array($aus['suchen']['absender'])) { unset($aus['suchen']['absender']); }
@@ -312,8 +312,10 @@ function ax_hue_mqtt_senden(array $c, $thema, $wert)
  */
 function ax_hue_container_zusatz(array $d)
 {
-    $d += array('lampen' => array(), 'probe_lampe' => 1, 'echos' => array(), 'netz' => '', 'wirt' => '', 'zeitzone' => '');
+    // 1.0.20: sperre_hue fehlt in der Datei einer aelteren Fassung - dann gilt die Sperre nicht (ab Werk aus).
+    $d += array('lampen' => array(), 'probe_lampe' => 1, 'echos' => array(), 'netz' => '', 'wirt' => '', 'zeitzone' => '', 'sperre_hue' => 0);
     if (!is_array($d['lampen']) || count($d['lampen']) > 50 || !in_array($d['probe_lampe'], array(0, 1), true)
+        || !in_array($d['sperre_hue'], array(0, 1), true)
         || !is_array($d['echos']) || count($d['echos']) > 20 || !is_string($d['netz']) || !is_string($d['wirt']) || !is_string($d['zeitzone'])) {
         return null;
     }
@@ -322,7 +324,7 @@ function ax_hue_container_zusatz(array $d)
     foreach ($d['lampen'] as $l) {
         if (!is_array($l) || !isset($l['id'], $l['name'], $l['art'], $l['kuerzel']) || !is_int($l['id']) || $l['id'] < 2 || $l['id'] > 9999
             || !is_string($l['name']) || $l['name'] === '' || strlen($l['name']) > 160 || preg_match('/[\x00-\x1F\x7F]/', $l['name'])
-            || !in_array($l['art'], array('schalter', 'licht', 'dimmer'), true)
+            || !in_array($l['art'], array('schalter', 'licht', 'dimmer', 'taster'), true)   // taster: 1.0.20, Befund
             || !is_string($l['kuerzel']) || !preg_match('/^[a-z0-9_]{1,32}\z/', $l['kuerzel'])
             || isset($ids[$l['id']]) || isset($kz[$l['kuerzel']])) {
             return null;
@@ -345,8 +347,15 @@ function ax_hue_container_lage()
 {
     $c = ax_hue_container_konfig();
     $aus = array('lampen' => array(), 'probe' => 1, 'echos' => array(), 'netze' => array(), 'wirt' => '', 'mqtt_ein' => 0,
-                 'praefix' => 'alexang', 'broker' => array('host' => '', 'port' => 1883, 'user' => '', 'pass' => ''));
+                 'praefix' => 'alexang', 'broker' => array('host' => '', 'port' => 1883, 'user' => '', 'pass' => ''),
+                 'sperre' => array('ein' => 0, 'bekannt' => 0, 'gesperrt' => 0));
     if (!$c) { return $aus; }
+    // 1.0.20 (1.1-a): der Zustand der Sperre aus Loxone, vom Plugin in den eingehaengten Ordner gespiegelt
+    // (ax_hue_sperre_spiegeln()). Fehlt oder taugt die Datei nicht, gilt offen.
+    global $AX_HUE_C;
+    $ls = json_decode((string) @file_get_contents($AX_HUE_C['dir'] . '/loxsperre.json'), true);
+    $bek = is_array($ls) && isset($ls['gesperrt']) && ($ls['gesperrt'] === 0 || $ls['gesperrt'] === 1);
+    $aus['sperre'] = array('ein' => (int) $c['sperre_hue'], 'bekannt' => $bek ? 1 : 0, 'gesperrt' => ($bek && $ls['gesperrt'] === 1) ? 1 : 0);
     $aus['lampen'] = $c['lampen'];
     $aus['probe'] = (int) $c['probe_lampe'];
     $aus['echos'] = $c['echos'];

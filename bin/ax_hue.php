@@ -352,6 +352,11 @@ function ax_hue_anfrage($methode, $pfad, $rumpf, $ip, $eigen, $eigene_ip)
     if ($methode === 'PUT' && $rest === '/lights/1/state' && !empty($lage['probe'])) {
         $d = json_decode((string) $rumpf, true);
         if (!is_array($d)) { return $fehler(2, '/lights/1/state', 'body contains invalid json'); }
+        // 1.0.20 (1.1-a): die Sperre aus Loxone gilt mit Haken auch fuer die Probe-Lampe (die Selbstprobe schaltet nie).
+        if (!$eigen && (array_key_exists('on', $d) || array_key_exists('bri', $d))) {
+            $gs = ax_hue_sperre_pruefen($lage, 'Loxone Probe', '/lights/1/state', $ip);
+            if ($gs !== null) { return array(200, 'application/json', ax_hue_json($gs)); }
+        }
         $erg = array();
         if (array_key_exists('bri', $d)) {
             if (is_int($d['bri']) && $d['bri'] >= 1 && $d['bri'] <= 254) {
@@ -389,6 +394,8 @@ function ax_hue_anfrage($methode, $pfad, $rumpf, $ip, $eigen, $eigene_ip)
         $hl = ax_hue_lampe_finden($lage, $mm[1]);
         if ($hl !== null) {
             if ($eigen) { return $fehler(1, $rest, 'unauthorized user'); }   // die Selbstprobe schaltet nie
+            $gs = ax_hue_sperre_pruefen($lage, 'Lampe "' . $hl['name'] . '" (' . $hl['kuerzel'] . ')', $rest, $ip);   // 1.0.20 (1.1-a)
+            if ($gs !== null) { return array(200, 'application/json', ax_hue_json($gs)); }
             return array(200, 'application/json', ax_hue_json(ax_hue_lampe_put($hl, $rumpf, $ip)));
         }
     }
@@ -402,7 +409,8 @@ function ax_hue_anfrage($methode, $pfad, $rumpf, $ip, $eigen, $eigene_ip)
  * ax_hue_lage(): auf dem LoxBerry ax_hue_lb_lage() aus ax_lib.php, im
  * Container ax_hue_container_lage() aus ax_hue_container.php.
  *
- *   lage = lampen (id, name, art schalter|licht|dimmer, kuerzel), probe (0/1),
+ *   lage = lampen (id, name, art schalter|licht|dimmer|taster, kuerzel; nur aktive), probe (0/1),
+ *          sperre (ein, bekannt, gesperrt; 1.0.20),
  *          echos (freigegebene IPs, leer = alle im Heimnetz), netze
  *          (Heimnetz als Liste array(netz, maske)), wirt (Adresse des
  *          LoxBerry am Docker-Netz bridge, sonst ''), mqtt_ein, praefix,
@@ -481,6 +489,22 @@ function ax_hue_zugang($ip, $ua, $lokal, array $lage)
         if (($z & $n[1]) === $n[0]) { return 'echo'; }
     }
     return '';
+}
+
+/**
+ * 1.0.20 (Entwurf 1.1-a, E3): wirkt die Sperre aus Loxone auch auf Alexa -> Loxone (Haken "Sperre gilt auch fuer
+ * Alexa -> Loxone" und ein von Loxone gesetztes "gesperrt")? Dann bekommt der Echo den Hue-Fehler 901 - dieselbe Art
+ * Antwort wie bei der Minutenbremse -, es geht nichts an MQTT, eine Protokollzeile und der Zaehler "gesperrt" im
+ * Messstand (Reiter Test). Ein unbekannter Zustand gilt als offen (E3). Was der Echo bei 901 sagt, ist nicht gemessen.
+ * Rueckgabe null (offen) oder die Antwortliste der Hue-Schnittstelle.
+ */
+function ax_hue_sperre_pruefen(array $lage, $was, $adr, $ip)
+{
+    $s = (isset($lage['sperre']) && is_array($lage['sperre'])) ? $lage['sperre'] : array();
+    if (empty($s['ein']) || empty($s['gesperrt'])) { return null; }
+    ax_hue_zaehlen('gesperrt', $ip);
+    ax_log('INFO', 'Hue: ' . $was . ' von ' . $ip . ' abgewiesen - die Sperre aus Loxone gilt auch fuer Alexa (Hue-Fehler 901, kein MQTT).');
+    return array(array('error' => array('type' => 901, 'address' => $adr, 'description' => 'Internal error, locked by Loxone')));
 }
 
 /** Eine abgewiesene Anfrage zaehlen (Reiter Test) und je Adresse einmal je Lauf protokollieren. */

@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 1.0.19
+Version 1.0.20
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -15,6 +15,27 @@ Hue-Probe auf eigener Netzadresse (ab Werk aus).
 > Routinen, Musik-Probe, Radio je Zone an einem Echo und die Hue-Nachbildung
 > mit den Lampen für Alexa – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 > Was noch aussteht, steht unter „Noch am Gerät zu messen“.
+
+## Neu in 1.0.20
+
+Alle neuen Funktionen sind ab Werk aus; wer nichts einschaltet, merkt nur die neuen Hilfetexte und die neue Prüfzeile im Reiter Test.
+
+- **Neu – Sperre gilt auch für Alexa → Loxone** (Reiter Einstellungen, Abschnitt Sperre aus Loxone, eigener Haken, ab Werk aus). Bis 1.0.19 hielt die Sperre aus Loxone nur Ansagen und Ankündigungen an; Schaltbefehle eines Echos an die Lampen für Alexa gingen immer durch. Mit dem Haken bekommt der Echo bei gesetzter Sperre den Hue-Fehler 901 – dieselbe Antwort wie bei der Minutenbremse –, an MQTT geht nichts, das Protokoll nennt jeden abgewiesenen Befehl, und der Reiter Test zählt sie. Das gilt auch für die Probe-Lampe. Der Haken wirkt nur zusammen mit „Sperre aus Loxone annehmen“. Hat Loxone noch keinen Wert gesetzt, gilt „offen“, und der Reiter Test zeigt eine gelbe Zeile. Der Container der eigenen Netzadresse sieht nur seinen Ordner `data/plugins/alexang/hue`; das Plugin legt dort deshalb eine Kopie des Zustands ab (`loxsperre.json`), bei jedem Setzen der Sperre und mit jeder Container-Konfiguration. Was der Echo beim Fehler 901 sagt, ist nicht gemessen (siehe „Noch am Gerät zu messen“, Nr. 23). Gemessen auf dem Arbeitsrechner an der Nachbildung im Container-Betrieb (WSL, PHP 8.3) mit einer Broker-Attrappe: gesperrt bekamen Licht, Dimmer und Probe-Lampe den Fehler 901, und beim Broker kam nichts an; offen, ohne gesetzten Wert und ohne den Haken schaltete sie wie bisher. Die Fassung 1.0.19 schaltete in denselben Fällen durch. Die Bibliothek ist unter PHP 7.4 und 8.4 geprüft; am Gerät nicht gemessen.
+- **Neu – Haken „aktiv“ je Lampe.** Eine Lampe ohne den Haken bleibt in der Liste, die Nachbildung zeigt sie dem Echo aber nicht und nimmt keine Befehle für sie an. Lampen aus einer früheren Fassung gelten als aktiv, sie verhalten sich also wie bisher; eine Sicherung einer früheren Fassung bringt ihre Lampen aktiv zurück.
+- **Neu – Textbefehle** (`aktion=textbefehl&token=<Aktionstoken>&name=<Name>[&geraet=…]`, ab Werk aus). Alexa führt einen Satz aus, als wäre er am Echo gesprochen. Der Endpunkt nimmt nie einen freien Satz an, nur den Namen eines Eintrags der Freigabeliste im Reiter Einstellungen (je Zeile `name = Satz`, höchstens 20, je Satz höchstens 200 Zeichen), und nur mit dem Aktionstoken; ein mitgeschickter Parameter `text` wird abgewiesen. Mit dem Haken stehen die Einträge auch in der Vorlage „Alexa NG Aktionen“. Wie bei Routinen gelten die Sperre aus Loxone und die Ruhezeit nicht. Der Befehl hat den Aufbau aus dem Plugin Alexa2Lox (`Alexa.TextCommand`); am eigenen Echo nicht gemessen.
+- **Neu – Knopf „Geräte suchen“** im Reiter Test (Haken im Reiter Einstellungen, ab Werk aus): Alexa sucht über die Amazon-Anmeldung des Plugins nach neuen Geräten. Die Adresse stammt aus fremdem Code und ist am eigenen Konto nicht gemessen; ob danach ein Echo im Heimnetz sucht, zeigt der Reiter Test an der Zahl der Suchen. **„In Alexa löschen“ gibt es nicht:** Am 18.11.2026 hat das Plugin die Geräteliste über seinen Zugang nur gelesen. `GET /api/phoenix` antwortete mit HTTP 299 und leerem Inhalt, die Liste der Smart-Home-Geräte unter `/api/behaviors/entities` nannte 13 Geräte, aber keine Lampe dieser Nachbildung. Ohne sichere Erkennung der eigenen Lampen könnte ein Löschen fremde Geräte treffen; Lampen löschen Sie weiter in der Alexa-App.
+- **Neu – Knopf „Hue-Nachbildung neu starten“** im Reiter Test, mit Rückfrage. Nachgesehen wird die Startzeit vorher und nachher: beim Container die Startzeit laut Docker, beim Dienst auf dem LoxBerry die Startzeit im Messstand. Im aLoxBerry-Faden half ein Neustart, als Alexa ein Gerät plötzlich „nicht unterstützt“ nannte.
+- **Neu – Prüfzeile „Ist die Systemuhr synchron?“** im Reiter Test, nur ein Hinweis. Verglichen wird mit der Kopfzeile `Date` der letzten Antwort von Amazon; ab 30 s Abweichung wird die Zeile gelb. `timedatectl` steht nur dabei: Am Gerät des Hausherrn meldete es am 18.11.2026 `NTPSynchronized=no`, während die Uhr auf eine Sekunde mit Amazon übereinstimmte (DietPi gleicht die Uhr selbst ab). Ob eine falsche Uhr die Amazon-Anmeldung bricht, ist nicht gemessen.
+- **Behoben – Taster/Szene im Container:** Bei eigener Netzadresse (Container) machte eine Lampe der Art Taster/Szene die ganze Konfiguration des Containers ungültig – die Prüfung im Container kannte die Art nicht, die es seit 1.0.6 gibt. Die Nachbildung endete dann mit dem Grund `HUE_KONFIG`. Gemessen auf dem Arbeitsrechner (WSL, PHP 8.3): Mit einer Taster-Lampe startete die Nachbildung von 1.0.19 nicht („hue_container.json fehlt oder ist ungueltig“), die von 1.0.20 startete und zeigte die Taster-Lampe als Steckdose. Am Gerät nicht gemessen, dort steht keine Taster-Lampe.
+- **Hilfe:** neue Abschnitte „Benennung und Gerätesuche“, „Was Alexa NG lokal kann – und was nicht“ (mit den Messungen am Echo vom 18.11.2026) und „Rezept: Loxone und Alexa-Routinen“ im Reiter Einstellungen und in der Hilfe; ein Warnsatz beim Haken „bewusst freigeben“: Es wird kein Sicherheitscode abgefragt. Siehe auch „Was Alexa NG lokal kann – und was nicht“ weiter unten.
+
+### Am Echo gemessen am 18.11.2026 (Echo ohne Alexa+, Alexa NG 1.0.16, Protokoll am Gerät mitgelesen)
+
+- „Alexa, Licht aus“ im Raum: angekommen ist nur die Lampe der Art Licht (`ein=0`); ob die Lampe der Art Dimmer in derselben Gruppe lag, ist nicht sicher.
+- Am Dimmer: „schalte … ein“ ergab `ein=1`, „stelle … auf 50 Prozent“ ergab `ein=1 helligkeit=50`. „Öffne …“, „schließe …“, „fahre … hoch“, „stelle … auf 21 Grad“ und „erhöhe … um 10 Prozent“ beantwortete Alexa mit „Ich weiß nicht, wie ich dir dabei helfen kann“; im Protokoll kam nichts an.
+- „Ist … an?“ beantwortete Alexa; „Wie hell ist …?“ mit „Das wird noch nicht unterstützt“.
+- Auslöser für Routinen in der Alexa-App: Stimme, Zeitplan, Smart Home, Geräuscherkennung, Wecker, Echo Button – kein „Anwesenheit“ oder „Personen erkannt“. Ob eine Lampe dieser Nachbildung als Auslöser „Smart Home“ angeboten wird, ist nicht gemessen.
+- Folge: kein Behelf für Jalousien als Dimmer (Entscheidung E5 nach dieser Messung).
 
 ## Neu in 1.0.19
 
@@ -871,6 +892,18 @@ in allen drei Arten – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 * **Reiter Test:** je Lampe Zustand (mit Quelle Alexa oder Loxone), letzte Abfrage und letzte Schaltung (Zeit,
   Echo-Adresse, Wert), MQTT gesendet, nicht gesendet, wegen gleichen Werts unterdrückt oder gebremst; dazu die
   abgewiesenen Absender und die Lage des Abos für die Rückmeldung.
+
+### Was Alexa NG lokal kann – und was nicht
+
+Alexa NG arbeitet in beide Richtungen **ohne Skill, ohne eigene Cloud und ohne Fernzugriff auf den Miniserver**: Loxone → Alexa über die Amazon-Anmeldung (Ansagen, Lautstärke, Routinen, Radio), Alexa → Loxone über die Hue-Nachbildung im Heimnetz und MQTT. Fällt ein fremder Cloud-Dienst aus oder sperrt Loxone den Fernzugriff, schalten die Lampen weiter; die Ansagen hängen nur an Amazon.
+
+- **Benennung:** keinen Raum- oder Gruppennamen der Alexa-App als Gerätenamen und keinen Namen, der nur aus einem Raumnamen besteht; kurze, eindeutige Namen. Neue Lampen per Sprache suchen lassen („Alexa, suche neue Geräte“), einige Minuten warten, notfalls die Alexa-App neu starten oder ihren Zwischenspeicher leeren. Nur ein LoxBerry mit eingeschalteter Nachbildung im Heimnetz.
+- **Gerätearten:** Über Hue kennt Alexa nur Lampen und Steckdosen. Jalousien gehen nicht – „öffne/schließe“ versteht Alexa bei einer Lampe nicht (gemessen 18.11.2026), und ein Prozentwert unter einem Raumbefehl für Licht wäre gefährlich. Für Beschattung eine Lampe der Art Taster/Szene, die in Loxone eine Szene auslöst.
+- **Lokal nicht möglich:** Sensoren als Auslöser von Alexa-Routinen, die Frage nach der Ist-Temperatur, ein echtes Thermostat, Tor oder Schloss mit gesprochenem Sicherheitscode. Das geht nur über einen Smart-Home-Skill mit Cloud oder über Matter; Matter ist nicht eingebaut.
+- **Tor und Garage:** Namen mit Tür, Tor, Garage, Alarm oder Schloss brauchen den Haken „bewusst freigeben“. Ein Sicherheitscode wird nicht abgefragt – wer einen freigegebenen Echo erreicht, kann schalten.
+- **aLoxBerry** ist ein Cloud-Skill mit eigener Bridge und vielen Gerätearten; Ansagen und Routinen aus Loxone löst es nicht aus. Wer beide nutzt: denselben Loxone-Baustein nicht in beiden freigeben.
+- **Rezept Loxone → Alexa-Routine:** Routinen direkt aus Loxone starten (Freigabeliste, `aktion=routine`). Ob die Alexa-App eine Lampe dieser Nachbildung als Auslöser „Smart Home“ anbietet und eine Routine startet, sobald Loxone über `…/status` einen neuen Zustand meldet, ist nicht gemessen.
+- **Rezept Alexa-Routine → Loxone:** in einer Routine eine Lampe der Art Schalter oder Taster/Szene als Aktion schalten; Loxone bekommt `…/ein`. Ob eine Taster-Lampe aus einer Routine sicher auslöst, ist nicht gemessen.
 
 ### Aus anderen Plugins
 
