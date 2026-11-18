@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 1.0.18
+Version 1.0.19
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -15,6 +15,12 @@ Hue-Probe auf eigener Netzadresse (ab Werk aus).
 > Routinen, Musik-Probe, Radio je Zone an einem Echo und die Hue-Nachbildung
 > mit den Lampen für Alexa – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 > Was noch aussteht, steht unter „Noch am Gerät zu messen“.
+
+## Neu in 1.0.19
+
+- **Behoben – Takt lief während des Updates:** Während einer Aktualisierung ruht jetzt der Fünf-Minuten-Takt. Bis 1.0.18 lief er in der Lücke zwischen dem Löschen der alten Fassung und `postinstall.sh` und legte den Datenordner mit `takt.json`, `befehle/` samt Optionsdateien und Sperrdatei neu an. Ist die Marke eine Stunde oder älter, liegt sie in der Zukunft oder enthält sie keine Unixzeit, gilt sie nicht, damit eine abgebrochene Aktualisierung den Takt nicht dauerhaft stilllegt. Alle Plugins dieser Reihe fragen die Marke mit demselben Block ab. Es wirkt schon beim Update auf diese Fassung, denn der Installer legt die Takte der neuen Fassung vor der Lücke an, und das `preupgrade.sh` der neuen Fassung legt die Marke an. Gemessen in einer Nachstellung des Update-Ablaufs auf dem Arbeitsrechner (WSL); am Gerät nicht gemessen.
+- **Geändert – Befehlsbrücke 1.0.3:** Während einer Aktualisierung legen Wächter und Start der Befehlsbrücke nichts mehr an. Bis 1.0.2 entstanden in der Lücke `befehle/`, die Optionsdateien und die Sperrdatei, bevor die Marke den Start abwies. Gemessen in einer Nachstellung auf dem Arbeitsrechner (WSL); am Gerät nicht gemessen.
+- **Geändert – Prüfung der Sprachausgabe über das gemeinsame Sprachmodul 1.4.4:** Die Einstellungen der Sprachausgabe in der Konfiguration prüft jetzt das gemeinsame Modul. Unbekannte Einträge werden wie bisher verworfen und genannt. Ist die Einstellung der Sprachausgabe ungültig, bleibt die Sprachausgabe jetzt aus; bis 1.0.18 galt dann die Vorgabe. Der Hinweis oben auf der Seite nennt verworfene und jeden ungültigen Eintrag mit den gemeinsamen Sätzen des Moduls, das Protokoll nennt die Lage einmal je Änderung. Ein Sprachtext, den nur die frühere eigene Prüfung brauchte, ist entfallen. Gemessen mit Handproben auf dem Arbeitsrechner unter PHP 7.4 und 8.4 (gültiger Block, unbekannter Eintrag, ungültiger Wert, beides, ohne Block); am Gerät nicht gemessen.
 
 ## Neu in 1.0.18
 
