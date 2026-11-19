@@ -70,7 +70,8 @@ function ax_ui_felder($formular)
                      'hue_probe_lampe', 'hue_l_id', 'hue_l_name', 'hue_l_art', 'hue_l_kuerzel', 'hue_l_frei', 'hue_echos',
                      'hue_l_aktiv', 'hue_sperre_ein', 'hue_suchen_ein', 'textbefehl_ein', 'textbefehle_frei');   // 1.0.20
     }
-    if ($formular === 'mqtt') { return array('mqtt_ein', 'mqtt_praefix', 'befehle_mqtt_ein', 'befehle_mqtt_steuern', 'befehle_routine_ein'); }
+    if ($formular === 'mqtt') { return array('mqtt_ein', 'mqtt_praefix', 'befehle_mqtt_ein', 'befehle_mqtt_steuern', 'befehle_routine_ein',
+                                             'befehle_textbefehl_ein'); }   // 1.0.21
     return array();
 }
 function ax_ui_bean($feld = null, $idx = null)
@@ -664,7 +665,7 @@ if ($ax_post && isset($_POST['save_mqtt'])) {
     $ax_alt = ax_config();
     $ax_neu = $ax_alt;
     $ax_hw = array();
-    foreach (array('mqtt_ein', 'befehle_mqtt_ein', 'befehle_mqtt_steuern', 'befehle_routine_ein') as $ax_k) { $ax_neu[$ax_k] = empty($_POST[$ax_k]) ? 0 : 1; }
+    foreach (array('mqtt_ein', 'befehle_mqtt_ein', 'befehle_mqtt_steuern', 'befehle_routine_ein', 'befehle_textbefehl_ein') as $ax_k) { $ax_neu[$ax_k] = empty($_POST[$ax_k]) ? 0 : 1; }
     $ax_g = '';
     $ax_pr = ax_wert_pruefen('mqtt_praefix', ax_ui_post('mqtt_praefix'), $ax_g);
     if ($ax_pr === null) {
@@ -691,7 +692,7 @@ if ($ax_post && isset($_POST['save_mqtt'])) {
     ax_hue_docker_datei_nachziehen($ax_neu);   // Nr. 41: MQTT-Werte fuer den Container (ohne Docker-Aufruf)
     ax_log('INFO', 'MQTT gespeichert (ein=' . $ax_neu['mqtt_ein'] . ', Praefix ' . $ax_neu['mqtt_praefix']
         . ', Befehle ' . $ax_neu['befehle_mqtt_ein'] . ', Echos steuern ' . $ax_neu['befehle_mqtt_steuern']
-        . ', Routine ' . $ax_neu['befehle_routine_ein'] . ').');
+        . ', Routine ' . $ax_neu['befehle_routine_ein'] . ', Textbefehl ' . $ax_neu['befehle_textbefehl_ein'] . ').');
     // Gruppe 6a (1.0.6): die Befehlsbruecke nachziehen (Direktstart; der Waechter im Takt startet hoechstens alle
     // 600 s neu) und sagen, was geschah. Ein Praefixwechsel startet sie neu (neues Abo).
     list($ax_bs, $ax_bt) = ax_bruecke_schalten($ax_alt['mqtt_praefix'] !== $ax_neu['mqtt_praefix']);
@@ -1632,6 +1633,8 @@ $ax_hl_n = min($ax_hl_n, AX_HUE_LAMPEN_MAX + 3);
 <div class="sm-small"><?= ax_e(ax_t('MQTT.STEUERN_HILFE')) ?></div>
 <label class="sm-haken"><input data-role="none" type="checkbox" name="befehle_routine_ein" value="1"<?= ax_ui_h('befehle_routine_ein', !empty($ax_cfg['befehle_routine_ein'])) ? ' checked' : '' ?><?= ax_ui_m('befehle_routine_ein') ?>> <?= ax_e(ax_t('MQTT.L_ROUTINE')) ?></label>
 <div class="sm-small"><?= ax_e(ax_t('MQTT.ROUTINE_HILFE')) ?></div>
+<label class="sm-haken"><input data-role="none" type="checkbox" name="befehle_textbefehl_ein" value="1"<?= ax_ui_h('befehle_textbefehl_ein', !empty($ax_cfg['befehle_textbefehl_ein'])) ? ' checked' : '' ?><?= ax_ui_m('befehle_textbefehl_ein') ?>> <?= ax_e(ax_t('MQTT.L_TEXTBEFEHL')) ?></label>
+<div class="sm-small"><?= ax_e(ax_t('MQTT.TEXTBEFEHL_HILFE')) ?></div>
 <div class="sm-knopfreihe">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save_mqtt" value="1"><?= ax_e(ax_t('SEITE.K_SPEICHERN')) ?></button>
 </div>
@@ -1661,6 +1664,8 @@ $ax_hl_n = min($ax_hl_n, AX_HUE_LAMPEN_MAX + 3);
 <tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/<name>/ankuendigen') ?></span></td><td><?= ax_e(ax_t('MQTT.N_TEXT')) ?></td></tr>
 <tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/gruppe/<gruppe>/sprechen') ?></span></td><td><?= ax_e(ax_t('MQTT.N_TEXT')) ?></td></tr>
 <tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/routine') ?></span></td><td><?= ax_e(ax_t('MQTT.N_ROUTINE')) ?></td></tr>
+<tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/textbefehl') ?></span></td><td><?= ax_e(ax_t('MQTT.N_TEXTBEFEHL')) ?></td></tr>
+<tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/<name>/textbefehl') ?></span></td><td><?= ax_e(ax_t('MQTT.N_TEXTBEFEHL_GERAET')) ?></td></tr>
 <tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/sperre') ?></span></td><td><?= ax_e(ax_t('MQTT.N_SPERRE')) ?></td></tr>
 <tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/radio/<zone>') ?></span></td><td><?= ax_e(ax_t('MQTT.N_RADIO')) ?></td></tr>
 <tr><td><span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/radio/<zone>/laut') ?></span></td><td><?= ax_e(ax_t('MQTT.N_RADIO_LAUT')) ?></td></tr>
@@ -2085,7 +2090,7 @@ else {
 }
 // 1.0.20 (Abgleich Nr. 25): Systemuhr gegen die Uhr von Amazon - nur melden, nichts blockieren.
 list($ax_s, $ax_a) = ax_uhr_pruefzeile();
-$ax_zeile($ax_s, ax_t('TEST.F_UHR'), $ax_a);
+$ax_pr[] = array($ax_s, uhr_frage(array('t' => 'ax_t')), $ax_a, $ax_s);   // Uhrmodul (Frage 95): Zeichen aus uhr_zeichen()
 $ax_eb = ax_config_erstbefund();
 $ax_heilzeile = in_array('kaputt', $ax_eb['schritte'], true) || in_array('kaputt_fest', $ax_eb['schritte'], true) ? 0
               : (in_array('aus_zweit', $ax_eb['schritte'], true) || in_array('token_aus_zweit', $ax_eb['schritte'], true) ? 2 : 1);
@@ -2126,7 +2131,8 @@ $ax_klasse = $ax_zahl[0] ? 'sm-alert sm-err' : (($ax_zahl[-1] || $ax_zahl[2]) ? 
 <tr><th style="width:5%"></th><th style="width:35%"><?= ax_e(ax_t('TEST.T_FRAGE')) ?></th><th style="width:60%"><?= ax_e(ax_t('TEST.T_ANTWORT')) ?></th></tr>
 <?php foreach ($ax_pr as $ax_z) { ?>
 <tr><td style="text-align:center;"><?php
-    if ($ax_z[0] === 1) { echo '<span class="sm-an">&#10004;</span>'; }
+    if (isset($ax_z[3])) { echo uhr_zeichen($ax_z[3]); }
+    elseif ($ax_z[0] === 1) { echo '<span class="sm-an">&#10004;</span>'; }
     elseif ($ax_z[0] === 0) { echo '<span class="sm-aus">&#10008;</span>'; }
     elseif ($ax_z[0] === 2) { echo '<span class="sm-gelb">&#9679;</span>'; }
     elseif ($ax_z[0] === 3) { echo '<span class="sm-grau">&#9679;</span>'; }

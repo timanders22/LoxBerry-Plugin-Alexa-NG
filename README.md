@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 1.0.20
+Version 1.0.21
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -15,6 +15,14 @@ Hue-Probe auf eigener Netzadresse (ab Werk aus).
 > Routinen, Musik-Probe, Radio je Zone an einem Echo und die Hue-Nachbildung
 > mit den Lampen für Alexa – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 > Was noch aussteht, steht unter „Noch am Gerät zu messen“.
+
+## Neu in 1.0.21
+
+Die neue Funktion ist ab Werk aus; wer nichts einschaltet, merkt nur den neuen Haken im Reiter MQTT.
+
+- **Neu – Textbefehle auch über MQTT** (Thema `alexang/befehl/textbefehl`, Nutzlast der Name eines Eintrags der Freigabeliste, ab Werk aus). Derselbe Textbefehl wie über HTTP (`aktion=textbefehl`), über die gemeinsame Befehlsbrücke. Er wirkt nur mit allen Haken: „Befehle über MQTT annehmen“ und „Echos über MQTT steuern“ wie bei den übrigen Befehlen, dazu der neue dritte Haken „Textbefehl per MQTT erlauben“ (Reiter MQTT, Bauart „Routine per MQTT erlauben“, bei jedem Befehl frisch gelesen) und „Textbefehle aus Loxone annehmen“ im Reiter Einstellungen. Die Brücke nimmt nur einen Namen aus Kleinbuchstaben, Ziffern und `_` an, höchstens 40 Byte, nie einen Satz; es gilt das Standardgerät, und gleiche Namen sperrt sie 10 s lang wie bei der Routine. Jede Nachricht bekommt eine Quittung, etwa `abgelehnt: TEXTBEFEHL_MQTT_AUS`. Die Vorlage „Alexa NG MQTT-Befehle“ (Reiter Einbindung in Loxone) trägt mit dem Haken „Textbefehle aus Loxone annehmen“ je Eintrag der Freigabeliste einen Befehl „Alexa NG Textbefehl <name> (MQTT)“, ohne Token. Ein Aktionstoken verlangt der MQTT-Weg nicht; an seine Stelle treten die Anmeldung am Broker und die Haken, wie bei allen Befehlen über die Brücke. Gemessen auf dem Arbeitsrechner (WSL mit PHP 8.3, Windows mit PHP 7.4 und 8.4) am Rechenkern der Brücke mit 14 Fällen (jeder Haken einzeln aus, unbekannter Name, eingeschleuster Satz, eingeschleuster Befehl, Zeilenumbruch, zu lang, leer, zurückbehalten, Unterthema, ohne Amazon-Anmeldung, Wiederholung) und die Fassung 1.0.20 zur Gegenprobe; ein angenommener Textbefehl am eigenen Echo ist nicht gemessen.
+- **Neu – Textbefehl an einen bestimmten Echo über MQTT** (Thema `alexang/befehl/<echo>/textbefehl`, ab Werk aus). Das Gerät steht im Thema wie bei `alexang/befehl/<echo>/sprechen` – derselbe Name, wie ihn der Reiter Geräte zeigt. Sonst gilt alles wie beim Thema ohne Gerät: dieselben vier Haken, dieselbe Freigabeliste, nur ein Name, nie ein Satz, höchstens 40 Byte, Sperrzeit 10 s je Thema. Ein Textbefehl geht an genau ein Gerät: `alle` lehnt das Plugin mit `EIN_GERAET` ab, ein unbekannter Name mit `GERAET_UNBEKANNT`, das Wort `gruppe` ist als Gerät nicht möglich. Die Vorlage „Alexa NG MQTT-Befehle“ trägt mit dem Haken „Textbefehle aus Loxone annehmen“ je freigegebenem Textbefehl zusätzlich einen Befehl je Echo („Alexa NG Textbefehl <name> <echo> (MQTT)“), ohne Token. Gemessen auf dem Arbeitsrechner (WSL mit PHP 8.3, Windows mit PHP 7.4 und 8.4) am Rechenkern der Brücke mit 23 Fällen, darunter jeder Haken einzeln aus, eingeschleuster Satz und Befehl, das Gerät `gruppe`, ein Gerät in Großbuchstaben (die Brücke verwirft das Thema ohne Quittung), mit nachgebildeter Anmeldung und Geräteliste ein unbekanntes Gerät, `alle` und ein bekanntes Gerät bis zur Stundengrenze – ohne Verbindung zu Amazon –, dazu die bestehenden Themen `textbefehl` und `<echo>/sprechen` unverändert, und die Fassung ohne diese Änderung zur Gegenprobe. Ein angenommener Textbefehl an einem bestimmten Echo ist nicht gemessen.
+- **Geändert – Prüfzeile „Ist die Systemuhr synchron?“ über das gemeinsame Uhrmodul:** Die Zeile aus 1.0.20 kommt jetzt aus dem gemeinsamen Modul, das alle Plugins mit Anmeldung bei einer Cloud tragen. Die Ablage `data/uhr.json` bleibt; eine Ablage aus 1.0.20 wird weiter gelesen. Die Kopfzeile Date gilt nur noch in der genormten Form (am 19.11.2026 an vier Adressen von Amazon gemessen: Amazon schickt diese Form). Neu: eine Messung, deren Zeit in der Zukunft liegt, ist ein gelber Hinweis; eine unlesbare Ablage hat einen eigenen Satz; das Zeichen der Zeile ist in allen Plugins gleich. Der Satz über das Forum entfällt, sechs Sprachtexte aus [TEST] sind durch den Abschnitt [UHR] ersetzt. Gemessen auf dem Arbeitsrechner: Selbsttest des Moduls unter PHP 7.4, 8.4 und 8.5 und mit Python, Kreuzprobe PHP/Python, Syntax aller geänderten Dateien; die Messung gegen die echte Cloud und am Gerät ist nicht gemessen.
 
 ## Neu in 1.0.20
 
@@ -986,9 +994,10 @@ sagt, welche Fassung läuft.
 **Befehle** (Reiter MQTT, ab Werk aus) gehen seit 1.0.6 über die gemeinsame **Befehlsbrücke**: Haken
 „Befehle über MQTT annehmen“; Ansagen, Ankündigungen, Lautstärke, Radio und Routinen brauchen dazu „Echos über
 MQTT steuern“ (fehlt er in einer Konfiguration bis 1.0.5, gilt der Wert des ersten Hakens), Routinen außerdem
-„Routine per MQTT erlauben“. Jede Nachricht bekommt eine Quittung auf `alexang/befehl/<name>/quittung`
-(`angenommen` oder `abgelehnt: <Grund>`, nie retained). Sperrzeiten: Routine 10 s, sonst 0 s (die Bremsen des
-Plugins gelten weiter). Die Brücke abonniert:
+„Routine per MQTT erlauben“, Textbefehle (seit 1.0.21) außerdem „Textbefehl per MQTT erlauben“ und „Textbefehle
+aus Loxone annehmen“ (Reiter Einstellungen). Jede Nachricht bekommt eine Quittung auf `alexang/befehl/<name>/quittung`
+(`angenommen` oder `abgelehnt: <Grund>`, nie retained). Sperrzeiten: Routine und Textbefehl 10 s, sonst 0 s (die
+Bremsen des Plugins gelten weiter). Die Brücke abonniert:
 
 | Thema | Nutzlast |
 |---|---|
@@ -997,6 +1006,8 @@ Plugins gelten weiter). Die Brücke abonniert:
 | `alexang/befehl/<name>/lautstaerke` | 0–100 |
 | `alexang/befehl/gruppe/<g>/sprechen` | Text |
 | `alexang/befehl/routine` | Name (nur mit eigenem Haken und Freigabe) |
+| `alexang/befehl/textbefehl` | Name eines freigegebenen Textbefehls, nie ein Satz (nur mit beiden eigenen Haken und Freigabe; Standardgerät) |
+| `alexang/befehl/<name>/textbefehl` | wie `alexang/befehl/textbefehl`, an diesen Echo statt an das Standardgerät (seit 1.0.21; nicht `alle`) |
 | `alexang/befehl/sperre` | `1` sperren, `0` öffnen (nur mit Haken „Sperre aus Loxone annehmen“) |
 | `alexang/befehl/radio/<zone>` | Sendernummer; `0` oder `stopp` hält an; `<zone>` ist `1`–`24` oder `alle` (nur mit Haken „Radio je Zone erlauben“) |
 | `alexang/befehl/radio/<zone>/laut` | 0–100 |

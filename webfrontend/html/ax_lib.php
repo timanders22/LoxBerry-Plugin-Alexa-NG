@@ -5,6 +5,7 @@ require_once __DIR__ . '/sprachausgabe.php';     // Stamm, fuer die Vorgaben der
  * Laden nur Funktionen an und antwortet bei direktem Aufruf mit 403. Die Beschreibung dieser Linie steht in
  * ax_sicherung_beschreibung(). */
 require_once __DIR__ . '/sicherung.php';
+require_once __DIR__ . '/uhrabgleich.php';   // gemeinsames Uhrmodul (Frage 95), Abschrift von Werkzeuge/gemeinsam/uhrabgleich.php
 /**
  * Alexa NG - gemeinsame Bibliothek (Oberflaeche, Endpunkt, Takt, Befehlsabo)
  *
@@ -66,7 +67,6 @@ define('AX_HUE_NAME_MAX', 32);       // Fassung 2: Zeichen je Lampenname
 define('AX_HUE_ECHOS_MAX', 20);
 define('AX_TEXTBEFEHLE_MAX', 20);        // 1.0.20 (1.2-d): Eintraege der Freigabeliste fuer Textbefehle
 define('AX_TEXTBEFEHL_ZEICHEN_MAX', 200); // 1.0.20: Zeichen je Satz
-define('AX_UHR_GRENZE_S', 30);           // 1.0.20: ab dieser Abweichung gegen Amazon eine gelbe Zeile (nur Hinweis)      // Fassung 2: freigegebene Echo-Adressen
 
 /* ==================================================================
  * Pfade
@@ -342,6 +342,8 @@ function ax_vorgaben()
         // (ax_uebergang(): in ax_config(), in der Selbstheilung und in der Sicherung).
         'befehle_mqtt_steuern' => 0,
         'befehle_routine_ein' => 0,
+        // 1.0.21 (Frage 96): dritte Stufe fuer Textbefehle ueber MQTT, Bauart befehle_routine_ein (ab Werk aus).
+        'befehle_textbefehl_ein' => 0,
         // Zwei Token (E4): das Sprechtoken fuer Loxone und andere Plugins,
         // das Aktionstoken zusaetzlich fuer Routinen und die Geraeteliste
         // mit Seriennummern. Beide entstehen beim ersten Oeffnen der
@@ -515,6 +517,7 @@ function ax_wert_pruefen($schluessel, $wert, &$grund = '')
         case 'befehle_mqtt_ein':
         case 'befehle_mqtt_steuern':
         case 'befehle_routine_ein':
+        case 'befehle_textbefehl_ein':
         case 'sperre_ein':
         case 'musik_ein':
         case 'radio_ein':
@@ -1496,10 +1499,8 @@ function ax_http($methode, $url, array $kopf = array(), $rumpf = null, $zeit = A
             if (preg_match('/^Set-Cookie:\s*([^=;\s]+)=([^;\r\n]*)/i', $zeile, $m)) {
                 $kekse[$m[1]] = trim($m[2], '"');
             }
-            if (preg_match('/^Date:\s*([A-Za-z0-9 ,:\-]{20,40})\s*$/i', $zeile, $m)) {
-                $t = strtotime($m[1]);
-                if ($t !== false && $t > 0) { $datum = $t; }
-            }
+            $t = uhr_kopfzeile($zeile);   // gemeinsames Uhrmodul: nur die genormte Form (gemessen 19.11.2026 an Amazon)
+            if ($t > 0) { $datum = $t; }
             return strlen($zeile);
         },
     ));
@@ -1527,23 +1528,17 @@ function ax_http($methode, $url, array $kopf = array(), $rumpf = null, $zeit = A
 function ax_uhr_merken(array $r)
 {
     if (empty($r['datum']) || ax_nur_lesen()) { return; }
-    $mitte = time() - (int) round(((int) $r['dauer_ms']) / 2000);
-    $ab = $mitte - (int) $r['datum'];
     $p = ax_paths();
-    if ($p['lbhome'] === '' || !is_dir($p['datadir'])) { return; }
-    $f = $p['datadir'] . '/uhr.json';
-    $alt = ax_json_lesen($f);
-    if (is_array($alt) && isset($alt['abweichung_s'], $alt['zeit']) && abs((int) $alt['abweichung_s'] - $ab) < 2 && time() - (int) $alt['zeit'] < 600) { return; }
-    ax_write_json($f, array('abweichung_s' => $ab, 'zeit' => time(), 'quelle' => 'alexa.' . AX_DOMAIN), 0644);
+    if ($p['lbhome'] === '') { return; }
+    uhr_merken($p['datadir'], (int) $r['datum'], (int) $r['dauer_ms'], 'alexa.' . AX_DOMAIN);   // Uhrmodul (Frage 95)
 }
 
 /** 1.0.20: die zuletzt gemessene Abweichung, oder null. */
 function ax_uhr_lesen()
 {
     $p = ax_paths();
-    $d = ax_json_lesen($p['datadir'] . '/uhr.json');
-    if (!is_array($d) || !isset($d['abweichung_s'], $d['zeit']) || !is_int($d['abweichung_s']) || !is_int($d['zeit'])) { return null; }
-    return array('abweichung_s' => $d['abweichung_s'], 'zeit' => $d['zeit']);
+    $d = uhr_lesen($p['datadir']);   // Uhrmodul (Frage 95)
+    return is_array($d) ? array('abweichung_s' => $d['abweichung_s'], 'zeit' => $d['zeit']) : null;
 }
 
 /**
@@ -1554,20 +1549,8 @@ function ax_uhr_lesen()
  */
 function ax_uhr_pruefzeile()
 {
-    $u = ax_uhr_lesen();
-    $ntp = '';
-    if (DIRECTORY_SEPARATOR !== '\\') {
-        list($rc, $out, ) = ax_aufruf(array('timedatectl', 'show', '-p', 'NTPSynchronized', '--value'), 5);
-        $w = trim((string) $out);
-        if ($rc === 0 && ($w === 'yes' || $w === 'no')) { $ntp = $w; }
-    }
-    $ntp_t = sprintf(ax_t('TEST.A_UHR_NTP'), $ntp !== '' ? $ntp : ax_t('TEST.A_UHR_NTP_UNBEKANNT'));
-    if ($u === null) { return array(-1, ax_t('TEST.A_UHR_NIE') . ' ' . $ntp_t); }
-    $alter = max(0, time() - $u['zeit']);
-    if (abs($u['abweichung_s']) <= AX_UHR_GRENZE_S) {
-        return array(1, sprintf(ax_t('TEST.A_UHR_OK'), $u['abweichung_s'], ax_dauer_text($alter)) . ' ' . $ntp_t);
-    }
-    return array(2, sprintf(ax_t('TEST.A_UHR_ABWEICHUNG'), $u['abweichung_s'], ax_dauer_text($alter), AX_UHR_GRENZE_S) . ' ' . $ntp_t);
+    $p = ax_paths();
+    return uhr_pruefzeile(array('ordner' => $p['datadir'], 'dienst' => 'Amazon', 't' => 'ax_t'));   // Uhrmodul (Frage 95)
 }
 
 /** Klasse einer Antwort (Bauplan 2.5): eine Zahl-Antwort, nie eine Textsuche. */
@@ -6900,7 +6883,8 @@ function ax_bb_liste()
  * [Dateiname, Inhalt] der Vorlage "Alexa NG MQTT-Befehle" (Entwurf ax 2.5 S3): eigener Virtueller Ausgang an den
  * UDP-Eingang des MQTT-Gateways (/dev/udp/<LoxBerry>/<Udpinport>), Titel "Alexa NG <Bedeutung> (MQTT)" - nie wie ein
  * Gateway-Eingang (Leerzeichen). Die Muster der Bruecke rollt die Linie selbst aus: Ansage und Lautstaerke je Echo,
- * Ansage an "alle" und je eigene Gruppe, Sperre, je freigegebene Routine, Radio je Zone und alle Zonen, die
+ * Ansage an "alle" und je eigene Gruppe, Sperre, je freigegebene Routine, je freigegebenen Textbefehl (seit 1.0.21,
+ * nur mit Haken textbefehl_ein; Frage 111: dazu je Echo <echo>/textbefehl, nicht "alle"), Radio je Zone und alle Zonen, die
  * Rueckmeldungen der Lampen (keine Brueckenbefehle, gleiche Adresse; Taster brauchen keine). publish, nie retain.
  * Traegt kein Token. Kommentare aus der Sprachdatei, Titel fest deutsch.
  */
@@ -6931,6 +6915,22 @@ function ax_vorlage_mqtt($host, array $cfg)
         if (!is_string($r) || $r === '') { continue; }
         $cmds[] = array('title' => 'Alexa NG Routine ' . $r . ' (MQTT)', 'comment' => sprintf(ax_t('LOX.VA_C_ROUTINE'), $r), 'analog' => false,
                         'on' => 'publish ' . $b . 'routine ' . $r);
+    }
+    // 1.0.21 (Frage 96): je Eintrag der Freigabeliste wie in der Vorlage "Alexa NG Aktionen" - nur mit dem Haken
+    // "Textbefehle aus Loxone annehmen"; wirken tut der Befehl erst mit "Textbefehl per MQTT erlauben" (Reiter MQTT).
+    if (!empty($cfg['textbefehl_ein']) && isset($cfg['textbefehle_frei']) && is_array($cfg['textbefehle_frei'])) {
+        foreach ($cfg['textbefehle_frei'] as $tb) {
+            if (!is_array($tb) || !isset($tb['name']) || !is_string($tb['name']) || $tb['name'] === '') { continue; }
+            $cmds[] = array('title' => 'Alexa NG Textbefehl ' . $tb['name'] . ' (MQTT)', 'comment' => sprintf(ax_t('LOX.VA_C_TEXTBEFEHL'), $tb['name']),
+                            'analog' => false, 'on' => 'publish ' . $b . 'textbefehl ' . $tb['name']);
+            // Frage 111: derselbe Textbefehl je Echo, Thema <echo>/textbefehl wie <echo>/sprechen (ein Textbefehl geht an
+            // genau ein Geraet, deshalb ohne "alle").
+            foreach ($echos as $n) {
+                $cmds[] = array('title' => 'Alexa NG Textbefehl ' . $tb['name'] . ' ' . $n . ' (MQTT)',
+                                'comment' => sprintf(ax_t('LOX.VA_C_TEXTBEFEHL_GERAET'), $tb['name'], $n),
+                                'analog' => false, 'on' => 'publish ' . $b . $n . '/textbefehl ' . $tb['name']);
+            }
+        }
     }
     $zonen = array();
     foreach ($cfg['radio_zonen'] as $z) { $zonen[] = (string) (int) $z['zone']; }

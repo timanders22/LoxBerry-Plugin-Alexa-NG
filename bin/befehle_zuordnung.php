@@ -23,6 +23,18 @@
  * befehle_mqtt_ein - ax_config()). Routinen brauchen als dritte Stufe "Routine per MQTT erlauben"
  * (befehle_routine_ein), je Befehl frisch gelesen (Fremdbefund F11). Die Sperre der Ansagen greift nicht ein (macht
  * nur leiser); sperre_ein, radio_ein, ankuendigen_ein und routinen_frei prueft weiter das Plugin selbst.
+ *
+ * 1.0.21 (Frage 96, Entscheidung des Hausherrn 19.11.2026): Textbefehl auf <praefix>/befehl/textbefehl, Wert = Name
+ * eines Eintrags der Freigabeliste (nie ein Satz), Bauart Routine: greift ein (zweiter Haken), dritte Stufe "Textbefehl
+ * per MQTT erlauben" (befehle_textbefehl_ein, ab Werk aus, je Befehl frisch gelesen); textbefehl_ein, die
+ * Freigabeliste und die Form des Namens prueft ax_befehl_ausfuehren() wie beim HTTP-Endpunkt. Standardgeraet wie bei
+ * der Routine (kein {geraet} im Thema).
+ *
+ * 1.0.21 (Frage 111, 19.11.2026): Textbefehl je Geraet auf <praefix>/befehl/{geraet}/textbefehl - das Geraet steht im
+ * Thema wie bei {geraet}/sprechen (gleiche Teilform, gleiche ausser-Liste). Sonst wortgleich mit textbefehl: Wert = Name
+ * aus der Freigabeliste, bis 40 Byte, greift ein, Sperrzeit 10 s, dieselben Haken (befehle_textbefehl_ein frisch
+ * gelesen, textbefehl_ein und Freigabeliste in ax_befehl_ausfuehren()). Ein Textbefehl geht an genau ein Geraet;
+ * "alle" lehnt ax_befehl_ausfuehren() mit EIN_GERAET ab wie beim HTTP-Endpunkt.
  */
 if (!function_exists('ax_befehl_bruecke')) {
     $ax_bb_kand = array();
@@ -64,6 +76,20 @@ $ax_bb_routine_tun = function ($w, $t) {
     $c = ax_config();
     if (empty($c['befehle_routine_ein'])) { return array(false, 'ROUTINE_MQTT_AUS'); }
     return ax_befehl_bruecke(ax_befehl_ausfuehren('routine', array('name' => (string) $w), 'mqtt'));
+};
+$ax_bb_textbefehl = 'Wie bei der Routine: ein Textbefehl soll bewusst zweimal in einer Minute ausloesbar sein; 10 s fangen '
+    . 'Prellen ab (Frage 96, Bauart Routine).';
+$ax_bb_textbefehl_tun = function ($w, $t) {
+    // Dritte Stufe, je Befehl frisch gelesen (Bauart Routine, F11): ohne "Textbefehl per MQTT erlauben" geht nichts hinaus.
+    $c = ax_config();
+    if (empty($c['befehle_textbefehl_ein'])) { return array(false, 'TEXTBEFEHL_MQTT_AUS'); }
+    return ax_befehl_bruecke(ax_befehl_ausfuehren('textbefehl', array('name' => (string) $w), 'mqtt'));
+};
+$ax_bb_textbefehl_geraet_tun = function ($w, $t) {
+    // Frage 111: wie oben, das Geraet aus dem Thema (Bauart {geraet}/sprechen); dieselbe dritte Stufe, frisch gelesen.
+    $c = ax_config();
+    if (empty($c['befehle_textbefehl_ein'])) { return array(false, 'TEXTBEFEHL_MQTT_AUS'); }
+    return ax_befehl_bruecke(ax_befehl_ausfuehren('textbefehl', array('geraet' => (string) $t['geraet'], 'name' => (string) $w), 'mqtt'));
 };
 $ax_bb_sperre_tun = function ($w, $t) {
     return ax_befehl_bruecke(ax_loxsperre_setzen((string) $w, 'mqtt'));
@@ -110,6 +136,12 @@ return array(
         'routine' => array('art' => 'text', 'max_byte' => 80, 'eingreifend' => true, 'sperre_s' => 10,
                            'begruendung' => $ax_bb_routine, 'titel' => 'Alexa NG Routine starten (MQTT)',
                            'kachel' => 'BEFEHL.K_ROUTINE', 'quittung' => 'ausgefuehrt', 'tun' => $ax_bb_routine_tun),
+        'textbefehl' => array('art' => 'text', 'max_byte' => 40, 'eingreifend' => true, 'sperre_s' => 10,
+                              'begruendung' => $ax_bb_textbefehl, 'titel' => 'Alexa NG Textbefehl (MQTT)',
+                              'kachel' => 'BEFEHL.K_TEXTBEFEHL', 'quittung' => 'ausgefuehrt', 'tun' => $ax_bb_textbefehl_tun),
+        '{geraet}/textbefehl' => array('art' => 'text', 'max_byte' => 40, 'eingreifend' => true, 'sperre_s' => 10,
+                              'begruendung' => $ax_bb_textbefehl, 'titel' => 'Alexa NG Textbefehl an Echo (MQTT)',
+                              'kachel' => 'BEFEHL.K_TEXTBEFEHL_GERAET', 'quittung' => 'ausgefuehrt', 'tun' => $ax_bb_textbefehl_geraet_tun),
         'sperre' => array('art' => 'schalter', 'eingreifend' => false, 'sperre_s' => 0, 'begruendung' => $ax_bb_sperre,
                           'titel' => 'Alexa NG Ansagen sperren (MQTT)', 'kachel' => 'BEFEHL.K_SPERRE',
                           'quittung' => 'ausgefuehrt', 'tun' => $ax_bb_sperre_tun),
