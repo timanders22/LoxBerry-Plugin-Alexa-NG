@@ -495,7 +495,8 @@ function ax_hue_zugang($ip, $ua, $lokal, array $lage)
  * 1.0.20 (Entwurf 1.1-a, E3): wirkt die Sperre aus Loxone auch auf Alexa -> Loxone (Haken "Sperre gilt auch fuer
  * Alexa -> Loxone" und ein von Loxone gesetztes "gesperrt")? Dann bekommt der Echo den Hue-Fehler 901 - dieselbe Art
  * Antwort wie bei der Minutenbremse -, es geht nichts an MQTT, eine Protokollzeile und der Zaehler "gesperrt" im
- * Messstand (Reiter Test). Ein unbekannter Zustand gilt als offen (E3). Was der Echo bei 901 sagt, ist nicht gemessen.
+ * Messstand (Reiter Test). Ein unbekannter Zustand gilt als offen (E3). Was der Echo bei 901 sagt, gemessen 21.11.2026 am Echo Dot Max:
+ * "Ich konnte das Testlicht nicht einschalten ..." (mit dem Namen der Lampe).
  * Rueckgabe null (offen) oder die Antwortliste der Hue-Schnittstelle.
  */
 function ax_hue_sperre_pruefen(array $lage, $was, $adr, $ip)

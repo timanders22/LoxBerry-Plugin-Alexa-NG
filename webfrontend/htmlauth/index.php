@@ -57,6 +57,20 @@ function ax_ui_umleiten($d, $tab, array $inhalt)
     exit;
 }
 
+/* 1.0.23 (K6, Auftrag des Hausherrn 21.11.2026): der Reiter Einstellungen ist aufgeteilt; die Felder des einen
+ * Formulars stehen in drei Reitern. Welcher Reiter zeigt ein Feld (Name ohne [i])? Eine Stelle fuer die Umleitung nach
+ * einer Beanstandung. Was hier fehlt, gehoert zu den Echos und Ansagen. */
+function ax_ui_reiter_von($feld)
+{
+    $f = preg_replace('/\[.*\z/s', '', (string) $feld);
+    if (in_array($f, array('routinen_frei', 'textbefehl_ein', 'textbefehle_frei', 'musik_ein', 'musik_stundengrenze',
+                           'musik_sender', 'radio_ein', 'radio_zonen'), true)) {
+        return 'tab-befehle';
+    }
+    if (strpos($f, 'hue_') === 0 && $f !== 'hue_sperre_ein') { return 'tab-hue'; }
+    return 'tab-echos';
+}
+
 /* ---------------- X-2: Eingaben nach einer Beanstandung ----------------
  * Mit der Einmalmeldung reisen die Felder des EINEN beanstandeten Formulars;
  * nie Token, nie ein Erneuerungs-Token, nie ein Code. */
@@ -262,7 +276,7 @@ function ax_ui_hue_lampen(array $alt)
 }
 
 /* Drei Stellen gehoeren zusammen: Reiterleiste, Bereiche, diese Positivliste. */
-$ax_muster = '/^tab-(settings|amazon|geraete|mqtt|loxone|test|log)$/';
+$ax_muster = '/^tab-(settings|echos|befehle|hue|amazon|geraete|mqtt|loxone|test|log)$/';
 $ax_methode = isset($_SERVER['REQUEST_METHOD']) ? (string) $_SERVER['REQUEST_METHOD'] : 'GET';
 $ax_post = ($ax_methode === 'POST');
 $ax_tab = ($ax_post && isset($_POST['activetab']) && is_string($_POST['activetab']) && preg_match($ax_muster, $_POST['activetab']))
@@ -316,6 +330,10 @@ if ($ax_post && isset($_POST['ax_sichern'])) {
 
 /* ---------------- Einstellungen speichern ---------------- */
 if ($ax_post && isset($_POST['save'])) {
+    // 1.0.23 (K6): der Knopf Speichern jedes Reiters traegt seinen Reiter; dorthin geht es zurueck. Ein Formular, ein
+    // Handler wie bisher; save=1 (aelterer Aufruf, Eingabetaste) fuehrt zu den Echos und Ansagen.
+    $ax_rt = (is_string($_POST['save']) && in_array($_POST['save'], array('tab-echos', 'tab-befehle', 'tab-hue'), true))
+        ? $_POST['save'] : 'tab-echos';
     $ax_alt = ax_config();
     $ax_neu = $ax_alt;
     $ax_hw = array();
@@ -492,10 +510,12 @@ if ($ax_post && isset($_POST['save'])) {
             if (!isset($ax_ein['werte']['hue_l_kuerzel']) || !is_array($ax_ein['werte']['hue_l_kuerzel'])) { $ax_ein['werte']['hue_l_kuerzel'] = array(); }
             $ax_ein['werte']['hue_l_kuerzel'][(string) (int) $ax_i] = $ax_v;
         }
-        ax_ui_umleiten($ax_datadir, 'tab-settings', array('hinweise' => $ax_hw, 'eingaben' => $ax_ein));
+        // 1.0.23 (K6): der Reiter des ersten beanstandeten Felds - dort ist es markiert (X-2).
+        $ax_bl = ax_ui_bean();
+        ax_ui_umleiten($ax_datadir, $ax_bl ? ax_ui_reiter_von($ax_bl[0]) : $ax_rt, array('hinweise' => $ax_hw, 'eingaben' => $ax_ein));
     }
     if (!ax_config_speichern($ax_neu)) {
-        ax_ui_umleiten($ax_datadir, 'tab-settings', array('fehler' => sprintf(ax_t('MELDUNG.SPEICHERN_FEHL'), $ax_p['config'])));
+        ax_ui_umleiten($ax_datadir, $ax_rt, array('fehler' => sprintf(ax_t('MELDUNG.SPEICHERN_FEHL'), $ax_p['config'])));
     }
     ax_log('INFO', 'Einstellungen gespeichert (aktiv=' . $ax_neu['aktiv'] . ', Stundengrenze ' . $ax_neu['stundengrenze']
         . ', Bremse ' . $ax_neu['bremse_fenster_s'] . ' s, Ankuendigen ' . $ax_neu['ankuendigen_ein']
@@ -530,7 +550,7 @@ if ($ax_post && isset($_POST['save'])) {
     // H1: die Hue-Probe nachziehen (starten, anhalten, neuer Port) und sagen, was geschah.
     $ax_hue_t = ax_hue_nachziehen($ax_neu, $ax_alt);
     if ($ax_hue_t !== '') { $ax_hw[] = $ax_hue_t; }
-    ax_ui_umleiten($ax_datadir, 'tab-settings', array('gespeichert' => 1) + ($ax_hw ? array('hinweise' => $ax_hw) : array()));
+    ax_ui_umleiten($ax_datadir, $ax_rt, array('gespeichert' => 1) + ($ax_hw ? array('hinweise' => $ax_hw) : array()));
 }
 
 /* ---------------- Token neu wuerfeln (je eins, mit Warnung) ---------------- */
@@ -1045,7 +1065,8 @@ $ax_senderliste_text = implode("\n", array_map(function ($z) { return $z['nr'] .
 
 if (class_exists('LBWeb', false)) {
     // Nachtwelle N7 (1.0.7, Sammelstelle #7): die eigene Wiki-Seite, nicht die Startseite.
-    LBWeb::lbheader('Alexa NG', 'https://wiki.loxberry.de/plugins/alexang/start', 'help.html');
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel('Alexa NG', __DIR__), 'https://wiki.loxberry.de/plugins/alexang/start', 'help.html');
 }
 ?>
 <style>
@@ -1213,6 +1234,9 @@ $ax_kopf_dienst = empty($ax_cfg['befehle_mqtt_ein']) ? false : ax_dienst_status(
 
 <div class="sm-tabs">
     <a class="sm-tab<?= $ax_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings" href="index.php?form=settings"><?= ax_e(ax_t('REITER.EINSTELLUNGEN')) ?></a>
+    <a class="sm-tab<?= $ax_tab === 'tab-echos' ? ' sm-active' : '' ?>" data-ziel="tab-echos" href="index.php?form=echos"><?= ax_e(ax_t('REITER.ECHOS')) ?></a>
+    <a class="sm-tab<?= $ax_tab === 'tab-befehle' ? ' sm-active' : '' ?>" data-ziel="tab-befehle" href="index.php?form=befehle"><?= ax_e(ax_t('REITER.BEFEHLE')) ?></a>
+    <a class="sm-tab<?= $ax_tab === 'tab-hue' ? ' sm-active' : '' ?>" data-ziel="tab-hue" href="index.php?form=hue"><?= ax_e(ax_t('REITER.HUE')) ?></a>
     <a class="sm-tab<?= $ax_tab === 'tab-amazon' ? ' sm-active' : '' ?>" data-ziel="tab-amazon" href="index.php?form=amazon"><?= ax_e(ax_t('REITER.AMAZON')) ?></a>
     <a class="sm-tab<?= $ax_tab === 'tab-geraete' ? ' sm-active' : '' ?>" data-ziel="tab-geraete" href="index.php?form=geraete"><?= ax_e(ax_t('REITER.GERAETE')) ?></a>
     <a class="sm-tab<?= $ax_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" data-ziel="tab-mqtt" href="index.php?form=mqtt">MQTT</a>
@@ -1228,10 +1252,63 @@ $ax_kopf_dienst = empty($ax_cfg['befehle_mqtt_ein']) ? false : ax_dienst_status(
 <span><i class="sm-punkt sm-b-lesen"></i> <?= ax_e(ax_t('LEGENDE.LESEN')) ?></span>
 <span><i class="sm-punkt sm-b-aktion"></i> <?= ax_e(ax_t('LEGENDE.AKTION')) ?></span>
 </div>
-<form action="index.php" method="post" autocomplete="off">
-<input data-role="none" type="hidden" name="save" value="1">
+<div class="sm-small"><?= ax_e(ax_t('EINST.AUFGETEILT')) ?></div>
+
+<h2><?= ax_e(ax_t('EINST.H_TOKEN')) ?></h2>
+<div class="sm-small"><?= ax_e(ax_t('EINST.TOKEN_HILFE')) ?></div>
+<table class="sm-tbl">
+<tr><th style="width:25%"><?= ax_e(ax_t('EINST.T_TOKEN')) ?></th><th style="width:75%"><?= ax_e(ax_t('EINST.T_BEISPIEL')) ?></th></tr>
+<tr><td><?= ax_e(ax_t('EINST.SPRECHTOKEN')) ?></td><td><span class="sm-mono"><?= ax_e($ax_basis . '?aktion=sprechen&token=' . $ax_sprech . '&geraet=' . $ax_std . '&text=Hallo') ?></span></td></tr>
+<tr><td><?= ax_e(ax_t('EINST.AKTIONSTOKEN')) ?></td><td><span class="sm-mono"><?= ax_e($ax_basis . '?aktion=routine&token=' . $ax_aktion . '&name=Gute%20Nacht&geraet=' . $ax_std) ?></span></td></tr>
+</table>
+<?php if ($ax_sprech !== '' && $ax_sprech === $ax_aktion) { ?><div class="sm-alert sm-err"><?= ax_e(ax_t('EINST.TOKEN_GLEICH')) ?></div><?php } ?>
+<form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <input data-role="none" type="hidden" name="formtoken" value="<?= ax_e(ax_formtoken($ax_cfg)) ?>">
+<label class="sm-haken"><input data-role="none" type="checkbox" name="token_neu_ja" value="1"> <?= ax_e(ax_t('EINST.L_TOKEN_JA')) ?></label>
+<div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="sprech"><?= ax_e(ax_t('EINST.K_SPRECH_NEU')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="aktion"><?= ax_e(ax_t('EINST.K_AKTION_NEU')) ?></button>
+</div>
+<div class="sm-warnung"><?= ax_e(ax_t('EINST.TOKEN_NEU_WARNUNG')) ?></div>
+</form>
+
+<?= ax_ansage_form_html('<input data-role="none" type="hidden" name="activetab" value="tab-settings"><input data-role="none" type="hidden" name="formtoken" value="' . ax_e(ax_formtoken($ax_cfg)) . '">') ?>
+<h2><?= ax_e(ax_t('SICH.H')) ?></h2>
+<div class="sm-warnung"><?= ax_e(ax_t('SICH.WARNUNG')) ?></div>
+<form action="index.php" method="post">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="formtoken" value="<?= ax_e(ax_formtoken($ax_cfg)) ?>">
+<label class="sm-haken"><input data-role="none" type="checkbox" name="sich_amazon" value="1"> <?= ax_e(ax_t('SICH.L_AMAZON')) ?></label>
+<?php if ($ax_lage['abgewiesen']) { ?><div class="sm-alert sm-warn"><?= ax_e(sprintf(ax_t('SICH.X3_WARNUNG'), implode(', ', array_keys($ax_lage['abgewiesen'])))) ?></div><?php } ?>
+<div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="ax_sichern" value="1"><?= ax_e(ax_t('SICH.K_SICHERN')) ?></button>
+</div>
+</form>
+<form action="index.php" method="post" enctype="multipart/form-data">
+<input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<input data-role="none" type="hidden" name="formtoken" value="<?= ax_e(ax_formtoken($ax_cfg)) ?>">
+<input data-role="none" type="file" name="ax_sicherung" accept=".json,application/json">
+<?= sicherung_haken_zeile(ax_sicherung_beschreibung()) ?>
+<div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ax_zurueck" value="1"><?= ax_e(ax_t('SICH.K_ZURUECK')) ?></button>
+</div>
+<div class="sm-small"><?= ax_e(ax_t('SICH.HILFE')) ?></div>
+</form>
+</div>
+
+<!-- ================= Reiter: Echos und Ansagen, Befehle und Musik, Hue - EIN Formular (1.0.23, K6) =========
+     Die Felder des bisherigen Formulars im Reiter Einstellungen, Inhalt unveraendert; ein Handler (save). Jeder
+     Knopf Speichern traegt seinen Reiter; der Reiter Einstellungen behaelt die eigenen Formulare (Token,
+     Sprachansagen, Sicherung), die in diesem nicht stehen duerfen. ================= -->
+<form action="index.php" method="post" autocomplete="off" id="ax_einst">
+<input data-role="none" type="hidden" name="save" value="1">
+<input data-role="none" type="hidden" name="activetab" value="<?= in_array($ax_tab, array('tab-echos', 'tab-befehle', 'tab-hue'), true) ? $ax_tab : 'tab-echos' ?>">
+<input data-role="none" type="hidden" name="formtoken" value="<?= ax_e(ax_formtoken($ax_cfg)) ?>">
+<div class="sm-seite<?= $ax_tab === 'tab-echos' ? ' sm-active' : '' ?>" id="tab-echos">
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?= ax_e(ax_t('LEGENDE.AKTION')) ?></span>
+</div>
 <h2><?= ax_e(ax_t('EINST.H_ALLGEMEIN')) ?></h2>
 <label class="sm-haken"><input data-role="none" type="checkbox" name="aktiv" value="1"<?= ax_ui_h('aktiv', !empty($ax_cfg['aktiv'])) ? ' checked' : '' ?><?= ax_ui_m('aktiv') ?>> <?= ax_e(ax_t('EINST.L_AKTIV')) ?></label>
 <div class="sm-small"><?= ax_e(ax_t('EINST.AKTIV_HILFE')) ?></div>
@@ -1300,6 +1377,26 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
 <label class="sm-haken"><input data-role="none" type="checkbox" name="texte_protokollieren" value="1"<?= ax_ui_h('texte_protokollieren', !empty($ax_cfg['texte_protokollieren'])) ? ' checked' : '' ?><?= ax_ui_m('texte_protokollieren') ?>> <?= ax_e(ax_t('EINST.L_TEXTE_LOG')) ?></label>
 <div class="sm-small"><?= ax_e(ax_t('EINST.TEXTE_LOG_HILFE')) ?></div>
 
+<h2 id="sperre"><?= ax_e(ax_t('EINST.H_SPERRE')) ?></h2>
+<label class="sm-haken"><input data-role="none" type="checkbox" name="sperre_ein" value="1"<?= ax_ui_h('sperre_ein', !empty($ax_cfg['sperre_ein'])) ? ' checked' : '' ?><?= ax_ui_m('sperre_ein') ?>> <?= ax_e(ax_t('EINST.L_SPERRE')) ?></label>
+<div class="sm-small"><?= ax_e(ax_t('EINST.SPERRE_HILFE')) ?></div>
+<?php list(, $ax_sperre_text) = $ax_sperre_zeile(); ?>
+<div class="sm-small"><?= ax_e(sprintf(ax_t('EINST.SPERRE_JETZT'), $ax_sperre_text)) ?></div>
+<?php /* 1.0.20 (Entwurf 1.1-a, E3): eigener Haken, ab Werk aus; wirkt nur zusammen mit dem Haken darueber. */ ?>
+<label class="sm-haken"><input data-role="none" type="checkbox" name="hue_sperre_ein" value="1"<?= ax_ui_h('hue_sperre_ein', !empty($ax_cfg['hue_sperre_ein'])) ? ' checked' : '' ?><?= ax_ui_m('hue_sperre_ein') ?>> <?= ax_e(ax_t('EINST.L_HUE_SPERRE')) ?></label>
+<div class="sm-small"><?= ax_e(ax_t('EINST.HUE_SPERRE_HILFE')) ?></div>
+<?php /* 1.0.22 (Zusage des Hausherrn 21.11.2026): eigener Haken, ab Werk aus, unabhaengig von der Sperre aus Loxone. */ ?>
+<label class="sm-haken"><input data-role="none" type="checkbox" name="haus_ruhe_ein" value="1"<?= ax_ui_h('haus_ruhe_ein', !empty($ax_cfg['haus_ruhe_ein'])) ? ' checked' : '' ?><?= ax_ui_m('haus_ruhe_ein') ?>> <?= ax_e(ax_t('EINST.L_HAUS_RUHE')) ?></label>
+<div class="sm-small"><?= ax_e(ax_t('EINST.HAUS_RUHE_HILFE')) ?></div>
+
+<div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save" value="tab-echos"><?= ax_e(ax_t('SEITE.K_SPEICHERN')) ?></button>
+</div>
+</div>
+<div class="sm-seite<?= $ax_tab === 'tab-befehle' ? ' sm-active' : '' ?>" id="tab-befehle">
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?= ax_e(ax_t('LEGENDE.AKTION')) ?></span>
+</div>
 <h2 id="routinen"><?= ax_e(ax_t('EINST.H_ROUTINEN')) ?></h2>
 <label for="routinen_frei"><?= ax_e(ax_t('EINST.L_ROUTINEN')) ?></label>
 <textarea data-role="none" id="routinen_frei" name="routinen_frei" rows="4" placeholder="<?= ax_e(ax_t('EINST.P_ROUTINEN')) ?>"<?= ax_ui_m('routinen_frei') ?>><?= ax_e(ax_ui_w('routinen_frei', implode("\n", $ax_cfg['routinen_frei']))) ?></textarea>
@@ -1314,18 +1411,6 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
 <textarea data-role="none" id="textbefehle_frei" name="textbefehle_frei" rows="4" placeholder="<?= ax_e(ax_t('EINST.P_TEXTBEFEHLE')) ?>"<?= ax_ui_m('textbefehle_frei') ?>><?= ax_e(ax_ui_w('textbefehle_frei', implode("\n", array_map(function ($z) { return $z['name'] . ' = ' . $z['text']; }, $ax_cfg['textbefehle_frei'])))) ?></textarea>
 <div class="sm-small"><?= ax_e(sprintf(ax_t('EINST.TEXTBEFEHLE_HILFE'), AX_TEXTBEFEHLE_MAX, AX_TEXTBEFEHL_ZEICHEN_MAX)) ?></div>
 <div class="sm-small"><span class="sm-mono"><?= ax_e($ax_basis . '?aktion=textbefehl&token=' . $ax_aktion . '&name=licht_kueche_aus&geraet=' . $ax_std) ?></span></div>
-
-<h2 id="sperre"><?= ax_e(ax_t('EINST.H_SPERRE')) ?></h2>
-<label class="sm-haken"><input data-role="none" type="checkbox" name="sperre_ein" value="1"<?= ax_ui_h('sperre_ein', !empty($ax_cfg['sperre_ein'])) ? ' checked' : '' ?><?= ax_ui_m('sperre_ein') ?>> <?= ax_e(ax_t('EINST.L_SPERRE')) ?></label>
-<div class="sm-small"><?= ax_e(ax_t('EINST.SPERRE_HILFE')) ?></div>
-<?php list(, $ax_sperre_text) = $ax_sperre_zeile(); ?>
-<div class="sm-small"><?= ax_e(sprintf(ax_t('EINST.SPERRE_JETZT'), $ax_sperre_text)) ?></div>
-<?php /* 1.0.20 (Entwurf 1.1-a, E3): eigener Haken, ab Werk aus; wirkt nur zusammen mit dem Haken darueber. */ ?>
-<label class="sm-haken"><input data-role="none" type="checkbox" name="hue_sperre_ein" value="1"<?= ax_ui_h('hue_sperre_ein', !empty($ax_cfg['hue_sperre_ein'])) ? ' checked' : '' ?><?= ax_ui_m('hue_sperre_ein') ?>> <?= ax_e(ax_t('EINST.L_HUE_SPERRE')) ?></label>
-<div class="sm-small"><?= ax_e(ax_t('EINST.HUE_SPERRE_HILFE')) ?></div>
-<?php /* 1.0.22 (Zusage des Hausherrn 21.11.2026): eigener Haken, ab Werk aus, unabhaengig von der Sperre aus Loxone. */ ?>
-<label class="sm-haken"><input data-role="none" type="checkbox" name="haus_ruhe_ein" value="1"<?= ax_ui_h('haus_ruhe_ein', !empty($ax_cfg['haus_ruhe_ein'])) ? ' checked' : '' ?><?= ax_ui_m('haus_ruhe_ein') ?>> <?= ax_e(ax_t('EINST.L_HAUS_RUHE')) ?></label>
-<div class="sm-small"><?= ax_e(ax_t('EINST.HAUS_RUHE_HILFE')) ?></div>
 
 <h2 id="musik"><?= ax_e(ax_t('EINST.H_MUSIK')) ?></h2>
 <label class="sm-haken"><input data-role="none" type="checkbox" name="musik_ein" value="1"<?= ax_ui_h('musik_ein', !empty($ax_cfg['musik_ein'])) ? ' checked' : '' ?><?= ax_ui_m('musik_ein') ?>> <?= ax_e(ax_t('EINST.L_MUSIK')) ?></label>
@@ -1347,6 +1432,14 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
 <textarea data-role="none" id="radio_zonen" name="radio_zonen" rows="6" placeholder="<?= ax_e(ax_t('EINST.P_RADIO_ZONEN')) ?>"<?= ax_ui_m('radio_zonen') ?>><?= ax_e(ax_ui_w('radio_zonen', $ax_radio_text)) ?></textarea>
 <div class="sm-small"><?= ax_e(ax_t('EINST.RADIO_ZONEN_HILFE')) ?></div>
 
+<div class="sm-knopfreihe">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save" value="tab-befehle"><?= ax_e(ax_t('SEITE.K_SPEICHERN')) ?></button>
+</div>
+</div>
+<div class="sm-seite<?= $ax_tab === 'tab-hue' ? ' sm-active' : '' ?>" id="tab-hue">
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?= ax_e(ax_t('LEGENDE.AKTION')) ?></span>
+</div>
 <h2 id="hue"><?= ax_e(ax_t('EINST.H_HUE')) ?></h2>
 <label class="sm-haken"><input data-role="none" type="checkbox" name="hue_ein" value="1"<?= ax_ui_h('hue_ein', !empty($ax_cfg['hue_ein'])) ? ' checked' : '' ?><?= ax_ui_m('hue_ein') ?>> <?= ax_e(ax_t('EINST.L_HUE')) ?></label>
 <div class="sm-warnung"><?= ax_e(ax_t('EINST.HUE_HILFE')) ?></div>
@@ -1468,52 +1561,10 @@ $ax_hl_n = min($ax_hl_n, AX_HUE_LAMPEN_MAX + 3);
 <div class="sm-small"><?= ax_e(ax_t('EINST.HUE_SUCHEN_HILFE')) ?></div>
 <div class="sm-small"><a href="index.php?form=test#hue_probe"><?= ax_e(ax_t('EINST.ZU_HUE_TEST')) ?></a></div>
 <div class="sm-knopfreihe">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save" value="1"><?= ax_e(ax_t('SEITE.K_SPEICHERN')) ?></button>
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save" value="tab-hue"><?= ax_e(ax_t('SEITE.K_SPEICHERN')) ?></button>
+</div>
 </div>
 </form>
-
-<h2><?= ax_e(ax_t('EINST.H_TOKEN')) ?></h2>
-<div class="sm-small"><?= ax_e(ax_t('EINST.TOKEN_HILFE')) ?></div>
-<table class="sm-tbl">
-<tr><th style="width:25%"><?= ax_e(ax_t('EINST.T_TOKEN')) ?></th><th style="width:75%"><?= ax_e(ax_t('EINST.T_BEISPIEL')) ?></th></tr>
-<tr><td><?= ax_e(ax_t('EINST.SPRECHTOKEN')) ?></td><td><span class="sm-mono"><?= ax_e($ax_basis . '?aktion=sprechen&token=' . $ax_sprech . '&geraet=' . $ax_std . '&text=Hallo') ?></span></td></tr>
-<tr><td><?= ax_e(ax_t('EINST.AKTIONSTOKEN')) ?></td><td><span class="sm-mono"><?= ax_e($ax_basis . '?aktion=routine&token=' . $ax_aktion . '&name=Gute%20Nacht&geraet=' . $ax_std) ?></span></td></tr>
-</table>
-<?php if ($ax_sprech !== '' && $ax_sprech === $ax_aktion) { ?><div class="sm-alert sm-err"><?= ax_e(ax_t('EINST.TOKEN_GLEICH')) ?></div><?php } ?>
-<form action="index.php" method="post">
-<input data-role="none" type="hidden" name="activetab" value="tab-settings">
-<input data-role="none" type="hidden" name="formtoken" value="<?= ax_e(ax_formtoken($ax_cfg)) ?>">
-<label class="sm-haken"><input data-role="none" type="checkbox" name="token_neu_ja" value="1"> <?= ax_e(ax_t('EINST.L_TOKEN_JA')) ?></label>
-<div class="sm-knopfreihe">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="sprech"><?= ax_e(ax_t('EINST.K_SPRECH_NEU')) ?></button>
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="token_neu" value="aktion"><?= ax_e(ax_t('EINST.K_AKTION_NEU')) ?></button>
-</div>
-<div class="sm-warnung"><?= ax_e(ax_t('EINST.TOKEN_NEU_WARNUNG')) ?></div>
-</form>
-
-<?= ax_ansage_form_html('<input data-role="none" type="hidden" name="activetab" value="tab-settings"><input data-role="none" type="hidden" name="formtoken" value="' . ax_e(ax_formtoken($ax_cfg)) . '">') ?>
-<h2><?= ax_e(ax_t('SICH.H')) ?></h2>
-<div class="sm-warnung"><?= ax_e(ax_t('SICH.WARNUNG')) ?></div>
-<form action="index.php" method="post">
-<input data-role="none" type="hidden" name="activetab" value="tab-settings">
-<input data-role="none" type="hidden" name="formtoken" value="<?= ax_e(ax_formtoken($ax_cfg)) ?>">
-<label class="sm-haken"><input data-role="none" type="checkbox" name="sich_amazon" value="1"> <?= ax_e(ax_t('SICH.L_AMAZON')) ?></label>
-<?php if ($ax_lage['abgewiesen']) { ?><div class="sm-alert sm-warn"><?= ax_e(sprintf(ax_t('SICH.X3_WARNUNG'), implode(', ', array_keys($ax_lage['abgewiesen'])))) ?></div><?php } ?>
-<div class="sm-knopfreihe">
-    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="ax_sichern" value="1"><?= ax_e(ax_t('SICH.K_SICHERN')) ?></button>
-</div>
-</form>
-<form action="index.php" method="post" enctype="multipart/form-data">
-<input data-role="none" type="hidden" name="activetab" value="tab-settings">
-<input data-role="none" type="hidden" name="formtoken" value="<?= ax_e(ax_formtoken($ax_cfg)) ?>">
-<input data-role="none" type="file" name="ax_sicherung" accept=".json,application/json">
-<?= sicherung_haken_zeile(ax_sicherung_beschreibung()) ?>
-<div class="sm-knopfreihe">
-    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ax_zurueck" value="1"><?= ax_e(ax_t('SICH.K_ZURUECK')) ?></button>
-</div>
-<div class="sm-small"><?= ax_e(ax_t('SICH.HILFE')) ?></div>
-</form>
-</div>
 
 <!-- ================= Reiter: Amazon-Anmeldung ================= -->
 <div class="sm-seite<?= $ax_tab === 'tab-amazon' ? ' sm-active' : '' ?>" id="tab-amazon">
@@ -1842,7 +1893,7 @@ list(, $ax_gabo_da) = ax_abo_datei($ax_gp); ?>
 </div>
 <div class="sm-step"><b>4.</b> <?= ax_e(sprintf(ax_t('LOX.M_S4'), ax_gateway_name($ax_gp, 'status/zaehler'), ax_gateway_name($ax_gp, 'status/anmeldung'))) ?></div>
 <div class="sm-step" id="hue_loxone"><b>5.</b> <?= ax_e(ax_t('LOX.M_S5')) ?>
-<?php if (empty($ax_cfg['hue_ein'])) { ?><div class="sm-hinweis"><?= ax_e(ax_t('LOX.HUE_AUS')) ?> <a href="index.php?form=settings#hue_lampen"><?= ax_e(ax_t('TEST.ZU_HUE')) ?></a></div><?php } ?>
+<?php if (empty($ax_cfg['hue_ein'])) { ?><div class="sm-hinweis"><?= ax_e(ax_t('LOX.HUE_AUS')) ?> <a href="index.php?form=hue#hue_lampen"><?= ax_e(ax_t('TEST.ZU_HUE')) ?></a></div><?php } ?>
 <?php if ($ax_cfg['hue_lampen']) { ?>
 <div class="sm-breit">
 <table class="sm-tbl" id="hue_lampen_loxone">
@@ -1856,7 +1907,7 @@ list(, $ax_gabo_da) = ax_abo_datei($ax_gp); ?>
 </table>
 </div>
 <?php } else { ?>
-<div class="sm-hinweis"><?= ax_e(ax_t('LOX.HUE_KEINE_LAMPE')) ?> <a href="index.php?form=settings#hue_lampen"><?= ax_e(ax_t('TEST.ZU_HUE')) ?></a></div>
+<div class="sm-hinweis"><?= ax_e(ax_t('LOX.HUE_KEINE_LAMPE')) ?> <a href="index.php?form=hue#hue_lampen"><?= ax_e(ax_t('TEST.ZU_HUE')) ?></a></div>
 <?php } ?>
 <div class="sm-small"><?= ax_e(ax_t('LOX.M_S5_TASTER')) ?></div>
 <div class="sm-small"><?= ax_e(ax_t('LOX.M_S5_SPIEGEL')) ?></div>
@@ -1878,7 +1929,7 @@ $ax_bs_seiten = array(
     array('kopf' => 'LOX.BS1_H', 'seite' => 'Alexa NG', 'bild' => 'einbindung_loxone.png', 'z' => 'Z1', 'zeilen' => 32,
           'schritte' => array(
               sprintf(ax_t('LOX.BS1_S1'), ax_t('REITER.AMAZON'), ax_t('REITER.GERAETE'), ax_t('GER.K_TEST')),
-              sprintf(ax_t('LOX.BS1_S2'), ax_t('REITER.EINSTELLUNGEN'), ax_t('FELD.STANDARDGERAET'), ax_t('FELD.ROUTINEN_FREI'), ax_t('REITER.GERAETE'), ax_t('GER.K_ROUTINEN')),
+              sprintf(ax_t('LOX.BS1_S2'), ax_t('REITER.ECHOS'), ax_t('FELD.STANDARDGERAET'), ax_t('REITER.BEFEHLE'), ax_t('FELD.ROUTINEN_FREI'), ax_t('REITER.GERAETE'), ax_t('GER.K_ROUTINEN')),
               sprintf(ax_t('LOX.BS1_S3'), ax_t('MQTT.L_EIN'), ax_t('MQTT.L_BEFEHLE'), ax_t('MQTT.L_STEUERN'), ax_t('MQTT.L_ROUTINE')),
               ax_t('LOX.BS1_S4'),
               sprintf(ax_t('LOX.BS1_S5'), ax_t('BEFEHL.K_VORLAGE')),
@@ -1892,11 +1943,11 @@ $ax_bs_seiten = array(
               ax_t('LOX.BS1_H7'),
               ax_t('LOX.BS1_H3'),
               ax_t('LOX.BS1_H4'),
-              sprintf(ax_t('LOX.BS1_H5'), ax_t('REITER.EINSTELLUNGEN')),
+              sprintf(ax_t('LOX.BS1_H5'), ax_t('REITER.ECHOS')),
               ax_t('LOX.BS1_H6'))),
     array('kopf' => 'LOX.BS2_H', 'seite' => 'Alexa NG Radio', 'bild' => 'einbindung_loxone_radio.png', 'z' => 'Z2', 'zeilen' => 20,
           'schritte' => array(
-              sprintf(ax_t('LOX.BS2_S1'), ax_t('REITER.EINSTELLUNGEN'), ax_t('FELD.MUSIK_SENDER'), ax_t('FELD.RADIO_ZONEN')),
+              sprintf(ax_t('LOX.BS2_S1'), ax_t('REITER.BEFEHLE'), ax_t('FELD.MUSIK_SENDER'), ax_t('FELD.RADIO_ZONEN')),
               sprintf(ax_t('LOX.BS2_S2'), ax_t('BEFEHL.K_VORLAGE')),
               ax_t('LOX.BS2_S3'),
               ax_t('LOX.BS2_S4'),
@@ -1909,7 +1960,7 @@ $ax_bs_seiten = array(
               ax_t('LOX.BS2_H4'))),
     array('kopf' => 'LOX.BS3_H', 'seite' => 'Alexa NG Lampen', 'bild' => 'einbindung_loxone_lampen.png', 'z' => 'Z3', 'zeilen' => 18,
           'schritte' => array(
-              sprintf(ax_t('LOX.BS3_S1'), ax_t('REITER.EINSTELLUNGEN'), ax_t('EINST.L_HUE'), ax_t('FELD.HUE_LAMPEN')),
+              sprintf(ax_t('LOX.BS3_S1'), ax_t('REITER.HUE'), ax_t('EINST.L_HUE'), ax_t('FELD.HUE_LAMPEN')),
               sprintf(ax_t('LOX.BS3_S2'), ax_t('BEFEHL.K_VORLAGE')),
               ax_t('LOX.BS3_S3'),
               ax_t('LOX.BS3_S4'),
@@ -1979,7 +2030,7 @@ $ax_bs_seiten = array(
 <span class="sm-mono"><?= ax_e('/plugins/' . $ax_p['plugin'] . '/?token=' . $ax_aktion . '&aktion=musik_probe&geraet=' . $ax_std . '&nr=<v>') ?></span><br>
 <span class="sm-mono"><?= ax_e('/plugins/' . $ax_p['plugin'] . '/?token=' . $ax_aktion . '&aktion=musik_stopp&geraet=' . $ax_std) ?></span></div>
 <div class="sm-step" id="radio_loxone"><?= ax_e(ax_t('LOX.S10_RADIO')) ?>
-<?php if (empty($ax_cfg['radio_ein'])) { ?><div class="sm-hinweis"><?= ax_e(ax_t('LOX.RADIO_AUS')) ?> <a href="index.php?form=settings#radio"><?= ax_e(ax_t('TEST.ZU_RADIO')) ?></a></div><?php } ?>
+<?php if (empty($ax_cfg['radio_ein'])) { ?><div class="sm-hinweis"><?= ax_e(ax_t('LOX.RADIO_AUS')) ?> <a href="index.php?form=befehle#radio"><?= ax_e(ax_t('TEST.ZU_RADIO')) ?></a></div><?php } ?>
 <table class="sm-tbl">
 <tr><th style="width:5%">#</th><th style="width:95%"><?= ax_e(ax_t('LOX.T_SCHRITT')) ?></th></tr>
 <tr><td>a</td><td><?= ax_e(ax_t('LOX.RADIO_B1')) ?></td></tr>
@@ -2003,7 +2054,7 @@ $ax_bs_seiten = array(
 </table>
 </div>
 <?php } else { ?>
-<div class="sm-hinweis"><?= ax_e(ax_t('LOX.RADIO_KEINE_ZONE')) ?> <a href="index.php?form=settings#radio"><?= ax_e(ax_t('TEST.ZU_RADIO')) ?></a></div>
+<div class="sm-hinweis"><?= ax_e(ax_t('LOX.RADIO_KEINE_ZONE')) ?> <a href="index.php?form=befehle#radio"><?= ax_e(ax_t('TEST.ZU_RADIO')) ?></a></div>
 <?php } ?>
 </div>
 <h3><?= ax_e(ax_t('LOX.H_VORLAGEN')) ?></h3>
@@ -2237,7 +2288,7 @@ if ($ax_st) { foreach ($ax_st['liste'] as $ax_g) { if ($ax_g['familie'] !== 'WHA
 <?php } ?>
 </div>
 <?php if ($ax_cfg['standardgeraet'] === '' && $ax_test_liste) { ?>
-<div class="sm-small"><?= ax_e(ax_t('TEST.TESTANSAGE_WAEHLEN')) ?> <a href="index.php?form=settings#standardgeraet"><?= ax_e(ax_t('TEST.ZU_EINSTELLUNGEN')) ?></a></div>
+<div class="sm-small"><?= ax_e(ax_t('TEST.TESTANSAGE_WAEHLEN')) ?> <a href="index.php?form=echos#standardgeraet"><?= ax_e(ax_t('TEST.ZU_EINSTELLUNGEN')) ?></a></div>
 <?php } elseif ($ax_cfg['standardgeraet'] === '') { ?>
 <div class="sm-small"><?= ax_e(ax_t('TEST.TESTANSAGE_GESPERRT')) ?> <a href="index.php?form=geraete"><?= ax_e(ax_t('TEST.ZU_GERAETE')) ?></a></div>
 <?php } ?>
@@ -2277,7 +2328,7 @@ $ax_rt_frei = $ax_cfg['routinen_frei'] && $ax_test_liste;
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="routine_start" value="1"<?= $ax_rt_frei ? '' : ' disabled' ?>><?= ax_e(ax_t('TEST.K_ROUTINE')) ?></button>
 </div>
 <?php if (!$ax_cfg['routinen_frei']) { ?>
-<div class="sm-small"><?= ax_e(ax_t('TEST.ROUTINE_GESPERRT_LISTE')) ?> <a href="index.php?form=settings#routinen"><?= ax_e(ax_t('TEST.ZU_ROUTINEN')) ?></a></div>
+<div class="sm-small"><?= ax_e(ax_t('TEST.ROUTINE_GESPERRT_LISTE')) ?> <a href="index.php?form=befehle#routinen"><?= ax_e(ax_t('TEST.ZU_ROUTINEN')) ?></a></div>
 <?php } elseif (!$ax_test_liste) { ?>
 <div class="sm-small"><?= ax_e(ax_t('TEST.ROUTINE_GESPERRT_GERAETE')) ?> <a href="index.php?form=geraete"><?= ax_e(ax_t('TEST.ZU_GERAETE')) ?></a></div>
 <?php } ?>
@@ -2333,7 +2384,7 @@ $ax_musik_frei = !empty($ax_cfg['musik_ein']) && $ax_musik_liste;
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="musik_halt" value="1"<?= $ax_musik_frei ? '' : ' disabled' ?>><?= ax_e(ax_t('TEST.K_MUSIK_STOPP')) ?></button>
 </div>
 <?php if (empty($ax_cfg['musik_ein'])) { ?>
-<div class="sm-small"><?= ax_e(ax_t('TEST.MUSIK_GESPERRT')) ?> <a href="index.php?form=settings#musik"><?= ax_e(ax_t('TEST.ZU_MUSIK')) ?></a></div>
+<div class="sm-small"><?= ax_e(ax_t('TEST.MUSIK_GESPERRT')) ?> <a href="index.php?form=befehle#musik"><?= ax_e(ax_t('TEST.ZU_MUSIK')) ?></a></div>
 <?php } elseif (!$ax_musik_liste) { ?>
 <div class="sm-small"><?= ax_e(ax_t('TEST.ROUTINE_GESPERRT_GERAETE')) ?> <a href="index.php?form=geraete"><?= ax_e(ax_t('TEST.ZU_GERAETE')) ?></a></div>
 <?php } ?>
@@ -2402,11 +2453,11 @@ $ax_radio_frei = !empty($ax_cfg['radio_ein']) && $ax_rz_liste;
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="radio_halt" value="1"<?= $ax_radio_frei ? '' : ' disabled' ?>><?= ax_e(ax_t('TEST.K_RADIO_STOPP')) ?></button>
 </div>
 <?php if (empty($ax_cfg['radio_ein'])) { ?>
-<div class="sm-small"><?= ax_e(ax_t('TEST.RADIO_GESPERRT')) ?> <a href="index.php?form=settings#radio"><?= ax_e(ax_t('TEST.ZU_RADIO')) ?></a></div>
+<div class="sm-small"><?= ax_e(ax_t('TEST.RADIO_GESPERRT')) ?> <a href="index.php?form=befehle#radio"><?= ax_e(ax_t('TEST.ZU_RADIO')) ?></a></div>
 <?php } elseif (!$ax_rz_liste) { ?>
-<div class="sm-small"><?= ax_e(ax_t('TEST.RADIO_KEINE_ZONE')) ?> <a href="index.php?form=settings#radio"><?= ax_e(ax_t('TEST.ZU_RADIO')) ?></a></div>
+<div class="sm-small"><?= ax_e(ax_t('TEST.RADIO_KEINE_ZONE')) ?> <a href="index.php?form=befehle#radio"><?= ax_e(ax_t('TEST.ZU_RADIO')) ?></a></div>
 <?php } elseif (!$ax_cfg['musik_sender']) { ?>
-<div class="sm-small"><?= ax_e(ax_t('TEST.RADIO_KEIN_SENDER')) ?> <a href="index.php?form=settings#sender"><?= ax_e(ax_t('TEST.ZU_SENDER')) ?></a></div>
+<div class="sm-small"><?= ax_e(ax_t('TEST.RADIO_KEIN_SENDER')) ?> <a href="index.php?form=befehle#sender"><?= ax_e(ax_t('TEST.ZU_SENDER')) ?></a></div>
 <?php } ?>
 </form>
 
@@ -2515,7 +2566,7 @@ if ($ax_hsz !== null) { $ax_hue_zeilen[] = array(ax_t('TEST.F_HUE_SUCHE_AUSGELOE
 <?php } else { ?>
 <div class="sm-hinweis"><?= ax_e(ax_t('TEST.HUE_TEST_KEINE')) ?></div>
 <?php } ?>
-<div class="sm-small"><?= ax_e(sprintf(ax_t('TEST.HUE_NEBEN'), (int) $ax_hz['andere'], (int) $ax_hz['eigene']['anzahl'])) ?> <a href="index.php?form=settings#hue"><?= ax_e(ax_t('TEST.ZU_HUE')) ?></a></div>
+<div class="sm-small"><?= ax_e(sprintf(ax_t('TEST.HUE_NEBEN'), (int) $ax_hz['andere'], (int) $ax_hz['eigene']['anzahl'])) ?> <a href="index.php?form=hue#hue"><?= ax_e(ax_t('TEST.ZU_HUE')) ?></a></div>
 <?php /* 1.0.20 (Abgleich Nr. 26): Hue-Nachbildung neu starten; Handler ax_hue_neustart(), Wirkung: Startzeit vorher/nachher. */ ?>
 <h4 class="sm-h4" id="hue_neustart"><?= ax_e(ax_t('TEST.H_HUE_NEUSTART')) ?></h4>
 <div class="sm-small"><?= ax_e(ax_t('TEST.HUE_NEUSTART_TEXT')) ?></div>
@@ -2585,6 +2636,27 @@ if ($ax_hsz !== null) { $ax_hue_zeilen[] = array(ax_t('TEST.F_HUE_SUCHE_AUSGELOE
     function activate(id) {
         tabs.forEach(function (t) { t.classList.toggle('sm-active', t.getAttribute('data-ziel') === id); });
         document.querySelectorAll('.sm-seite').forEach(function (p) { p.classList.toggle('sm-active', p.id === id); });
+        // 1.0.23 (K6): das gemeinsame Formular der Reiter Echos und Ansagen, Befehle und Musik, Hue merkt sich den gezeigten.
+        if (/^tab-(echos|befehle|hue)$/.test(id)) {
+            document.querySelectorAll('#ax_einst input[name="activetab"]').forEach(function (f) { f.value = id; });
+        }
+    }
+    /* 1.0.23 (K6, Bauart Abfahrts-Assistent Nr. 27a): ein ungueltiges Feld in einem gerade nicht gezeigten Reiter des
+     * gemeinsamen Formulars hielte das Absenden still an ("not focusable"). Der Reiter wird gezeigt und das Feld
+     * markiert; den Hinweis zeigt der Browser daran. */
+    var ax_einst = document.getElementById('ax_einst');
+    if (ax_einst) {
+        ax_einst.addEventListener('invalid', function (ereignis) {
+            var z = ereignis.target;
+            while (z && z !== ax_einst) {
+                if (z.classList && z.classList.contains('sm-seite')) {
+                    if (!z.classList.contains('sm-active')) { activate(z.id); }
+                    ereignis.target.classList.add('sm-beanstandet');
+                    break;
+                }
+                z = z.parentNode;
+            }
+        }, true);
     }
     // Der Reiter Test laedt neu - seine Pruefzeilen (eigener Endpunkt) laufen
     // nur, wenn er serverseitig der offene ist. Die uebrigen schaltet das

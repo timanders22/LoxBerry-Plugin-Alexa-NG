@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 1.0.22
+Version 1.0.23
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -15,6 +15,18 @@ Hue-Probe auf eigener Netzadresse (ab Werk aus).
 > Routinen, Musik-Probe, Radio je Zone an einem Echo und die Hue-Nachbildung
 > mit den Lampen für Alexa – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 > Was noch aussteht, steht unter „Noch am Gerät zu messen“.
+
+## Neu in 1.0.23
+
+Neue Funktionen gibt es nicht. Die Punkte stammen aus dem Test am Echo Dot Max vom 21.11.2026 und aus dem Auftrag, den Reiter Einstellungen aufzuteilen.
+
+- **Geändert – Reiter Einstellungen aufgeteilt:** Die Felder stehen jetzt in drei eigenen Reitern: **Echos und Ansagen** (Plugin aktiv, Standardgerät, Gruppen, Bremse, Ruhezeit, Ankündigen, Ansagetexte im Protokoll, Sperre aus Loxone samt Haus-Schalter und Sperre für Alexa → Loxone), **Befehle und Musik** (Routinen, Textbefehle, Musik-Probe, Senderliste, Radio je Zone) und **Hue** (Hue-Probe, Lampen für Alexa, Benennung, Knopf Geräte suchen). Im Reiter **Einstellungen** bleiben Sprech- und Aktionstoken, die Sprachansagen des Plugins und Einstellungen sichern und zurückspielen – dort suchen andere Plugins das Sprechtoken. Die drei neuen Reiter sind ein Formular: jeder Knopf „Speichern“ speichert alle Felder wie bisher und kehrt in seinen Reiter zurück; wird ein Feld beanstandet, öffnet sich der Reiter, in dem es steht, und das Feld ist markiert. Gemessen auf dem Arbeitsrechner mit dem Wirkungstest (jedes Formular unverändert abgeschickt, Konfiguration gleich) und einer Probe am Webserver unter PHP 7.4 und 8.4; am Gerät nicht gemessen.
+- **Berichtigt – Hilfe zur Sperre für Alexa → Loxone:** Was der Echo beim Hue-Fehler 901 sagt, ist jetzt gemessen (Echo Dot Max, 21.11.2026): „Ich konnte das Testlicht nicht einschalten …“ – mit dem Namen der Lampe. Drei Befehle wurden abgewiesen, über MQTT ging nichts.
+- **Berichtigt – Gerätesuche in der Alexa-App:** Oberfläche, Hilfe und README beschreiben den gemessenen Weg „Gerät hinzufügen“ → „Sonstiges“; eine Kategorie „Andere“ gibt es in der aktuellen App nicht mehr. Nicht „Philips Hue“ wählen – dann sucht die App eine echte Bridge. Per Sprache fragte Alexa nur „Welche Art von Gerät suchst du?“ zurück und kam nicht weiter. Über die App fand der Echo Dot Max beide Lampen der Liste (72 Suchen, je Lampe 6 Abfragen); Schalten und Dimmen kamen am Broker an.
+- **Behoben – Länge im Protokoll:** Die Protokollzeile eines Textbefehls nannte die Länge 0 (am Gerät gemessen). Sie nennt jetzt die Zahl der Zeichen des gesendeten Satzes aus der Freigabeliste, den Satz selbst nie, auch nicht mit dem Haken „Ansagetexte protokollieren“. Eine Ansage, die vor dem Senden endet (gesperrt, Ruhezeit, ohne Anmeldung, Bremse), steht jetzt ebenfalls mit der Länge ihres Textes statt 0 im Protokoll; Routinen, Lautstärke, Musik und Radio senden keinen Satz und bleiben bei 0. Gemessen auf dem Arbeitsrechner unter PHP 7.4 und 8.4.
+- **Geändert – Hinweis, wo der Name eines verschwundenen Geräts noch steht:** Alexa NG liest dafür jetzt die Sprachausgabe aller anderen installierten Plugins (Liste aus `data/system/plugindatabase.json`, je Plugin jede Konfigurationsdatei `config/plugins/<ordner>/*.json` mit einem Block `tts`), nicht nur die fünf fest eingetragenen; ohne lesbare Liste gelten die fünf wie bisher. Gelesen wird nur, geschrieben nichts; eine Datei, die sich nicht lesen lässt, nennt der Hinweis mit dem Titel des Plugins. Gemessen an einer nachgebildeten Plugin-Liste unter PHP 7.4 und 8.4, eine gesperrte Datei unter WSL (PHP 8.3); am Gerät nicht gemessen.
+- **Berichtigt – MQTT-Gateway Fassung 2:** Reiter Einbindung in Loxone und Hilfe sagen jetzt, dass ohne die Haken der Hakenliste kein Wert den Miniserver erreicht, auch wenn der Broker ihn zeigt. Am 21.11.2026 waren am Gerät alle 11 Datenpunkte nicht angehakt; die Prüfzeile im Reiter Test meldete das richtig.
+- Die Kopfzeile zeigt jetzt die installierte Fassung, einheitlich in allen Plugins.
 
 ## Neu in 1.0.22
 
@@ -46,7 +58,7 @@ Die neue Funktion ist ab Werk aus; wer nichts einschaltet, merkt nur den neuen H
 
 Alle neuen Funktionen sind ab Werk aus; wer nichts einschaltet, merkt nur die neuen Hilfetexte und die neue Prüfzeile im Reiter Test.
 
-- **Neu – Sperre gilt auch für Alexa → Loxone** (Reiter Einstellungen, Abschnitt Sperre aus Loxone, eigener Haken, ab Werk aus). Bis 1.0.19 hielt die Sperre aus Loxone nur Ansagen und Ankündigungen an; Schaltbefehle eines Echos an die Lampen für Alexa gingen immer durch. Mit dem Haken bekommt der Echo bei gesetzter Sperre den Hue-Fehler 901 – dieselbe Antwort wie bei der Minutenbremse –, an MQTT geht nichts, das Protokoll nennt jeden abgewiesenen Befehl, und der Reiter Test zählt sie. Das gilt auch für die Probe-Lampe. Der Haken wirkt nur zusammen mit „Sperre aus Loxone annehmen“. Hat Loxone noch keinen Wert gesetzt, gilt „offen“, und der Reiter Test zeigt eine gelbe Zeile. Der Container der eigenen Netzadresse sieht nur seinen Ordner `data/plugins/alexang/hue`; das Plugin legt dort deshalb eine Kopie des Zustands ab (`loxsperre.json`), bei jedem Setzen der Sperre und mit jeder Container-Konfiguration. Was der Echo beim Fehler 901 sagt, ist nicht gemessen (siehe „Noch am Gerät zu messen“, Nr. 23). Gemessen auf dem Arbeitsrechner an der Nachbildung im Container-Betrieb (WSL, PHP 8.3) mit einer Broker-Attrappe: gesperrt bekamen Licht, Dimmer und Probe-Lampe den Fehler 901, und beim Broker kam nichts an; offen, ohne gesetzten Wert und ohne den Haken schaltete sie wie bisher. Die Fassung 1.0.19 schaltete in denselben Fällen durch. Die Bibliothek ist unter PHP 7.4 und 8.4 geprüft; am Gerät nicht gemessen.
+- **Neu – Sperre gilt auch für Alexa → Loxone** (Reiter Einstellungen, Abschnitt Sperre aus Loxone, eigener Haken, ab Werk aus). Bis 1.0.19 hielt die Sperre aus Loxone nur Ansagen und Ankündigungen an; Schaltbefehle eines Echos an die Lampen für Alexa gingen immer durch. Mit dem Haken bekommt der Echo bei gesetzter Sperre den Hue-Fehler 901 – dieselbe Antwort wie bei der Minutenbremse –, an MQTT geht nichts, das Protokoll nennt jeden abgewiesenen Befehl, und der Reiter Test zählt sie. Das gilt auch für die Probe-Lampe. Der Haken wirkt nur zusammen mit „Sperre aus Loxone annehmen“. Hat Loxone noch keinen Wert gesetzt, gilt „offen“, und der Reiter Test zeigt eine gelbe Zeile. Der Container der eigenen Netzadresse sieht nur seinen Ordner `data/plugins/alexang/hue`; das Plugin legt dort deshalb eine Kopie des Zustands ab (`loxsperre.json`), bei jedem Setzen der Sperre und mit jeder Container-Konfiguration. Was der Echo beim Fehler 901 sagt, war bis 1.0.22 nicht gemessen; gemessen am 21.11.2026, siehe „Neu in 1.0.23“. Gemessen auf dem Arbeitsrechner an der Nachbildung im Container-Betrieb (WSL, PHP 8.3) mit einer Broker-Attrappe: gesperrt bekamen Licht, Dimmer und Probe-Lampe den Fehler 901, und beim Broker kam nichts an; offen, ohne gesetzten Wert und ohne den Haken schaltete sie wie bisher. Die Fassung 1.0.19 schaltete in denselben Fällen durch. Die Bibliothek ist unter PHP 7.4 und 8.4 geprüft; am Gerät nicht gemessen.
 - **Neu – Haken „aktiv“ je Lampe.** Eine Lampe ohne den Haken bleibt in der Liste, die Nachbildung zeigt sie dem Echo aber nicht und nimmt keine Befehle für sie an. Lampen aus einer früheren Fassung gelten als aktiv, sie verhalten sich also wie bisher; eine Sicherung einer früheren Fassung bringt ihre Lampen aktiv zurück.
 - **Neu – Textbefehle** (`aktion=textbefehl&token=<Aktionstoken>&name=<Name>[&geraet=…]`, ab Werk aus). Alexa führt einen Satz aus, als wäre er am Echo gesprochen. Der Endpunkt nimmt nie einen freien Satz an, nur den Namen eines Eintrags der Freigabeliste im Reiter Einstellungen (je Zeile `name = Satz`, höchstens 20, je Satz höchstens 200 Zeichen), und nur mit dem Aktionstoken; ein mitgeschickter Parameter `text` wird abgewiesen. Mit dem Haken stehen die Einträge auch in der Vorlage „Alexa NG Aktionen“. Wie bei Routinen gelten die Sperre aus Loxone und die Ruhezeit nicht. Der Befehl hat den Aufbau aus dem Plugin Alexa2Lox (`Alexa.TextCommand`); am eigenen Echo nicht gemessen.
 - **Neu – Knopf „Geräte suchen“** im Reiter Test (Haken im Reiter Einstellungen, ab Werk aus): Alexa sucht über die Amazon-Anmeldung des Plugins nach neuen Geräten. Die Adresse stammt aus fremdem Code und ist am eigenen Konto nicht gemessen; ob danach ein Echo im Heimnetz sucht, zeigt der Reiter Test an der Zahl der Suchen. **„In Alexa löschen“ gibt es nicht:** Am 18.11.2026 hat das Plugin die Geräteliste über seinen Zugang nur gelesen. `GET /api/phoenix` antwortete mit HTTP 299 und leerem Inhalt, die Liste der Smart-Home-Geräte unter `/api/behaviors/entities` nannte 13 Geräte, aber keine Lampe dieser Nachbildung. Ohne sichere Erkennung der eigenen Lampen könnte ein Löschen fremde Geräte treffen; Lampen löschen Sie weiter in der Alexa-App.
@@ -519,7 +531,7 @@ Anmeldung, holt alle 6 Stunden die Geräteliste und sendet das Lebenszeichen.
    z. B. „Küche Echo“ → `kueche_echo`. Diesen Namen verwenden Loxone und die
    Plugins. Zwei gleiche Namen bekommen `_2`; ein vergebener Normalname wird
    nie umbenannt.
-4. Im Reiter **Einstellungen** ein **Standardgerät** wählen und bei Bedarf
+4. Im Reiter **Echos und Ansagen** ein **Standardgerät** wählen und bei Bedarf
    eigene Gruppen anlegen (`unten = kueche_echo,wohnzimmer`).
 5. Im Reiter **Geräte** eine **Testansage** schicken. Im Reiter **Test** geht
    die Testansage an das Standardgerät; ist keines eingestellt, wählt man das
@@ -554,9 +566,11 @@ Behebung.
 * Meldet Amazon ein Gerät nicht mehr (getauscht, entfernt), bleibt es im
   Reiter **Geräte** als „verschwunden seit …“ stehen. Darunter steht, wo sein
   Name noch eingetragen ist: Standardgerät, eigene Gruppen und die
-  Ausgabeart „Alexa-NG“ der Plugins Sprachsteuerung lokal, Octopus Dynamic,
-  Abfuhrkalender, Abfahrts-Assistent und Ferien und Feiertage (soweit ihre
-  Konfiguration lesbar ist; gelesen wird nur das Gerätefeld). Mit dem Knopf
+  Ausgabeart „Alexa-NG“ aller anderen installierten Plugins (seit 1.0.23 aus
+  der Plugin-Liste des LoxBerry; ohne lesbare Liste wie bisher die Plugins
+  Sprachsteuerung lokal, Octopus Dynamic, Abfuhrkalender, Abfahrts-Assistent
+  und Ferien und Feiertage), soweit ihre Konfiguration lesbar ist; gelesen
+  werden nur die Gerätefelder der Sprachausgabe. Mit dem Knopf
   **„austragen“** (und dem Haken zur Bestätigung) verschwindet die Zeile, und
   der Normalname ist wieder frei; bis dahin antwortet ein Aufruf an das Gerät
   mit 404 `GRUND=GERAET_VERSCHWUNDEN`. Ein Gerät, das Amazon noch meldet, lässt
@@ -677,7 +691,7 @@ Text oder Token. Ein ungültiger Name ergibt 400 `GRUND=ABSENDER`.
 
 ### Sperre aus Loxone
 
-Ab Werk aus (Reiter **Einstellungen**, Haken „Sperre aus Loxone annehmen“).
+Ab Werk aus (Reiter **Echos und Ansagen**, Haken „Sperre aus Loxone annehmen“).
 Loxone setzt sie etwa bei Abwesend, Gäste oder Schlafen:
 `?aktion=sperre&token=<Aktionstoken>&wert=1`, aufheben mit `wert=0`, oder über
 MQTT `alexang/befehl/sperre` mit `1`/`0` (Befehlseingang nötig). Gesperrt
@@ -697,7 +711,7 @@ Ankündigungen anhalten: `409 OK=0;UEBERSPRUNGEN=1;GRUND=HAUS_RUHE`, auch mit
 ### Routinen
 
 Das Feld **„Routinen, die Loxone starten darf (z. B. Radio an)“** steht im
-Reiter **Einstellungen** unter der eigenen Überschrift **Routinen**; je Zeile
+Reiter **Befehle und Musik** unter der eigenen Überschrift **Routinen**; je Zeile
 ein Name oder Sprachauslöser, genau wie in der Alexa-App. Die Namen zeigt der
 Reiter **Geräte** mit **„Routinen bei Amazon anzeigen“** — nur Name und
 Sprachauslöser, über dieselbe Abfrage wie der Start, ohne Inhalt und ohne
@@ -710,14 +724,14 @@ Befehl „Alexa Routine <Name>“ (`aktion=routine&name=<Name>`, URL-kodiert).
 
 ### Musik-Probe (Stufe 3)
 
-Ab Werk aus (Reiter **Einstellungen**, Haken „Musik-Probe erlauben (an einem
+Ab Werk aus (Reiter **Befehle und Musik**, Haken „Musik-Probe erlauben (an einem
 Echo gemessen)“). Sie spielt einen Sender über die Suche des Echos
 (`Alexa.Music.PlaySearchPhrase`) — eine **inoffizielle** Schnittstelle; an
 einem Echo gemessen (02.10.2026, TuneIn, Ton nach etwa 3 s). Gespielt wird nur, was Amazon selbst bei TuneIn oder
 Amazon Music findet: **kein beliebiger Stream, keine Adresse, keine eigene
 MP3**.
 
-* **Senderliste** (Reiter Einstellungen, eigene Überschrift „Sender (für
+* **Senderliste** (Reiter Befehle und Musik, eigene Überschrift „Sender (für
   Musik-Probe und Radio je Zone)“; sie gilt für beide und braucht keinen der
   Haken): je Zeile `Nummer = Sendername |
   anbieter`, Nummer 1–50, `anbieter` `tunein` oder `amazon` (ohne Angabe
@@ -743,13 +757,13 @@ MP3**.
 
 ### Radio je Zone (Stufe 3, mehrere Zonen nicht am Gerät erprobt)
 
-Ab Werk aus (Reiter **Einstellungen**, Haken „Radio je Zone erlauben“). Es
+Ab Werk aus (Reiter **Befehle und Musik**, Haken „Radio je Zone erlauben“). Es
 baut auf dem direkten Musikbefehl der Musik-Probe auf; am Gerät belegt ist
 ein Echo (Ton nach etwa 3 s). Mehrere Zonen gleichzeitig sind nur an einer
 Amazon-Attrappe geprüft. Kein beliebiger Stream, keine Adresse, keine eigene
 MP3.
 
-* **Zonentabelle** (Reiter Einstellungen): je Zeile `Nummer = Ziel`, Nummer
+* **Zonentabelle** (Reiter Befehle und Musik): je Zeile `Nummer = Ziel`, Nummer
   1–24. Ziel ist der Normalname eines Echos (`kueche`), `amazon:<name>` für
   eine Mehrraum-Musikgruppe der Alexa-App (als Ganzes angesprochen) oder
   `gruppe:<name>` für eine eigene Gruppe (jedes Gerät einzeln, nicht
@@ -810,7 +824,8 @@ einschalten“).
 * Schaltet ein Echo die Lampe, geht nur `alexang/hue_probe/ein` (`1`/`0`,
   flüchtig) über MQTT hinaus — **keine Verbindung zu Loxone-Steuerungen**.
 * Ablauf: Haken setzen, Speichern (die Meldung sagt, ob der Dienst läuft); in
-  der Alexa-App „Geräte suchen“ (Philips Hue) oder „Alexa, suche Geräte“;
+  der Alexa-App „Gerät hinzufügen“ → „Sonstiges“ (nicht „Philips Hue“: dort sucht die App eine
+  echte Bridge; per Sprache fragt Alexa nur „Welche Art von Gerät suchst du?“ zurück);
   danach „Alexa, schalte Loxone Probe ein“; im Reiter **Test**, Abschnitt
   Hue-Probe, nachsehen: ob eine Suche angekommen ist (Absender-IP, Zeit), ob
   ein Echo die Beschreibung geholt, die Lampe abgefragt oder geschaltet hat
@@ -875,7 +890,7 @@ Brückenadresse.
 #### Lampen für Alexa (Fassung 2)
 
 Alexa schaltet Lampen, die Loxone steuert – lokal, ohne Cloud und ohne Skill. Die Nachbildung zeigt einem Echo
-die Lampen der **Freigabeliste** (Reiter **Einstellungen**, Abschnitt „Alexa → Loxone“); ab Werk ist die Liste leer
+die Lampen der **Freigabeliste** (Reiter **Hue**, Abschnitt „Alexa → Loxone“); ab Werk ist die Liste leer
 und die Nachbildung aus. Am Echo gemessen (03.10.2026, eigene Netzadresse): die Probe-Lampe und Lampen der Liste
 in allen drei Arten – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 
@@ -889,10 +904,10 @@ in allen drei Arten – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 * **Tür, Tor, Garage, Alarm, Schloss** (auch `door`, `gate`, `lock`): solche Namen brauchen den Haken „bewusst
   freigeben“. Die Prüfung ist bewusst weit – auch „Monitor“ enthält „tor“; dann genügt der Haken.
 * **Feste ID:** Jede Lampe behält ihre ID, auch beim Umbenennen; Alexa ordnet nach ihr. Umbenennen deshalb hier,
-  speichern, in der Alexa-App „Geräte suchen“ – erst danach, falls nötig, den Namen in der Alexa-App ändern. Eine
+  speichern, in der Alexa-App neu suchen („Gerät hinzufügen“ → „Sonstiges“) – erst danach, falls nötig, den Namen in der Alexa-App ändern. Eine
   gelöschte ID wird nie wieder vergeben. ID 1 gehört der Probe-Lampe.
 * **Art ändern:** Wird die Art einer Lampe geändert (Schalter, Licht, Dimmer), die Lampe in der Alexa-App löschen
-  und danach „Geräte suchen“. Alexa merkt sich die Art je Gerät, in der App lässt sie sich nicht ändern (gemessen
+  und danach neu suchen („Gerät hinzufügen“ → „Sonstiges“). Alexa merkt sich die Art je Gerät, in der App lässt sie sich nicht ändern (gemessen
   03.10.2026 am Echo).
 * **Befehl an Loxone** (MQTT, flüchtig, nie retained):
 
@@ -928,7 +943,7 @@ in allen drei Arten – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 
 Alexa NG arbeitet in beide Richtungen **ohne Skill, ohne eigene Cloud und ohne Fernzugriff auf den Miniserver**: Loxone → Alexa über die Amazon-Anmeldung (Ansagen, Lautstärke, Routinen, Radio), Alexa → Loxone über die Hue-Nachbildung im Heimnetz und MQTT. Fällt ein fremder Cloud-Dienst aus oder sperrt Loxone den Fernzugriff, schalten die Lampen weiter; die Ansagen hängen nur an Amazon.
 
-- **Benennung:** keinen Raum- oder Gruppennamen der Alexa-App als Gerätenamen und keinen Namen, der nur aus einem Raumnamen besteht; kurze, eindeutige Namen. Neue Lampen per Sprache suchen lassen („Alexa, suche neue Geräte“), einige Minuten warten, notfalls die Alexa-App neu starten oder ihren Zwischenspeicher leeren. Nur ein LoxBerry mit eingeschalteter Nachbildung im Heimnetz.
+- **Benennung:** keinen Raum- oder Gruppennamen der Alexa-App als Gerätenamen und keinen Namen, der nur aus einem Raumnamen besteht; kurze, eindeutige Namen. Neue Lampen in der Alexa-App suchen lassen („Gerät hinzufügen“ → „Sonstiges“, nicht „Philips Hue“; per Sprache fragte Alexa am 21.11.2026 an einem Echo Dot Max nur „Welche Art von Gerät suchst du?“ zurück), einige Minuten warten, notfalls die Alexa-App neu starten oder ihren Zwischenspeicher leeren. Nur ein LoxBerry mit eingeschalteter Nachbildung im Heimnetz.
 - **Gerätearten:** Über Hue kennt Alexa nur Lampen und Steckdosen. Jalousien gehen nicht – „öffne/schließe“ versteht Alexa bei einer Lampe nicht (gemessen 18.11.2026), und ein Prozentwert unter einem Raumbefehl für Licht wäre gefährlich. Für Beschattung eine Lampe der Art Taster/Szene, die in Loxone eine Szene auslöst.
 - **Lokal nicht möglich:** Sensoren als Auslöser von Alexa-Routinen, die Frage nach der Ist-Temperatur, ein echtes Thermostat, Tor oder Schloss mit gesprochenem Sicherheitscode. Das geht nur über einen Smart-Home-Skill mit Cloud oder über Matter; Matter ist nicht eingebaut.
 - **Tor und Garage:** Namen mit Tür, Tor, Garage, Alarm oder Schloss brauchen den Haken „bewusst freigeben“. Ein Sicherheitscode wird nicht abgefragt – wer einen freigegebenen Echo erreicht, kann schalten.
@@ -949,7 +964,7 @@ gewählt) und brauchen keine Vorlage:
 | [Abfahrts-Assistent](https://github.com/timanders22/LoxBerry-Plugin-Abfahrtsassistent) | 1.6.19 |
 | [FerienFeiertage](https://github.com/timanders22/LoxBerry-Plugin-FerienFeiertage) | 1.2.18 |
 
-Die Ausgabeart Alexa-NG tragen über das gemeinsame Sprachmodul inzwischen auch Spotpreis aWATTar (ab 1.2.33), Weissware (ab 0.9.38), Robonect (ab 1.1.17), Saugroboter-Valetudo (ab 1.1.14) und weitere Plugins. Die Tabelle nennt die fünf, deren Konfiguration Alexa NG liest, wenn ein Gerät ausgetragen wird (Reiter Geräte, Hinweis, wo der Name noch steht).
+Die Ausgabeart Alexa-NG tragen über das gemeinsame Sprachmodul inzwischen auch Spotpreis aWATTar (ab 1.2.33), Weissware (ab 0.9.38), Robonect (ab 1.1.17), Saugroboter-Valetudo (ab 1.1.14) und weitere Plugins. Wo ein Gerätename noch eingetragen ist (Reiter Geräte, Hinweis bei einem verschwundenen Gerät), liest Alexa NG seit 1.0.23 bei allen installierten Plugins nach (`data/system/plugindatabase.json`, je Plugin jede Konfigurationsdatei mit einem Block `tts`); die Tabelle nennt die fünf, die es liest, wenn die Plugin-Liste fehlt oder nicht lesbar ist.
 
 Dort trägt man ein:
 
@@ -1018,7 +1033,7 @@ sagt, welche Fassung läuft.
 „Befehle über MQTT annehmen“; Ansagen, Ankündigungen, Lautstärke, Radio und Routinen brauchen dazu „Echos über
 MQTT steuern“ (fehlt er in einer Konfiguration bis 1.0.5, gilt der Wert des ersten Hakens), Routinen außerdem
 „Routine per MQTT erlauben“, Textbefehle (seit 1.0.21) außerdem „Textbefehl per MQTT erlauben“ und „Textbefehle
-aus Loxone annehmen“ (Reiter Einstellungen). Jede Nachricht bekommt eine Quittung auf `alexang/befehl/<name>/quittung`
+aus Loxone annehmen“ (Reiter Befehle und Musik). Jede Nachricht bekommt eine Quittung auf `alexang/befehl/<name>/quittung`
 (`angenommen` oder `abgelehnt: <Grund>`, nie retained). Sperrzeiten: Routine und Textbefehl 10 s, sonst 0 s (die
 Bremsen des Plugins gelten weiter). Die Brücke abonniert:
 
@@ -1130,7 +1145,8 @@ zurückbehaltenen MQTT-Themen ab und löscht die Zweitschriften.
     (`SUCHE=AMAZON`)?
 12. Sperre aus Loxone: setzt Loxone sie zuverlässig (HTTP und MQTT)?
 13. Verschwundene Geräte: Hinweis nach einem Echo-Tausch; sind die
-    Konfigurationen der fünf Plugins am Gerät lesbar?
+    Konfigurationen der Nachbar-Plugins am Gerät lesbar (seit 1.0.23 alle
+    installierten Plugins aus `data/system/plugindatabase.json`)?
 14. Radio je Zone: eine Zone, dann alle; mit einem zweiten Echo zwei Zonen
     mit verschiedenen Sendern gleichzeitig; eine Amazon-Gruppe als Zone
     (synchron?); Stopp und Lautstärke je Zone; ab wie vielen Befehlen je
@@ -1164,6 +1180,8 @@ zurückbehaltenen MQTT-Themen ab und löscht die Zweitschriften.
 22. Spiegeln der Rückmeldung: wirkt ein zweites „Alexa, … ein“ nach einem Ausschalten in der App, und entsteht
     keine Schaltschleife?
 23. Hue-Fehler 901 (ab Werk aus): wie führt die Alexa-App eine Lampe danach – nur einmal „reagiert nicht“?
+    (Gemessen 21.11.2026 an einem Echo Dot Max mit der Sperre aus Loxone: Alexa sagt „Ich konnte das Testlicht nicht
+    einschalten …“, drei Befehle abgewiesen, kein MQTT. Wie die App die Lampe danach führt, ist nicht gemessen.)
 24. Befehlsbrücke als loxberry gegen den echten Broker; Dauer eines Radio-Befehls an alle Zonen gegen die
     Wächtergrenze von 180 s.
 25. Haus-Schalter als Sperre (1.0.22, ab Werk aus): hält ein gesetzter `haus/ansage/ruhe` am echten Broker eine

@@ -2158,7 +2158,8 @@ function ax_geraet_austragen($normal)
     return array(true, '');
 }
 
-/** Plugins mit der Ausgabeart "Alexa-NG": Ordner => (Titel, Konfigurationsdatei). */
+/** Plugins mit der Ausgabeart "Alexa-NG": Ordner => (Titel, Konfigurationsdatei). Seit 1.0.23 nur noch der Rueckfall
+ * von ax_nachbar_plugins(), wenn data/system/plugindatabase.json fehlt oder nicht lesbar ist. */
 function ax_bekannte_plugins()
 {
     return array(
@@ -2171,8 +2172,56 @@ function ax_bekannte_plugins()
 }
 
 /**
+ * Die anderen installierten Plugins dieses LoxBerry: Ordner => array(Titel, Dateinamen). Seit 1.0.23 (Befund
+ * 21.11.2026: ax_bekannte_plugins() nannte 5 Linien, 37 tragen das Sprachmodul mit dem Weg alexang). Gelesen nach der
+ * Bauart des gemeinsamen Sprachmoduls (ansage_plugin_ordner_aus(), ansage_json_datei()): die Datenbank duldsam
+ * ({"plugins": {md5: {...}}}, eine Liste oder die Eintraege ohne "plugins"), je Eintrag folder nach Muster
+ * [A-Za-z0-9_-]{1,64}, der Titel aus title (sonst name, sonst der feste Titel, sonst der Ordner). Die Datei mit dem
+ * Block tts heisst je Plugin anders (sprachsteuerung.json, awm.json, abfahrt.json ...): genommen wird jede *.json
+ * direkt in config/plugins/<ordner>/ (nicht darunter; die Zweitschrift liegt daneben, nicht darin). Der eigene Ordner
+ * faellt weg - eigene Ansagen gehen nie an Alexa NG selbst (ax_ansage_ohne_selbst()). Ohne lesbare Datenbank gilt die
+ * feste Liste wie bis 1.0.22. Liest nur, schreibt nichts; geprueft wird bei jedem Aufruf neu.
+ */
+function ax_nachbar_plugins($home, $selbst)
+{
+    $fest = ax_bekannte_plugins();
+    $db = $home . '/data/system/plugindatabase.json';
+    $gr = is_file($db) ? @filesize($db) : false;
+    $d = (is_int($gr) && $gr <= 4194304 && is_readable($db)) ? json_decode((string) @file_get_contents($db), true) : null;
+    if (!is_array($d)) {
+        $aus = array();
+        foreach ($fest as $o => $e) { $aus[$o] = array($e[0], array($e[1])); }
+        return $aus;
+    }
+    $liste = (isset($d['plugins']) && is_array($d['plugins'])) ? $d['plugins'] : $d;
+    $aus = array();
+    foreach ($liste as $e) {
+        if (!is_array($e) || !isset($e['folder']) || !is_string($e['folder'])
+            || !preg_match('/^[A-Za-z0-9_\-]{1,64}\z/', $e['folder'])) {
+            continue;
+        }
+        $o = $e['folder'];
+        if ($o === $selbst || isset($aus[$o])) { continue; }
+        $titel = '';
+        foreach (array('title', 'name') as $f) {
+            if ($titel === '' && isset($e[$f]) && is_string($e[$f])) { $titel = ax_anzeige_text($e[$f]); }
+        }
+        if ($titel === '') { $titel = isset($fest[$o]) ? $fest[$o][0] : $o; }
+        $namen = array();
+        $inhalt = is_dir($home . '/config/plugins/' . $o) ? @scandir($home . '/config/plugins/' . $o) : false;
+        foreach (is_array($inhalt) ? $inhalt : array() as $n) {
+            if (is_string($n) && preg_match('/^[A-Za-z0-9_][A-Za-z0-9_.\-]{0,99}\.json\z/', $n)) { $namen[] = $n; }
+        }
+        $aus[$o] = array($titel, $namen);
+    }
+    return $aus;
+}
+
+/**
  * Wo steht ein Normalname noch (K4)? Standardgeraet, eigene Gruppen und die
- * Ausgabeart "Alexa-NG" der bekannten Plugins, soweit ihre Konfiguration
+ * Ausgabeart "Alexa-NG" der anderen installierten Plugins (seit 1.0.23 aus
+ * ax_nachbar_plugins(), je Plugin jede Konfigurationsdatei mit Block tts; bis
+ * 1.0.22 nur die fuenf aus ax_bekannte_plugins()), soweit ihre Konfiguration
  * lesbar ist. Gelesen werden dort nur tts.mode und tts.alexa_geraet (Ziel 1)
  * und seit 1.0.22 aus tts.ziele je Eintrag art, wo und ein: die weiteren Ziele
  * des gemeinsamen Sprachmoduls (seit 1.2.0). Bei art "alexang" ist wo das Feld
@@ -2193,24 +2242,29 @@ function ax_name_verwendung($normal, array $cfg)
     }
     $p = ax_paths();
     if ($p['lbhome'] === '') { return array($orte, $nicht); }
-    foreach (ax_bekannte_plugins() as $ordner => $d) {
-        $datei = $p['lbhome'] . '/config/plugins/' . $ordner . '/' . $d[1];
-        if (!is_file($datei)) { continue; }
-        $roh = is_readable($datei) ? @file_get_contents($datei) : false;
-        $j = ($roh !== false) ? json_decode((string) $roh, true) : null;
-        if (!is_array($j)) { $nicht[] = $d[0]; continue; }
-        $t = (isset($j['tts']) && is_array($j['tts'])) ? $j['tts'] : array();
+    foreach (ax_nachbar_plugins($p['lbhome'], $p['plugin']) as $ordner => $d) {
         $wo_liste = array();
-        if (isset($t['mode']) && $t['mode'] === 'alexang') {
-            $wo_liste[] = (isset($t['alexa_geraet']) && is_string($t['alexa_geraet'])) ? $t['alexa_geraet'] : '';
-        }
-        if (isset($t['ziele']) && is_array($t['ziele'])) {
-            foreach ($t['ziele'] as $z) {
-                if (!is_array($z) || !isset($z['art']) || $z['art'] !== 'alexang') { continue; }
-                if (array_key_exists('ein', $z) && !($z['ein'] === 1 || $z['ein'] === '1' || $z['ein'] === true)) { continue; }
-                $wo_liste[] = (isset($z['wo']) && is_string($z['wo'])) ? $z['wo'] : '';
+        $kaputt = false;
+        foreach ($d[1] as $name) {
+            $datei = $p['lbhome'] . '/config/plugins/' . $ordner . '/' . $name;
+            if (!is_file($datei)) { continue; }
+            $gr = @filesize($datei);
+            $roh = (is_readable($datei) && is_int($gr) && $gr <= 1048576) ? @file_get_contents($datei) : false;
+            $j = ($roh !== false) ? json_decode((string) $roh, true) : null;
+            if (!is_array($j)) { $kaputt = true; continue; }
+            $t = (isset($j['tts']) && is_array($j['tts'])) ? $j['tts'] : array();
+            if (isset($t['mode']) && $t['mode'] === 'alexang') {
+                $wo_liste[] = (isset($t['alexa_geraet']) && is_string($t['alexa_geraet'])) ? $t['alexa_geraet'] : '';
+            }
+            if (isset($t['ziele']) && is_array($t['ziele'])) {
+                foreach ($t['ziele'] as $z) {
+                    if (!is_array($z) || !isset($z['art']) || $z['art'] !== 'alexang') { continue; }
+                    if (array_key_exists('ein', $z) && !($z['ein'] === 1 || $z['ein'] === '1' || $z['ein'] === true)) { continue; }
+                    $wo_liste[] = (isset($z['wo']) && is_string($z['wo'])) ? $z['wo'] : '';
+                }
             }
         }
+        if ($kaputt) { $nicht[] = $d[0]; }
         $mit_name = false;
         $mit_std = false;
         foreach ($wo_liste as $ger) {
@@ -3409,14 +3463,21 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
     $t0 = microtime(true);
     $cfg = ax_config();
     $f = array('OK' => 0);
-    $ende = function ($http, array $felder, $versucht = false, $ziele = array(), $laenge = 0) use ($aktion, $quelle, $t0, $cfg, &$par) {
+    /* 1.0.23 (gemessen am Geraet 21.11.2026: "TEXTBEFEHL von 127.0.0.1: ..., Laenge 0"): die Zahl der Zeichen des
+     * Satzes, der hinausgeht - beim Textbefehl der Satz aus der Freigabeliste, bei Ansage und Ankuendigung der Text.
+     * Bis 1.0.22 kam nur an, was der Aufruf von $ende mitgab: der Textbefehl gab nie etwas mit, und jede Ansage, die
+     * vor Amazon endete (Sperre, Ruhezeit, Anmeldung, Bremse), stand mit Laenge 0 im Protokoll. Protokolliert wird nur
+     * die Zahl; den Satz eines Textbefehls schreibt das Protokoll nie (der Textblock unten liest nur $par['text'], und
+     * den weist der Textbefehl ab). Routine, Lautstaerke, Musik und Radio senden keinen Satz: 0 wie bisher. */
+    $laenge_satz = 0;
+    $ende = function ($http, array $felder, $versucht = false, $ziele = array(), $laenge = 0) use ($aktion, $quelle, $t0, $cfg, &$par, &$laenge_satz) {
         $grund = isset($felder['GRUND']) ? $felder['GRUND'] : '-';
         $namen = array();
         foreach ($ziele as $g) { $namen[] = $g['normal']; }
         $wer = ($quelle === 'http' && isset($_SERVER['REMOTE_ADDR']))
              ? preg_replace('/[^0-9a-fA-F:.]/', '', (string) $_SERVER['REMOTE_ADDR']) : $quelle;
         $zeile = strtoupper($aktion) . ' von ' . $wer . ': ' . ($namen ? implode(',', $namen) : (isset($par['geraet']) ? ax_name_normal($par['geraet']) : '-'))
-               . ', Laenge ' . (int) $laenge . ', HTTP ' . $http . ', OK=' . (int) $felder['OK'] . ', GRUND=' . $grund
+               . ', Laenge ' . max((int) $laenge, (int) $laenge_satz) . ', HTTP ' . $http . ', OK=' . (int) $felder['OK'] . ', GRUND=' . $grund
                . ', ' . (int) round((microtime(true) - $t0) * 1000) . ' ms';
         if (!empty($cfg['texte_protokollieren']) && isset($par['text']) && is_string($par['text']) && $laenge > 0) {
             preg_match('/^.{0,60}/su', trim($par['text']), $mt);
@@ -3426,7 +3487,7 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
         ax_log(($felder['OK'] || !empty($felder['UEBERSPRUNGEN']) || $grund === 'DOPPELT') ? 'INFO' : 'WARN', $zeile);
         if ($versucht) {
             $letzte = array('zeit' => time(), 'aktion' => $aktion, 'geraet' => $namen ? implode(',', $namen) : '-',
-                            'laenge' => (int) $laenge, 'ergebnis' => (int) $felder['OK'], 'grund' => ($grund === '' ? '-' : $grund),
+                            'laenge' => max((int) $laenge, (int) $laenge_satz), 'ergebnis' => (int) $felder['OK'], 'grund' => ($grund === '' ? '-' : $grund),
                             'quelle' => $quelle);
             $p = ax_paths();
             ax_write_json($p['datadir'] . '/letzte.json', $letzte, 0644);
@@ -3468,6 +3529,7 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
             return $ende(200, array('OK' => 1, 'UEBERSPRUNGEN' => 1, 'GRUND' => 'TEXT_NULL'));
         }
         $laenge = ax_zeichen($text);
+        $laenge_satz = $laenge;
         $teile = $ssml ? array($text) : ax_text_teilen($text);
         if (isset($par['laut']) && $par['laut'] !== '') {
             if (!preg_match('/^[0-9]{1,3}\z/', $par['laut']) || (int) $par['laut'] > 100) { $f['GRUND'] = 'LAUT'; return $ende(400, $f); }
@@ -3519,6 +3581,7 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
             if ($tb['name'] === $par['name']) { $tb_satz = $tb['text']; break; }
         }
         if ($tb_satz === '') { $f['GRUND'] = 'TEXTBEFEHL_NICHT_FREIGEGEBEN'; return $ende(409, $f); }
+        $laenge_satz = ax_zeichen($tb_satz);     // 1.0.23: nur die Zahl, nie der Satz
     } else {
         if (!isset($par['name']) || !is_string($par['name']) || trim($par['name']) === '' || strlen($par['name']) > 80
             || preg_match('/[\x00-\x1F\x7F]/', $par['name']) || preg_match('//u', $par['name']) !== 1) {
