@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 1.0.21
+Version 1.0.22
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -15,6 +15,24 @@ Hue-Probe auf eigener Netzadresse (ab Werk aus).
 > Routinen, Musik-Probe, Radio je Zone an einem Echo und die Hue-Nachbildung
 > mit den Lampen für Alexa – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 > Was noch aussteht, steht unter „Noch am Gerät zu messen“.
+
+## Neu in 1.0.22
+
+Die neue Funktion ist ab Werk aus; wer nichts einschaltet, merkt nur den neuen Haken im Reiter Einstellungen. Die übrigen Punkte beheben Befunde eines fremden Prüfers; wo nur gehärtet wurde, steht es dabei.
+
+- **Neu – Haus-Schalter `haus/ansage/ruhe` auch als Sperre für eingehende Ansagen** (Reiter Einstellungen, Abschnitt Sperre aus Loxone, eigener Haken, ab Werk aus). Den Schalter „Ansagen aus“ setzt Loxone für das ganze Haus (retained, `1` = Ansagen aus, `0` = frei). Bisher achtete Alexa NG ihn nur für die eigenen Ansagen über das gemeinsame Sprachmodul. Mit dem Haken hält es auch Ansagen und Ankündigungen an, die hereinkommen – über HTTP, von anderen Plugins und über MQTT (Befehlsbrücke) –, solange der Schalter auf `1` steht: Antwort `409 OK=0;UEBERSPRUNGEN=1;GRUND=HAUS_RUHE`, eine Zeile im Protokoll; über die Befehlsbrücke bleibt die Quittung wie bei der Sperre aus Loxone. Anders als bei der Sperre aus Loxone gilt das auch mit `dringend=1` – wie bei allen Plugins mit dem Sprachmodul, die bei `1` auch Dringendes nicht sprechen; nur die Testansage im Reiter Test geht durch. Lautstärke, Routinen, Textbefehle, Musik und Radio gelten weiter. Gelesen wird der Schalter auf demselben Weg wie im Sprachmodul, bei jeder Ansage in einer kurzen Sitzung am Broker des LoxBerry (höchstens 2 s). Gibt er keine Aussage (Broker nicht erreichbar, nie gesetzt, `-`), wird gesprochen, nicht gesperrt; das Protokoll sagt es höchstens einmal je Stunde, und der Reiter Test zeigt es gelb. Der Haken ist unabhängig von „Sperre aus Loxone annehmen“ und reist in der Sicherung mit. Gemessen auf dem Arbeitsrechner unter PHP 7.4 und 8.4 gegen eine Nachbildung des Brokers: Schalter `1` hielt Ansagen und Ankündigungen über HTTP und MQTT an, `0`, kein Wert, `-` und ein nicht erreichbarer Broker ließen sie durch, ebenso die Testansage und den Haken aus; `dringend=1` hielt der Schalter `1` an; die Lautstärke blieb unberührt. Ohne diese Änderung kam in denselben Fällen nie `GRUND=HAUS_RUHE`. Am Gerät und mit dem echten Broker nicht gemessen.
+- **Behoben – Einstellungen zurückspielen zieht MQTT nach wie das Speichern im Reiter MQTT.** Wechselte mit der Sicherung das Themen-Präfix oder ging MQTT aus, blieben bis 1.0.21 die zurückbehaltenen Themen unter dem bisherigen Präfix beim Broker stehen, und die Befehlsbrücke folgte erst dem Wächter im Takt. Jetzt geschieht an einer Stelle dasselbe wie beim Speichern: unter dem bisherigen Präfix abräumen, die Abo-Datei nachführen und die Befehlsbrücke sofort schalten; die Meldung sagt, was geschah. Das Speichern im Reiter MQTT verhält sich unverändert (Hinweise, Aufrufe an den Broker und Protokollzeilen vorher und nachher gleich). Gemessen in WSL (PHP 8.3) mit Attrappen für `mosquitto_sub`/`mosquitto_pub`.
+- **Behoben – Sicherung und Vorlagen werden nicht zwischengespeichert:** Der Download der Sicherung und der Loxone-Vorlagen trägt `Cache-Control: no-store` (die Sicherung trägt beide Token, die Vorlage „Aktionen“ das Aktionstoken).
+- **Behoben – lange Listen kehren nach einer Beanstandung zurück:** Wurde beim Speichern der Einstellungen ein Feld abgewiesen, fielen bis 1.0.21 Eingaben über 2100 Byte weg – darunter eine gültige Freigabeliste für Textbefehle oder eine gültige Senderliste. Die Grenze dieser beiden Felder folgt jetzt aus ihrer Wertprüfung; alle anderen bleiben bei 2100 Byte.
+- **Behoben – Selbsttest zählt keine Amazon-Gruppen:** `aktion=selftest` meldet in `ONLINE` nur Echos, wie Status und MQTT; bis 1.0.21 zählte eine Gruppe, die online war, mit.
+- **Behoben – Hinweis beim Austragen eines Geräts:** Der Hinweis, wo ein Name noch steht, liest bei den Nachbar-Plugins jetzt auch die weiteren Ziele des Sprachmoduls (`tts.ziele` mit der Art Alexa-NG); ein Ziel ohne Gerät zählt als Standardgerät, ein ausgeschaltetes nicht.
+- **Behoben – Text zu `EIN_GERAET`:** „eine Routine oder ein Textbefehl braucht genau ein Gerät“.
+- **Behoben – Vorlage „Rückmeldung“ der Lampen ohne Taster/Szene:** Eine Lampe der Art Taster/Szene hat keine Rückmeldung; die Vorlage trug für sie bis 1.0.21 trotzdem Befehle. Jetzt wie die Vorlage „Alexa NG MQTT-Befehle“.
+- **Behoben – Hue-Wächter im Takt nach derselben Regel für die Upgrade-Marke:** Beide Wächter der Hue-Probe fragten nur, ob die Marke liegt. Eine Marke, die ein abgebrochenes Update liegen ließ, hielt sie für immer aus, während Takt und Befehlsbrücke sie nach einer Stunde nicht mehr gelten ließen. Jetzt gilt für alle dieselbe Regel (Unixzeit, nicht in der Zukunft, jünger als 3600 s).
+- **Behoben – Text der Befehlsbrücke:** Die Begründung der Sperrzeit nennt den Werkswert der Wiederholbremse aus den Vorgaben (5 s) statt fest 30 s.
+- **Härtung, kein Fehler im Betrieb gemessen – `bin/hue_dienst.sh` nach der Bauart der Befehlsbrücke:** `stop` legt nichts mehr an (auch nicht als root bei der Deinstallation); `start` fragt root und Upgrade-Marke vor jedem Anlegen; liefert die Uhr keine Zahl, gilt die Marke; `hue_start.log` wird über 256 kB auf die letzten 300 Zeilen gekappt; geerbte Deskriptoren über 2 werden beim Start geschlossen (das Skript läuft dafür einmal unter bash neu; ohne bash schließt es die Nummern 3 bis 9). Gemessen in WSL unter dash und bash.
+- **Härtung, kein Fehler im Betrieb gemessen – Sperre des Takts:** `takt.lock` wird mit close-on-exec geöffnet, und der Start eines Hue-Vorgangs schließt vorher die geerbten Deskriptoren. Gemessen in WSL: Bis 1.0.21 erbte die vom Takt gestartete Hue-Probe die Sperre. Den nächsten Takt hielt das nicht auf, weil der Takt die Sperre am Ende ausdrücklich freigibt; nur ein Takt, der mitten im Lauf abbricht, hätte sie bei dem noch laufenden Kind gelassen.
+- **README:** Die Plugins, die die Ausgabeart Alexa-NG über das gemeinsame Sprachmodul tragen, sind im Abschnitt „Aus anderen Plugins“ nachgetragen.
 
 ## Neu in 1.0.21
 
@@ -643,7 +661,7 @@ leerer Text ergibt 200 `UEBERSPRUNGEN=1` (für den Statusbaustein). `<` oder
 
 **Antwortcodes:** 200 gesendet, leerer Text (`TEXT_NULL`) oder unverändert (Routine, Lautstärke, Musik) · 400 Parameter
 falsch · 403 Token · 404 Gerät unbekannt · 409 Plugin aus bzw. nicht
-freigegeben, Sperre aus Loxone (`GESPERRT`) oder Ruhezeit (`RUHEZEIT`) – seit 1.0.12, bis dahin 200 · 429 Bremse (`BREMSE;WARTE=s`, `STUNDENGRENZE`) oder
+freigegeben, Sperre aus Loxone (`GESPERRT`), Haus-Schalter `haus/ansage/ruhe` (`HAUS_RUHE`, seit 1.0.22, ab Werk aus) oder Ruhezeit (`RUHEZEIT`) – seit 1.0.12, bis dahin 200 · 429 Bremse (`BREMSE;WARTE=s`, `STUNDENGRENZE`) oder
 derselbe Ansagetext binnen 5 s (`DOPPELT`, seit 1.0.12; bis dahin 200 `UNVERAENDERT`) · 503 Anmeldung
 fehlt oder abgelaufen, Amazon gestört (`AMAZON`, `AMAZON_RATE`, `NETZ`,
 `AMAZON_UNERWARTET`), beschäftigt · 500 interner Fehler.
@@ -670,6 +688,11 @@ im Datenordner), dann gilt „offen“, bis Loxone ihn neu setzt — der Reiter
 **Test** zeigt das als gelbe Zeile. Im Reiter **Einbindung in Loxone** erzeugt
 **„Vorlage Aktionen erzeugen“** den virtuellen Ausgang „Alexa NG Aktionen“ mit dem
 Befehl „Alexa Ansagen sperren“ (`VQ_alexang_aktionen.xml`, trägt das Aktionstoken).
+
+Seit 1.0.22 kann mit einem eigenen Haken (ab Werk aus, Abschnitt Sperre aus Loxone)
+auch der Haus-Schalter `haus/ansage/ruhe` aus Loxone eingehende Ansagen und
+Ankündigungen anhalten: `409 OK=0;UEBERSPRUNGEN=1;GRUND=HAUS_RUHE`, auch mit
+`dringend=1`, nur die Testansage geht durch; ohne Aussage des Schalters wird gesprochen (siehe „Neu in 1.0.22“).
 
 ### Routinen
 
@@ -926,7 +949,7 @@ gewählt) und brauchen keine Vorlage:
 | [Abfahrts-Assistent](https://github.com/timanders22/LoxBerry-Plugin-Abfahrtsassistent) | 1.6.19 |
 | [FerienFeiertage](https://github.com/timanders22/LoxBerry-Plugin-FerienFeiertage) | 1.2.18 |
 
-Folgen sollen: Spotpreis aWATTar, Weissware, Robonect, Saugroboter-Valetudo.
+Die Ausgabeart Alexa-NG tragen über das gemeinsame Sprachmodul inzwischen auch Spotpreis aWATTar (ab 1.2.33), Weissware (ab 0.9.38), Robonect (ab 1.1.17), Saugroboter-Valetudo (ab 1.1.14) und weitere Plugins. Die Tabelle nennt die fünf, deren Konfiguration Alexa NG liest, wenn ein Gerät ausgetragen wird (Reiter Geräte, Hinweis, wo der Name noch steht).
 
 Dort trägt man ein:
 
@@ -1143,6 +1166,8 @@ zurückbehaltenen MQTT-Themen ab und löscht die Zweitschriften.
 23. Hue-Fehler 901 (ab Werk aus): wie führt die Alexa-App eine Lampe danach – nur einmal „reagiert nicht“?
 24. Befehlsbrücke als loxberry gegen den echten Broker; Dauer eines Radio-Befehls an alle Zonen gegen die
     Wächtergrenze von 180 s.
+25. Haus-Schalter als Sperre (1.0.22, ab Werk aus): hält ein gesetzter `haus/ansage/ruhe` am echten Broker eine
+    Ansage aus Loxone und eine von einem Nachbar-Plugin an, und wie lange braucht das Lesen am Gerät?
 
 ## Voraussetzungen
 

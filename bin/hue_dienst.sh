@@ -12,6 +12,30 @@
 # unser Skript, kein drittes Argument (Regeln/06). Die PID-Datei allein ist
 # kein Beleg.
 
+# 1.0.22 (Befund eines fremden Pruefers 21.11.2026, Bauart bin/befehlsbruecke.sh 1.0.1): zuerst ALLE geerbten
+# Deskriptoren ueber 2 schliessen - sonst erbte die Hue-Probe (Dauerdienst) Sperren und Dateien des Aufrufers (Takt,
+# Oberflaeche). Gerufen wird das Skript mit /bin/sh (dash); dash kann nur die Nummern 3 bis 9 schliessen. Ist bash da,
+# laeuft das Skript deshalb einmal neu unter bash (alles hier ist POSIX und laeuft unter beiden; die Marke
+# AX_HUE_DIENST_BASH verhindert eine Schleife); ohne bash schliesst es 3 bis 9. Der Deskriptor, ueber den die Schale
+# das Skript liest, bleibt (dash: ab 10, bash: 255).
+if [ -z "$BASH_VERSION" ] && [ -z "$AX_HUE_DIENST_BASH" ] && command -v bash >/dev/null 2>&1; then
+    AX_HUE_DIENST_BASH=1; export AX_HUE_DIENST_BASH
+    exec bash "$0" "$@"
+fi
+unset AX_HUE_DIENST_BASH
+EIGEN=$(readlink -f "$0" 2>/dev/null)
+for fd in /proc/$$/fd/*; do
+    n=${fd##*/}
+    case "$n" in ''|*[!0-9]*) continue ;; esac
+    [ "$n" -gt 2 ] || continue
+    [ "$(readlink "$fd" 2>/dev/null)" = "$EIGEN" ] && continue
+    if [ -n "$BASH_VERSION" ]; then
+        eval "exec $n>&-" 2>/dev/null
+    else
+        case "$n" in [3-9]) eval "exec $n>&-" 2>/dev/null ;; esac
+    fi
+done
+
 SELF=$(cd "$(dirname "$0")" 2>/dev/null && pwd -P)
 SKRIPT="$SELF/ax_hue.php"
 PNAME=$(basename "$SELF")
@@ -58,11 +82,13 @@ case "$1" in
     *) echo "Aufruf: hue_dienst.sh start|stop|status" >&2; exit 2 ;;
 esac
 
-mkdir -p "$DDIR" "$LDIR" 2>/dev/null
-exec 8>"$DDIR/hue_dienst.lock" || exit 1
-if ! flock -n 8; then echo "Ein anderer Start oder Halt laeuft gerade."; exit 3; fi
-
 if [ "$1" = "stop" ]; then
+    # 1.0.22 (Bauart befehlsbruecke.sh 1.0.1, BB1): stop legt nichts an. uninstall laeuft als root und ruft stop; bis
+    # 1.0.21 entstanden hier vor allem anderen data/ und log/ samt hue_dienst.lock, als root eine root-eigene Sperre.
+    # Gesperrt wird nur ueber eine vorhandene, schreibbare hue_dienst.lock; fehlt sie, geht es ohne Sperre weiter.
+    if [ -f "$DDIR/hue_dienst.lock" ] && [ -w "$DDIR/hue_dienst.lock" ] && exec 8>>"$DDIR/hue_dienst.lock"; then
+        if ! flock -n 8; then echo "Ein anderer Start oder Halt laeuft gerade."; exit 3; fi
+    fi
     for p in $(alle_pids); do kill "$p" 2>/dev/null; done
     i=0
     while laeuft && [ $i -lt 10 ]; do sleep 1; i=$((i + 1)); done
@@ -72,18 +98,32 @@ if [ "$1" = "stop" ]; then
     echo "Hue-Probe angehalten."; exit 0
 fi
 
-# start
+# start (1.0.22: root und Upgrade-Marke VOR jedem Anlegen fragen, Bauart befehlsbruecke.sh 1.0.1/1.0.3; bis 1.0.21
+# entstanden data/, log/ und hue_dienst.lock, bevor die Marke den Start abwies, und die root-Pruefung kam zuletzt)
+if [ "$(id -u)" = "0" ]; then echo "Nicht als root starten." >&2; exit 1; fi
 if [ -f "$MARKE" ]; then
-    jetzt=$(date +%s); seit=$(cat "$MARKE" 2>/dev/null)
+    jetzt=$(date +%s 2>/dev/null); seit=$(cat "$MARKE" 2>/dev/null)
     case "$seit" in ''|*[!0-9]*) seit=0 ;; esac
+    # 1.0.22 (Bauart befehlsbruecke.sh 1.0.1, B3; wie cron.05min): leere oder ungueltige Uhr - die Marke gilt, geschlossen
+    # ausfallen. Bis 1.0.21 rechnete das Skript mit der leeren Zahl weiter.
+    case "$jetzt" in ''|*[!0-9]*|0) echo "Aktualisierung laeuft - die Hue-Probe startet danach."; exit 0 ;; esac
     if [ $((jetzt - seit)) -lt 3600 ] && [ "$seit" -le "$jetzt" ]; then
         echo "Aktualisierung laeuft - die Hue-Probe startet danach."; exit 0
     fi
 fi
+mkdir -p "$DDIR" "$LDIR" 2>/dev/null
+exec 8>"$DDIR/hue_dienst.lock" || exit 1
+if ! flock -n 8; then echo "Ein anderer Start oder Halt laeuft gerade."; exit 3; fi
 if laeuft; then echo "Hue-Probe laeuft bereits."; exit 0; fi
-if [ "$(id -u)" = "0" ]; then echo "Nicht als root starten." >&2; exit 1; fi
 PHP=$(command -v php 2>/dev/null)
 [ -n "$PHP" ] || { echo "php nicht gefunden."; exit 1; }
+# 1.0.22 (Bauart befehlsbruecke.sh 1.0.1, BB6): die Startausgabe wuchs bis 1.0.21 ungekappt (log/plugins liegt im RAM);
+# ueber 256 kB bleiben vor jedem Start die letzten 300 Zeilen (Hausform Regeln/06).
+SLOG="$LDIR/hue_start.log"
+if [ -f "$SLOG" ] && [ "$(wc -c < "$SLOG" 2>/dev/null || echo 0)" -gt 262144 ]; then
+    tail -n 300 "$SLOG" > "$SLOG.tmp.$$" 2>/dev/null && cat "$SLOG.tmp.$$" > "$SLOG" 2>/dev/null
+    rm -f "$SLOG.tmp.$$" 2>/dev/null
+fi
 nohup "$PHP" "$SKRIPT" >>"$LDIR/hue_start.log" 2>&1 </dev/null 8<&- &
 echo $! > "$PIDF"
 sleep 1

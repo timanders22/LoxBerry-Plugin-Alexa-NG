@@ -291,6 +291,11 @@ function ax_vorgaben()
         // (Aktionstoken) oder MQTT; gesperrt werden nur Ansagen und
         // Ankuendigungen, dringend=1 geht durch. Ab Werk aus.
         'sperre_ein' => 0,
+        // 1.0.22 (Zusage des Hausherrn 21.11.2026): der Haus-Schalter haus/ansage/ruhe ("Ansagen aus", retained, Anbieter
+        // Loxone) haelt mit diesem Haken auch eingehende Ansagen und Ankuendigungen an (HTTP, Nachbar-Plugins, MQTT).
+        // Unabhaengig von sperre_ein, eigener Grund HAUS_RUHE; auch dringend=1 wird angehalten (Regeln/07). Ab Werk aus; gibt der
+        // Schalter keine Aussage, wird gesprochen.
+        'haus_ruhe_ein' => 0,
         // Musik-Probe (Stufe 3, Messplan Teil B): nicht am Geraet erprobt,
         // ab Werk aus; eigene Stundengrenze; Senderliste nach Nummer.
         'musik_ein' => 0,
@@ -519,6 +524,7 @@ function ax_wert_pruefen($schluessel, $wert, &$grund = '')
         case 'befehle_routine_ein':
         case 'befehle_textbefehl_ein':
         case 'sperre_ein':
+        case 'haus_ruhe_ein':     // 1.0.22
         case 'musik_ein':
         case 'radio_ein':
         case 'hue_ein':
@@ -2167,7 +2173,12 @@ function ax_bekannte_plugins()
 /**
  * Wo steht ein Normalname noch (K4)? Standardgeraet, eigene Gruppen und die
  * Ausgabeart "Alexa-NG" der bekannten Plugins, soweit ihre Konfiguration
- * lesbar ist. Gelesen werden dort nur tts.mode und tts.alexa_geraet; nichts
+ * lesbar ist. Gelesen werden dort nur tts.mode und tts.alexa_geraet (Ziel 1)
+ * und seit 1.0.22 aus tts.ziele je Eintrag art, wo und ein: die weiteren Ziele
+ * des gemeinsamen Sprachmoduls (seit 1.2.0). Bei art "alexang" ist wo das Feld
+ * alexa_geraet (ansage_ziel_block()); fehlt ein, gilt das Ziel als
+ * eingeschaltet, sonst nur 1, "1" oder true (ansage_ziel_pruefen()). Bis
+ * 1.0.21 zaehlte nur Ziel 1 (Befund eines fremden Pruefers 21.11.2026). Nichts
  * davon geht in eine Ausgabe ausser dem Titel des Plugins.
  * Rueckgabe array(orte, nicht_lesbar) - je eine Liste von Texten.
  */
@@ -2189,17 +2200,30 @@ function ax_name_verwendung($normal, array $cfg)
         $j = ($roh !== false) ? json_decode((string) $roh, true) : null;
         if (!is_array($j)) { $nicht[] = $d[0]; continue; }
         $t = (isset($j['tts']) && is_array($j['tts'])) ? $j['tts'] : array();
-        if (!isset($t['mode']) || $t['mode'] !== 'alexang') { continue; }
-        $ger = (isset($t['alexa_geraet']) && is_string($t['alexa_geraet'])) ? trim($t['alexa_geraet']) : '';
-        if ($ger === '') {
-            if ($ist_std) { $orte[] = sprintf(ax_t('GER.ORT_PLUGIN_STD'), $d[0]); }
-            continue;
+        $wo_liste = array();
+        if (isset($t['mode']) && $t['mode'] === 'alexang') {
+            $wo_liste[] = (isset($t['alexa_geraet']) && is_string($t['alexa_geraet'])) ? $t['alexa_geraet'] : '';
         }
-        foreach (explode(',', $ger) as $teil) {
-            $teil = trim($teil);
-            if ($teil === '' || strtolower($teil) === 'alle' || stripos($teil, 'gruppe:') === 0) { continue; }
-            if (ax_name_normal($teil) === $normal) { $orte[] = sprintf(ax_t('GER.ORT_PLUGIN'), $d[0]); break; }
+        if (isset($t['ziele']) && is_array($t['ziele'])) {
+            foreach ($t['ziele'] as $z) {
+                if (!is_array($z) || !isset($z['art']) || $z['art'] !== 'alexang') { continue; }
+                if (array_key_exists('ein', $z) && !($z['ein'] === 1 || $z['ein'] === '1' || $z['ein'] === true)) { continue; }
+                $wo_liste[] = (isset($z['wo']) && is_string($z['wo'])) ? $z['wo'] : '';
+            }
         }
+        $mit_name = false;
+        $mit_std = false;
+        foreach ($wo_liste as $ger) {
+            $ger = trim($ger);
+            if ($ger === '') { $mit_std = $mit_std || $ist_std; continue; }
+            foreach (explode(',', $ger) as $teil) {
+                $teil = trim($teil);
+                if ($teil === '' || strtolower($teil) === 'alle' || stripos($teil, 'gruppe:') === 0) { continue; }
+                if (ax_name_normal($teil) === $normal) { $mit_name = true; break; }
+            }
+        }
+        if ($mit_name) { $orte[] = sprintf(ax_t('GER.ORT_PLUGIN'), $d[0]); }
+        if ($mit_std) { $orte[] = sprintf(ax_t('GER.ORT_PLUGIN_STD'), $d[0]); }
     }
     return array($orte, $nicht);
 }
@@ -2624,6 +2648,33 @@ function ax_loxsperre_wirkt(array $cfg)
     if (empty($cfg['sperre_ein'])) { return false; }
     $l = ax_loxsperre_lesen();
     return $l['bekannt'] && $l['gesperrt'] === 1;
+}
+
+/**
+ * 1.0.22 (Zusage des Hausherrn 21.11.2026; Regeln/07 haus/ansage/ruhe): den Haus-Schalter "Ansagen aus" lesen - derselbe
+ * Weg wie das Sprachmodul fuer die eigenen Ansagen (ansage_schalter_lesen(): eine kurze Sitzung am Broker mit dem Zugang
+ * aus general.json; das Thema ist retained, es gibt keinen Zaehler; hoechstens ANSAGE_SCHALTER_FRIST s). Kein zweiter
+ * Leseweg. Rueckgabe '1' Ansagen aus, '0' frei, '' keine Aussage (kein Broker, nie gesetzt, '-').
+ */
+function ax_haus_ruhe_lesen()
+{
+    return ansage_schalter_lesen(ax_ansage_k());
+}
+
+/**
+ * 1.0.22: haelt der Haus-Schalter eine eingehende Ansage an? Nur mit dem Haken haus_ruhe_ein (ab Werk aus) und dem Wert
+ * '1'. Ohne Aussage des Schalters wird gesprochen (melden, nicht sperren): das Protokoll sagt es hoechstens einmal je
+ * Stunde, der Reiter Test zeigt es gelb. Ohne Haken wird nicht gelesen.
+ */
+function ax_haus_ruhe_wirkt(array $cfg)
+{
+    if (empty($cfg['haus_ruhe_ein'])) { return false; }
+    $w = ax_haus_ruhe_lesen();
+    if ($w === '') {
+        ax_log_wenn_neu('haus_ruhe_still', 'INFO', 'Haus-Schalter ' . ANSAGE_SCHALTER_THEMA
+            . ' ohne Aussage (Broker nicht erreichbar, nie gesetzt oder -) - eingehende Ansagen werden gesprochen.', 3600);
+    }
+    return $w === '1';
 }
 
 /**
@@ -3434,6 +3485,15 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
         if ($aktion === 'ankuendigen' && isset($par['titel'])) {
             if (!is_string($par['titel']) || strlen($par['titel']) > 80 || preg_match('/[\x00-\x1F\x7F<>]/', $par['titel'])
                 || preg_match('//u', $par['titel']) !== 1) { $f['GRUND'] = 'TITEL'; return $ende(400, $f); }
+        }
+        // 1.0.22 (Zusage des Hausherrn 21.11.2026): mit dem Haken haus_ruhe_ein haelt auch der Haus-Schalter
+        // haus/ansage/ruhe eingehende Ansagen und Ankuendigungen an (HTTP, Nachbar-Plugins, MQTT ueber die Bruecke) -
+        // eigener Grund HAUS_RUHE. Anders als die Sperre aus Loxone auch mit dringend=1 (Entscheidung 21.11.2026,
+        // Regeln/07: "1 = alle Plugins mit Sprachmodul schweigen, auch mit Dringendem"). Die Testansage aus dem
+        // Reiter Test (Quelle oberflaeche) geht vorbei wie "ein Test spricht immer" im Sprachmodul. Gelesen wird erst
+        // nach den Pruefungen der Parameter; ohne Aussage des Schalters wird gesprochen.
+        if (($quelle === 'http' || $quelle === 'mqtt') && ax_haus_ruhe_wirkt($cfg)) {
+            return $ende(409, array('OK' => 0, 'UEBERSPRUNGEN' => 1, 'GRUND' => 'HAUS_RUHE'));
         }
     } elseif ($aktion === 'lautstaerke') {
         if (!isset($par['wert']) || !preg_match('/^[0-9]{1,3}\z/', $par['wert']) || (int) $par['wert'] > 100) {
@@ -4468,6 +4528,10 @@ function ax_vorlage_hue_aus($host, array $cfg)
     $port = ax_mqtt_udpport();
     $cmds = array();
     foreach ($cfg['hue_lampen'] as $l) {
+        // 1.0.22 (Befund eines fremden Pruefers 21.11.2026): eine Lampe der Art Taster/Szene hat keine Rueckmeldung -
+        // wie in der Vorlage "Alexa NG MQTT-Befehle" (ax_vorlage_mqtt) und in der Tabelle im Reiter Einbindung in
+        // Loxone; die Nachbildung haelt eine Taster-Lampe stets "aus". Bis 1.0.21 standen hier auch fuer sie Befehle.
+        if ($l['art'] === 'taster') { continue; }
         $t = $cfg['mqtt_praefix'] . '/hue/' . $l['kuerzel'] . '/';
         // Welle Bild 13 (1.0.4, Entscheidung 11): Kommentare aus der Sprachdatei, Titel fest deutsch.
         $cmds[] = array('title' => 'Alexa ' . $l['name'] . ' Rückmeldung', 'comment' => sprintf(ax_t('LOX.VQH_C_RUECK'), $l['kuerzel']), 'analog' => false,
@@ -5409,7 +5473,11 @@ function ax_hue_vorgang_starten($auftrag)
     $desk = array(0 => array('file', '/dev/null', 'r'), 1 => array('file', '/dev/null', 'w'), 2 => array('file', '/dev/null', 'w'));
     $pipes = array();
     // setsid loest den Vorgang von Apache; "&" laesst die Schale sofort enden.
-    $proc = @proc_open(array('sh', '-c', 'setsid "$0" "$@" </dev/null >/dev/null 2>&1 &', 'php', $prog, $auftrag), $desk, $pipes);
+    // 1.0.22 (Haertung, Bauart Abfahrts-Assistent 1.6.45 abfahrt_haus_abnehmer_starten, wie ax_ansage_legen()): vorher
+    // schliesst die Schale jede geerbte Nummer ueber 2 - sonst erbten hue_vorgang.php und docker darunter die Deskriptoren
+    // des Aufrufers (takt.lock des Takts, Dateien von Apache). bash, weil dash nur die Nummern 3 bis 9 schliessen kann.
+    $proc = @proc_open(array('bash', '-c', 'for f in /proc/$$/fd/*; do n=${f##*/}; [ "$n" -gt 2 ] 2>/dev/null && eval "exec $n>&-"; done; '
+                             . 'setsid "$0" "$@" </dev/null >/dev/null 2>&1 &', 'php', $prog, $auftrag), $desk, $pipes);
     if (!is_resource($proc)) { return array(false, 'VORGANG'); }
     proc_close($proc);
     return array(true, '');
@@ -6764,12 +6832,13 @@ function ax_v2_haken_lage($cfg = null)
  * TEXT_NULL, UNVERAENDERT; der Grund steht im Protokoll). Sonst der GRUND der Felder in die Quittung (Entwurf ax 3.3).
  * 1.0.12: GESPERRT, RUHEZEIT (409) und DOPPELT (429) antworten am Endpunkt jetzt OK=0; fuer die Bruecke bleiben sie
  * angenommen wie bis 1.0.11 (Grund im Protokoll) - die Quittung an Loxone aendert sich nicht.
+ * 1.0.22: HAUS_RUHE (409, Haus-Schalter haus/ansage/ruhe) gilt wie GESPERRT als angenommen.
  */
 function ax_befehl_bruecke($r)
 {
     if (is_array($r) && isset($r[0], $r[1]) && (int) $r[0] === 200 && is_array($r[1]) && !empty($r[1]['OK'])) { return array(true, ''); }
     if (is_array($r) && isset($r[0], $r[1]) && is_array($r[1]) && isset($r[1]['GRUND'])
-        && in_array(array((int) $r[0], (string) $r[1]['GRUND']), array(array(409, 'GESPERRT'), array(409, 'RUHEZEIT'), array(429, 'DOPPELT')), true)) {
+        && in_array(array((int) $r[0], (string) $r[1]['GRUND']), array(array(409, 'GESPERRT'), array(409, 'RUHEZEIT'), array(429, 'DOPPELT'), array(409, 'HAUS_RUHE')), true)) {
         return array(true, '');
     }
     $g = (is_array($r) && isset($r[1]) && is_array($r[1]) && isset($r[1]['GRUND'])) ? (string) $r[1]['GRUND'] : '';
@@ -6812,6 +6881,22 @@ function ax_bruecke_laden()
     if (!defined('BB_NUR_LADEN')) { define('BB_NUR_LADEN', true); }
     require_once $f;
     return function_exists('bb_waechter');
+}
+
+/**
+ * 1.0.22 (Befund eines fremden Pruefers 21.11.2026; Regeln/06 Upgrade-Marke): gilt die Upgrade-Marke? EINE Regel fuer
+ * Takt und Bruecke, die von bb_marke_liegt() (bin/befehlsbruecke.php, Stammfassung): sie gilt nur mit einer Unixzeit,
+ * die nicht in der Zukunft liegt und juenger als BB_MARKE_GILT (3600 s) ist; liefert die Uhr keine gueltige Zahl, gilt
+ * sie (geschlossen) - wie in cron.05min. Ist die Bruecke nicht ladbar, gilt eine liegende Marke (Verhalten bis 1.0.21).
+ * Bis 1.0.21 fragten die beiden Hue-Waechter im Takt nur is_file(): die Marke eines abgebrochenen Updates hielt beide
+ * fuer immer aus, waehrend cron.05min und die Bruecke sie nach 3600 s nicht mehr gelten liessen.
+ */
+function ax_marke_liegt($jetzt = null)
+{
+    $p = ax_paths();
+    if (!is_file($p['marke'])) { return false; }
+    if (!ax_bruecke_laden() || !function_exists('bb_marke_liegt')) { return true; }
+    return bb_marke_liegt(array('marke' => $p['marke']), $jetzt);
 }
 
 /**

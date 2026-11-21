@@ -101,7 +101,10 @@ try {
 
 /* ---------------- Ein Takt ---------------- */
 if (!is_dir($ax_p['datadir'])) { @mkdir($ax_p['datadir'], 0775, true); }
-$ax_sp = @fopen($ax_p['datadir'] . '/takt.lock', 'c');
+/* 1.0.22 (Haertung, Befund eines fremden Pruefers 21.11.2026): takt.lock mit close-on-exec ('e', PHP ab 7.0.16), damit
+ * kein Kind des Takts (hue_dienst.sh -> ax_hue.php, hue_vorgang.php) die Sperre erbt. Gelingt 'ce' nicht, wie bisher 'c'. */
+$ax_sp = @fopen($ax_p['datadir'] . '/takt.lock', 'ce');
+if ($ax_sp === false) { $ax_sp = @fopen($ax_p['datadir'] . '/takt.lock', 'c'); }
 if ($ax_sp === false || !flock($ax_sp, LOCK_EX | LOCK_NB)) { exit(0); }   // ein Takt laeuft schon
 
 ax_config_heilen(false);
@@ -152,7 +155,8 @@ if (!empty($ax_cfg['aktiv']) && $ax_amz && function_exists('curl_init')) {
 $ax_hs = ax_hue_dienst_status();
 if ($ax_hs !== null) {
     $ax_hsoll = ax_hue_soll_lb($ax_cfg);   // Nr. 41: nur bei Art loxberry
-    if ($ax_hsoll && !$ax_hs && time() - (int) $ax_t['hue_versuch'] >= 600 && !is_file($ax_p['marke'])) {
+    // 1.0.22: die Marke nach der Regel von cron.05min und Bruecke (ax_marke_liegt), bis 1.0.21 nur is_file()
+    if ($ax_hsoll && !$ax_hs && time() - (int) $ax_t['hue_versuch'] >= 600 && !ax_marke_liegt()) {
         $ax_t['hue_versuch'] = time();
         list($ax_d_ok, $ax_d_text) = ax_hue_dienst('start');
         ax_log($ax_d_ok ? 'INFO' : 'WARN', 'Takt: Hue-Probe ' . ($ax_d_ok ? 'gestartet.' : 'liess sich nicht starten: ' . $ax_d_text));
@@ -168,7 +172,7 @@ if ($ax_hs !== null) {
  * nicht mehr zur Einstellung oder ist er ausgeschaltet: hoechstens alle 10
  * Minuten ein Vorgang (anlegen bzw. entfernen), nie waehrend eines Updates. */
 $ax_hm = ax_hue_docker_merk();
-if (DIRECTORY_SEPARATOR !== '\\' && (ax_hue_soll_docker($ax_cfg) || !empty($ax_hm['angelegt'])) && !is_file($ax_p['marke'])) {
+if (DIRECTORY_SEPARATOR !== '\\' && (ax_hue_soll_docker($ax_cfg) || !empty($ax_hm['angelegt'])) && !ax_marke_liegt()) {   // 1.0.22 wie oben
     $ax_hv = ax_hue_vorgang();
     if (!in_array($ax_hv['zustand'], array('gestartet', 'laeuft'), true) && time() - (int) $ax_t['hue_d_versuch'] >= 600) {
         $ax_hauftrag = ax_hue_docker_takt_auftrag($ax_cfg);

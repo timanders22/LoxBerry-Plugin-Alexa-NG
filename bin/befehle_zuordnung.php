@@ -49,7 +49,11 @@ if (!function_exists('ax_befehl_bruecke')) {
         if (is_file($ax_bb_k)) { require_once $ax_bb_k; break; }
     }
 }
-$ax_bb_text = 'Das Plugin hat eine eigene, einstellbare Wiederholbremse (gleicher Text je Echo, ab Werk 30 s, 0 = aus). '
+// 1.0.22 (Befund eines fremden Pruefers 21.11.2026): der Werkswert kommt aus ax_vorgaben() (bremse_fenster_s); bis
+// 1.0.21 stand hier fest "ab Werk 30 s", seit 1.0.12 ist es 5 s.
+$ax_bb_werk = function_exists('ax_vorgaben') ? ax_vorgaben() : array();
+$ax_bb_text = 'Das Plugin hat eine eigene, einstellbare Wiederholbremse (gleicher Text je Echo, ab Werk '
+    . (isset($ax_bb_werk['bremse_fenster_s']) ? (int) $ax_bb_werk['bremse_fenster_s'] . ' s' : 'laut Einstellungen') . ', 0 = aus). '
     . 'Eine Brueckensperre von 60 s wuerde sie uebersteuern - zweimal Klingeln binnen einer Minute muss ansagbar sein '
     . '(Entwurf ax 3.3).';
 $ax_bb_laut = 'Schieberegler senden Folgen; die Bruecke legt gleiche Namen im Lesepuffer zusammen, die Stundengrenze des '

@@ -68,7 +68,8 @@ function ax_ui_felder($formular)
                      'texte_protokollieren', 'sperre_ein', 'musik_ein', 'musik_stundengrenze', 'musik_sender',
                      'radio_ein', 'radio_zonen', 'hue_ein', 'hue_port', 'hue_art', 'hue_ip', 'hue_schnittstelle',
                      'hue_probe_lampe', 'hue_l_id', 'hue_l_name', 'hue_l_art', 'hue_l_kuerzel', 'hue_l_frei', 'hue_echos',
-                     'hue_l_aktiv', 'hue_sperre_ein', 'hue_suchen_ein', 'textbefehl_ein', 'textbefehle_frei');   // 1.0.20
+                     'hue_l_aktiv', 'hue_sperre_ein', 'hue_suchen_ein', 'textbefehl_ein', 'textbefehle_frei',   // 1.0.20
+                     'haus_ruhe_ein');   // 1.0.22
     }
     if ($formular === 'mqtt') { return array('mqtt_ein', 'mqtt_praefix', 'befehle_mqtt_ein', 'befehle_mqtt_steuern', 'befehle_routine_ein',
                                              'befehle_textbefehl_ein'); }   // 1.0.21
@@ -83,7 +84,31 @@ function ax_ui_bean($feld = null, $idx = null)
     }
     return $liste;
 }
-function ax_ui_tauglich($w) { return is_string($w) && strlen($w) <= 2100 && preg_match('//u', $w) === 1; }
+/* 1.0.22 (Befund eines fremden Pruefers 21.11.2026): die groesste Eingabe, die nach einer Beanstandung zurueckreist.
+ * Bis 1.0.21 fiel jeder Wert ueber 2100 Byte weg; zwei Textfelder koennen regulaer groesser sein. Die Zahl folgt aus
+ * den Grenzen der Wertpruefung (ax_wert_pruefen), je Zeile in der Form, in der das Formular sie zeigt, zwischen den
+ * Zeilen CR LF (so sendet ein Browser ein Textfeld), je Zeichen hoechstens 4 Byte (UTF-8):
+ *  - textbefehle_frei: AX_TEXTBEFEHLE_MAX Zeilen "name = Satz", name hoechstens 40 Byte ([a-z0-9_]{1,40}), Satz
+ *    hoechstens AX_TEXTBEFEHL_ZEICHEN_MAX Zeichen.
+ *  - musik_sender: AX_MUSIK_NR_MAX Zeilen "nr = Name | anbieter", die Nummern 1 bis AX_MUSIK_NR_MAX (ohne fuehrende
+ *    Null), Name hoechstens AX_SENDER_MAX Zeichen, anbieter der laengste aus ax_musik_anbieter().
+ * Die Grenze gilt fuer diese Form; weitere Leerzeichen um "=" und "|" oder Leerzeilen nimmt die Wertpruefung auch an,
+ * sie sind nach oben offen. Alle anderen Felder bleiben bei 2100 Byte (die groessten, routinen_frei und radio_zonen,
+ * bleiben darunter). */
+function ax_ui_grenze($feld)
+{
+    if ($feld === 'textbefehle_frei') {
+        return AX_TEXTBEFEHLE_MAX * (40 + 3 + 4 * AX_TEXTBEFEHL_ZEICHEN_MAX) + (AX_TEXTBEFEHLE_MAX - 1) * 2;
+    }
+    if ($feld === 'musik_sender') {
+        $anb = max(array_map('strlen', array_keys(ax_musik_anbieter())));
+        $ziffern = 0;
+        for ($i = 1; $i <= AX_MUSIK_NR_MAX; $i++) { $ziffern += strlen((string) $i); }
+        return $ziffern + AX_MUSIK_NR_MAX * (3 + 4 * AX_SENDER_MAX + 3 + $anb) + (AX_MUSIK_NR_MAX - 1) * 2;
+    }
+    return 2100;
+}
+function ax_ui_tauglich($w, $grenze = 2100) { return is_string($w) && strlen($w) <= $grenze && preg_match('//u', $w) === 1; }
 function ax_ui_sammeln($formular)
 {
     $werte = array();
@@ -97,7 +122,7 @@ function ax_ui_sammeln($formular)
                 if (count($z) < 60 && preg_match('/^\d{1,2}\z/', (string) $k) && ax_ui_tauglich($v)) { $z[(string) (int) $k] = $v; }
             }
             $werte[$f] = $z;
-        } elseif (ax_ui_tauglich($w)) {
+        } elseif (ax_ui_tauglich($w, ax_ui_grenze($f))) {
             $werte[$f] = $w;
         }
     }
@@ -268,6 +293,7 @@ if ($ax_post && isset($_POST['download'])) {
     $ax_v = isset($ax_vl[$ax_dl]) ? $ax_vl[$ax_dl] : $ax_vl['vi'];
     while (ob_get_level() > 0) { @ob_end_clean(); }
     header('Content-Type: application/x-download');
+    header('Cache-Control: no-store');     // 1.0.22: die Vorlagen "Aktionen" und "Ausgaenge" tragen ein Token
     header('Content-Disposition: attachment; filename="' . $ax_v[0] . '"');
     header('Content-Length: ' . strlen($ax_v[1]));
     echo $ax_v[1];
@@ -280,6 +306,7 @@ if ($ax_post && isset($_POST['ax_sichern'])) {
         ax_log('INFO', 'Einstellungen gesichert (Download' . ($ax_mit ? ', mit Amazon-Anmeldung' : '') . ').');
         while (ob_get_level() > 0) { @ob_end_clean(); }
         header('Content-Type: application/json; charset=utf-8');
+        header('Cache-Control: no-store');     // 1.0.22: die Datei traegt beide Token, wahlweise die Amazon-Anmeldung
         header('Content-Disposition: attachment; filename="alexang_einstellungen_' . date('Ymd_His') . '.json"');
         echo $ax_js;
         exit;
@@ -303,7 +330,7 @@ if ($ax_post && isset($_POST['save'])) {
         $ax_neu[$k] = $gut;
     };
     foreach (array('aktiv', 'ruhe_ein', 'ankuendigen_ein', 'texte_protokollieren', 'sperre_ein', 'musik_ein', 'radio_ein', 'hue_ein',
-                   'hue_sperre_ein', 'hue_suchen_ein', 'textbefehl_ein') as $ax_k) {
+                   'hue_sperre_ein', 'hue_suchen_ein', 'textbefehl_ein', 'haus_ruhe_ein') as $ax_k) {   // haus_ruhe_ein 1.0.22
         $ax_neu[$ax_k] = empty($_POST[$ax_k]) ? 0 : 1;
     }
     foreach (array('standardgeraet', 'bremse_fenster_s', 'mindestabstand_s', 'stundengrenze', 'ruhe_von', 'ruhe_bis',
@@ -473,6 +500,7 @@ if ($ax_post && isset($_POST['save'])) {
     ax_log('INFO', 'Einstellungen gespeichert (aktiv=' . $ax_neu['aktiv'] . ', Stundengrenze ' . $ax_neu['stundengrenze']
         . ', Bremse ' . $ax_neu['bremse_fenster_s'] . ' s, Ankuendigen ' . $ax_neu['ankuendigen_ein']
         . ', Sperre aus Loxone ' . $ax_neu['sperre_ein'] . ' (auch Alexa -> Loxone ' . $ax_neu['hue_sperre_ein'] . ')'
+        . ', Haus-Schalter als Sperre ' . $ax_neu['haus_ruhe_ein']
         . ', Textbefehle ' . $ax_neu['textbefehl_ein'] . ' (' . count($ax_neu['textbefehle_frei']) . ' freigegeben)'
         . ', Geraete suchen ' . $ax_neu['hue_suchen_ein'] . ', Musik-Probe ' . $ax_neu['musik_ein']
         . ' (' . count($ax_neu['musik_sender']) . ' Sender, ' . $ax_neu['musik_stundengrenze'] . '/h)'
@@ -660,6 +688,35 @@ if ($ax_post && isset($_POST['austragen'])) {
         + ($ax_orte ? array('hinweise' => array(sprintf(ax_t('GER.AUSGETRAGEN_ORTE'), $ax_wer, implode(', ', $ax_orte)))) : array()));
 }
 
+/* 1.0.22 (Befund eines fremden Pruefers 21.11.2026, Bauart Abfahrts-Assistent 1.6.45 abf_mqtt_nachziehen()): was nach
+ * dem Speichern des Reiters MQTT und nach dem Zurueckspielen einer Sicherung gleich geschieht - EINE Stelle. Bis 1.0.21
+ * raeumte nur save_mqtt bei Praefixwechsel oder MQTT aus unter dem BISHERIGEN Praefix ab und schaltete die
+ * Befehlsbruecke; das Zurueckspielen fuehrte nur die Abo-Datei nach, die alten zurueckbehaltenen Themen blieben beim
+ * Broker stehen, und die Bruecke folgte erst dem Waechter im Takt (Neustart hoechstens alle 600 s).
+ *  - Praefixwechsel oder MQTT aus: unter dem bisherigen Praefix abraeumen (ax_mqtt_raeumen), Hinweis MQTT.GERAEUMT.
+ *  - mqtt_letzte.json weg (der Takt sendet voll), Abo-Datei des Gateways auf das neue Praefix.
+ *  - $nach_abo: was beim MQTT-Formular zwischen Abo-Datei und Bruecke steht (Container-Datei, Protokollzeile) - so
+ *    bleibt dort die Reihenfolge von 1.0.21. Das Zurueckspielen zieht den Container ueber ax_hue_nachziehen() nach.
+ *  - Die Befehlsbruecke sofort schalten (ax_bruecke_schalten, Neustart bei Praefixwechsel) und sagen, was geschah:
+ *    MQTT.DIENST_GESTARTET, MQTT.DIENST_ANGEHALTEN oder MQTT.DIENST_FEHL. */
+function ax_mqtt_nachziehen($datadir, array $vorher, array $nach, array &$hw, $nach_abo = null)
+{
+    $wechsel = ($vorher['mqtt_praefix'] !== $nach['mqtt_praefix']);
+    if ($wechsel || (!empty($vorher['mqtt_ein']) && empty($nach['mqtt_ein']))) {
+        list($n, $ger, $ueb) = ax_mqtt_raeumen($vorher['mqtt_praefix']);
+        if ($n >= 0) { $hw[] = sprintf(ax_t('MQTT.GERAEUMT'), $vorher['mqtt_praefix'], $ger, $ueb); }
+    }
+    if (is_file($datadir . '/mqtt_letzte.json')) { @unlink($datadir . '/mqtt_letzte.json'); }
+    ax_abo_datei($nach['mqtt_praefix'], true);
+    if (is_callable($nach_abo)) { call_user_func($nach_abo); }
+    // Gruppe 6a (1.0.6): die Befehlsbruecke nachziehen (Direktstart; der Waechter im Takt startet hoechstens alle
+    // 600 s neu) und sagen, was geschah. Ein Praefixwechsel startet sie neu (neues Abo).
+    list($bs, $bt) = ax_bruecke_schalten($wechsel);
+    if ($bs === 'ein') { $hw[] = ax_t('MQTT.DIENST_GESTARTET'); }
+    elseif ($bs === 'aus') { $hw[] = ax_t('MQTT.DIENST_ANGEHALTEN'); }
+    elseif ($bs !== '') { $hw[] = sprintf(ax_t('MQTT.DIENST_FEHL'), $bt); }
+}
+
 /* ---------------- MQTT speichern (eigenes Formular, eigener Handler) ---------------- */
 if ($ax_post && isset($_POST['save_mqtt'])) {
     $ax_alt = ax_config();
@@ -682,23 +739,13 @@ if ($ax_post && isset($_POST['save_mqtt'])) {
         ax_ui_umleiten($ax_datadir, 'tab-mqtt', array('fehler' => sprintf(ax_t('MELDUNG.SPEICHERN_FEHL'), $ax_p['config'])));
     }
     $ax_erg = array('gespeichert' => 1, 'hinweise' => array());
-    // Praefixwechsel oder MQTT aus: unter dem BISHERIGEN Praefix abraeumen und voll senden.
-    if ($ax_alt['mqtt_praefix'] !== $ax_neu['mqtt_praefix'] || (!empty($ax_alt['mqtt_ein']) && empty($ax_neu['mqtt_ein']))) {
-        list($ax_n, $ax_ger, $ax_ueb) = ax_mqtt_raeumen($ax_alt['mqtt_praefix']);
-        if ($ax_n >= 0) { $ax_erg['hinweise'][] = sprintf(ax_t('MQTT.GERAEUMT'), $ax_alt['mqtt_praefix'], $ax_ger, $ax_ueb); }
-    }
-    if (is_file($ax_datadir . '/mqtt_letzte.json')) { @unlink($ax_datadir . '/mqtt_letzte.json'); }
-    ax_abo_datei($ax_neu['mqtt_praefix'], true);
-    ax_hue_docker_datei_nachziehen($ax_neu);   // Nr. 41: MQTT-Werte fuer den Container (ohne Docker-Aufruf)
-    ax_log('INFO', 'MQTT gespeichert (ein=' . $ax_neu['mqtt_ein'] . ', Praefix ' . $ax_neu['mqtt_praefix']
-        . ', Befehle ' . $ax_neu['befehle_mqtt_ein'] . ', Echos steuern ' . $ax_neu['befehle_mqtt_steuern']
-        . ', Routine ' . $ax_neu['befehle_routine_ein'] . ', Textbefehl ' . $ax_neu['befehle_textbefehl_ein'] . ').');
-    // Gruppe 6a (1.0.6): die Befehlsbruecke nachziehen (Direktstart; der Waechter im Takt startet hoechstens alle
-    // 600 s neu) und sagen, was geschah. Ein Praefixwechsel startet sie neu (neues Abo).
-    list($ax_bs, $ax_bt) = ax_bruecke_schalten($ax_alt['mqtt_praefix'] !== $ax_neu['mqtt_praefix']);
-    if ($ax_bs === 'ein') { $ax_erg['hinweise'][] = ax_t('MQTT.DIENST_GESTARTET'); }
-    elseif ($ax_bs === 'aus') { $ax_erg['hinweise'][] = ax_t('MQTT.DIENST_ANGEHALTEN'); }
-    elseif ($ax_bs !== '') { $ax_erg['hinweise'][] = sprintf(ax_t('MQTT.DIENST_FEHL'), $ax_bt); }
+    // 1.0.22: Raeumen, Abo-Datei und Befehlsbruecke in ax_mqtt_nachziehen() - dieselbe Stelle wie beim Zurueckspielen.
+    ax_mqtt_nachziehen($ax_datadir, $ax_alt, $ax_neu, $ax_erg['hinweise'], function () use ($ax_neu) {
+        ax_hue_docker_datei_nachziehen($ax_neu);   // Nr. 41: MQTT-Werte fuer den Container (ohne Docker-Aufruf)
+        ax_log('INFO', 'MQTT gespeichert (ein=' . $ax_neu['mqtt_ein'] . ', Praefix ' . $ax_neu['mqtt_praefix']
+            . ', Befehle ' . $ax_neu['befehle_mqtt_ein'] . ', Echos steuern ' . $ax_neu['befehle_mqtt_steuern']
+            . ', Routine ' . $ax_neu['befehle_routine_ein'] . ', Textbefehl ' . $ax_neu['befehle_textbefehl_ein'] . ').');
+    });
     ax_ui_umleiten($ax_datadir, 'tab-mqtt', $ax_erg);
 }
 
@@ -737,8 +784,11 @@ if ($ax_post && isset($_POST['ax_zurueck'])) {
             } else {
                 $h[] = ax_t('SICH.OHNE_AMAZON');
             }
-            if (is_file($ax_datadir . '/mqtt_letzte.json')) { @unlink($ax_datadir . '/mqtt_letzte.json'); }
-            ax_abo_datei($neu['mqtt_praefix'], true);
+            /* 1.0.22: wie das MQTT-Formular (ax_mqtt_nachziehen): bei Praefixwechsel oder MQTT aus unter dem
+             * BISHERIGEN Praefix abraeumen, die Abo-Datei nachfuehren und die Befehlsbruecke sofort schalten; die
+             * Hinweise stehen in der Meldung. Bis 1.0.21 nur die Abo-Datei. Den Container zieht ax_hue_nachziehen()
+             * unten nach (ax_hue_docker_nachziehen() schreibt dessen Konfiguration oder legt ihn neu an). */
+            ax_mqtt_nachziehen($ax_datadir, $vorher, $neu, $h);
             $h[] = ax_t('SICH.DIENST_NACHGEZOGEN');
             $t = ax_hue_nachziehen($neu, $vorher);
             if ($t !== '') { $h[] = $t; }
@@ -1273,6 +1323,9 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
 <?php /* 1.0.20 (Entwurf 1.1-a, E3): eigener Haken, ab Werk aus; wirkt nur zusammen mit dem Haken darueber. */ ?>
 <label class="sm-haken"><input data-role="none" type="checkbox" name="hue_sperre_ein" value="1"<?= ax_ui_h('hue_sperre_ein', !empty($ax_cfg['hue_sperre_ein'])) ? ' checked' : '' ?><?= ax_ui_m('hue_sperre_ein') ?>> <?= ax_e(ax_t('EINST.L_HUE_SPERRE')) ?></label>
 <div class="sm-small"><?= ax_e(ax_t('EINST.HUE_SPERRE_HILFE')) ?></div>
+<?php /* 1.0.22 (Zusage des Hausherrn 21.11.2026): eigener Haken, ab Werk aus, unabhaengig von der Sperre aus Loxone. */ ?>
+<label class="sm-haken"><input data-role="none" type="checkbox" name="haus_ruhe_ein" value="1"<?= ax_ui_h('haus_ruhe_ein', !empty($ax_cfg['haus_ruhe_ein'])) ? ' checked' : '' ?><?= ax_ui_m('haus_ruhe_ein') ?>> <?= ax_e(ax_t('EINST.L_HAUS_RUHE')) ?></label>
+<div class="sm-small"><?= ax_e(ax_t('EINST.HAUS_RUHE_HILFE')) ?></div>
 
 <h2 id="musik"><?= ax_e(ax_t('EINST.H_MUSIK')) ?></h2>
 <label class="sm-haken"><input data-role="none" type="checkbox" name="musik_ein" value="1"<?= ax_ui_h('musik_ein', !empty($ax_cfg['musik_ein'])) ? ' checked' : '' ?><?= ax_ui_m('musik_ein') ?>> <?= ax_e(ax_t('EINST.L_MUSIK')) ?></label>
@@ -2071,6 +2124,17 @@ elseif ($ax_hs) {
 // K1: Zustand der Sperre aus Loxone - auch "kein Wert nach dem Update" sichtbar.
 list($ax_s, $ax_a) = $ax_sperre_zeile();
 $ax_zeile($ax_s, ax_t('TEST.F_SPERRE'), $ax_a);
+// 1.0.22: der Haus-Schalter haus/ansage/ruhe als Sperre fuer eingehende Ansagen. Mit Haken liest die Zeile den Schalter
+// ueber denselben Weg wie das Sprechen (ax_haus_ruhe_lesen): frei (Haken), sperrt (gelb), keine Aussage (gelb, es wird
+// gesprochen). Ohne Haken wird nichts gelesen (grau).
+if (empty($ax_cfg['haus_ruhe_ein'])) {
+    $ax_zeile(3, ax_t('TEST.F_HAUS_RUHE'), ax_t('TEST.A_HAUS_RUHE_AUS'));
+} else {
+    $ax_hr_w = ax_haus_ruhe_lesen();
+    if ($ax_hr_w === '1') { $ax_zeile(2, ax_t('TEST.F_HAUS_RUHE'), ax_t('TEST.A_HAUS_RUHE_SPERRT')); }
+    elseif ($ax_hr_w === '0') { $ax_zeile(1, ax_t('TEST.F_HAUS_RUHE'), ax_t('TEST.A_HAUS_RUHE_FREI')); }
+    else { $ax_zeile(2, ax_t('TEST.F_HAUS_RUHE'), ax_t('TEST.A_HAUS_RUHE_STILL')); }
+}
 // 1.0.20 (Entwurf 1.1-a, E3): gilt die Sperre auch fuer Alexa -> Loxone? Unbekannter Zustand: offen, gelbe Zeile.
 if (empty($ax_cfg['hue_sperre_ein'])) { $ax_zeile(3, ax_t('TEST.F_HUE_SPERRE'), ax_t('TEST.A_HUE_SPERRE_AUS')); }
 elseif (empty($ax_cfg['sperre_ein'])) { $ax_zeile(2, ax_t('TEST.F_HUE_SPERRE'), ax_t('TEST.A_HUE_SPERRE_OHNE')); }
