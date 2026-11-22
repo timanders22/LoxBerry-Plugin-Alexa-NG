@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 1.0.24
+Version 1.0.25
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -15,6 +15,19 @@ Hue-Probe auf eigener Netzadresse (ab Werk aus).
 > Routinen, Musik-Probe, Radio je Zone an einem Echo und die Hue-Nachbildung
 > mit den Lampen für Alexa – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 > Was noch aussteht, steht unter „Noch am Gerät zu messen“.
+
+## Neu in 1.0.25
+
+Übersetzungen in der Oberfläche; neue Funktionen gibt es nicht. Übernommen aus Pull Request #1, ergänzt um zwei Punkte.
+
+- **Geändert – Reiter Test, Zeile „Letzte Ansage“:** Die Aktion steht jetzt als Wort in der Sprache der Oberfläche (etwa „Ansage“, „Radio-Lautstärke“, „Textbefehl“) statt als interne Kennung (`sprechen`, `radio_laut`, `textbefehl`). Eine Kennung ohne Eintrag in der Sprachdatei erscheint wie bisher roh.
+- **Geändert – Reiter Test, Zeile „Ist die Konfiguration heil?“:** Zustand und Schritte stehen als Wörter da (etwa „beschädigt (nicht lesbar)“, „aus der Zweitschrift wiederhergestellt“) statt als Kennungen (`kaputt`, `aus_zweit`).
+- **Geändert – Platzhalter der Gruppentabelle** (Reiter Echos und Ansagen) kommen aus den Sprachdateien; die englische Oberfläche zeigt `downstairs` und `kitchen,living_room` statt der deutschen Beispiele.
+- **Geändert – Meldung, wenn die Hue-Probe nicht startet:** Eine Kennung im Grund wird als Satz gezeigt, neu ist der Satz für eine fehlende `bin/hue_dienst.sh`; ein Satz der Schale bleibt unverändert. Gemessen: Die Kennungen erreichen diese Meldung im Betrieb nicht – fehlt `hue_dienst.sh`, endet die Prüfung schon vorher. Die Änderung ist eine Absicherung.
+- Im Englischen heißt die Aktion „Sperre“ jetzt „Lock“, wie in der übrigen englischen Oberfläche („Lock from Loxone“).
+- Gemessen auf dem Arbeitsrechner unter PHP 7.4 und 8.4 (Wörter in Deutsch und Englisch, gerenderte Oberfläche) und in WSL unter PHP 8.3 (Meldung der Hue-Probe); jede Änderung einzeln zurückgebaut, jede ergab mindestens einen roten Fall, ausgenommen die Hue-Meldung (siehe oben). Am Gerät nicht gemessen.
+- Gemeinsames Sprachmodul 1.5.0 (Entscheidung des Hausherrn 22.11.2026): Die Nachtruhe der Ansagen kann an Nicht-Schultagen (Samstag, Sonntag, Feiertage, Ferien) später enden. Neues Feld „Nachtruhe an Nicht-Schultagen bis“ bei „Wann gesprochen wird“, ab Werk leer: Dann gilt die Zeit, die im Plugin Ferien und Feiertage eingestellt ist (MQTT-Thema `haus/ansage/nachtruhe_frei_bis`); ohne sie endet die Nachtruhe wie an Schultagen. Ob heute ein Schultag ist, sagt `haus/kalender/heute/frei` (nur bei `haus/kalender/datum` = heute); ohne diese Aussage zählen nur Samstag und Sonntag. Dringende Ansagen übergehen die Nachtruhe wie bisher. Ohne Vorgabe und ohne eigene Zeit ändert sich nichts.
+- Reiter Test: neue Zeile zum Ende der Nachtruhe an Nicht-Schultagen (Quelle der Zeit, Art des heutigen Tages).
 
 ## Neu in 1.0.24
 

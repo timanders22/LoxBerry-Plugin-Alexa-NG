@@ -5062,7 +5062,7 @@ function ax_hue_nachziehen_lb(array $neu, array $alt)
         list($ok, $text) = ax_hue_dienst('start');
         if ($ok && ax_hue_dienst_status()) { return sprintf(ax_t('MELDUNG.HUE_GESTARTET'), (int) $neu['hue_port']); }
         $z = ax_hue_lesen('loxberry');
-        return sprintf(ax_t('MELDUNG.HUE_FEHL'), trim($text . ' ' . ($z['fehler'] !== '' ? ax_grund_text($z['fehler']) : '')));
+        return sprintf(ax_t('MELDUNG.HUE_FEHL'), trim(ax_grund_text($text) . ' ' . ($z['fehler'] !== '' ? ax_grund_text($z['fehler']) : '')));
     }
     if ($laeuft) {
         list($ok) = ax_hue_dienst('stop');
@@ -6390,6 +6390,16 @@ function ax_grund_text($g)
     $n = preg_match_all('/%(?:\d+\$)?[sd]/', $t);
     $werte = array_pad(array_slice($teile, 0, $n), $n, '');
     return $n > 0 ? vsprintf($t, $werte) : $t;
+}
+
+/** Eine interne Kennung (z. B. 'sprechen') als Wort: $praefix . GROSS(kennung); ohne Eintrag die Kennung selbst. */
+function ax_kennung_wort($praefix, $kennung)
+{
+    $k = (string) $kennung;
+    if (!preg_match('/^[a-z0-9_]+\z/', $k)) { return $k; }
+    $s = $praefix . strtoupper($k);
+    $t = ax_t($s);
+    return $t === $s ? $k : $t;
 }
 
 /** Eine Dauer fuer Menschen (Sekunden, Minuten, Stunden, Tage). */
