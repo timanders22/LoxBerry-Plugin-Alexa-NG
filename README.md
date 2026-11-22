@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 1.0.23
+Version 1.0.24
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -15,6 +15,20 @@ Hue-Probe auf eigener Netzadresse (ab Werk aus).
 > Routinen, Musik-Probe, Radio je Zone an einem Echo und die Hue-Nachbildung
 > mit den Lampen für Alexa – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 > Was noch aussteht, steht unter „Noch am Gerät zu messen“.
+
+## Neu in 1.0.24
+
+Eine Fehlerbehebung und zwei Ergänzungen zum Abgleich der Geräteliste; die Ergänzungen sind ab Werk aus.
+
+- **Behoben – Ansage abgelehnt, obwohl der Echo wieder lief:** Der Takt holt die Geräteliste alle 6 Stunden. War ein Echo beim Abgleich ohne Strom, galt er bis zum nächsten Abgleich als offline, und eine Ansage an ihn wurde mit `GRUND=GERAETE_OFFLINE` abgelehnt – am Gerät gemessen am 22.11.2026; nach einem Abgleich von Hand ging dieselbe Ansage durch. Jetzt gleicht das Plugin die Liste einmal neu ab, wenn ein Befehl nur deshalb abgelehnt würde, weil kein Ziel laut gespeicherter Liste online ist, und entscheidet danach. Das gilt für Ansagen, Ankündigungen, Lautstärke, Routinen, Textbefehle, die Musik-Probe und Radio je Zone, über HTTP, MQTT und die Knöpfe der Oberfläche. Gebremst: höchstens alle 5 Minuten, gezählt ab dem letzten Abgleich (auch dem des Takts); unter derselben Sperre wie jeder Zugriff auf Amazon; nur die Geräteliste, ohne Lautstärken; Zeitgrenze 5 s – um so viel kann die Antwort dann länger dauern. Misslingt der Abruf, bleibt die gespeicherte Liste, und die Ablehnung lautet wie bisher. Ist nur ein Teil der Ziele laut Liste offline (etwa in einer Gruppe), gleicht das Plugin ebenfalls neu ab, mit derselben Bremse; ist ein Ziel danach noch offline, geht der Befehl an die übrigen. Ab Werk an, weil es eine Fehlerbehebung ist; der Haken „Geräteliste neu abgleichen, bevor ein Befehl an einen Echo abgelehnt wird, der als offline gilt“ im Reiter **Echos und Ansagen** (Abschnitt Geräteliste abgleichen) schaltet es ab. Das Protokoll nennt jeden Neuabgleich (`Geraete: Neuabgleich (offline vor sprechen) gelungen - …`), der Reiter **Test** den letzten mit Auslöser, Ergebnis und der Zahl der Echos online vorher und nachher.
+- **Neu – feste Abgleichzeiten** (ab Werk leer): Im selben Abschnitt Uhrzeiten `HH:MM`, getrennt durch Komma, höchstens 12. Ein neuer Minutentakt (`cron/cron.01min`, `bin/ax_minute.php`) gleicht die Liste zu jeder dieser Zeiten einmal ab, einmal je Zeit und Tag, auch nach einem Neustart; war der LoxBerry zu der Zeit aus, wird bis 15 Minuten danach nachgeholt. Eine ungültige Zeit (etwa `6:47` oder doppelt) wird beanstandet, nicht umgeschrieben. Ohne Zeiten fragt der Minutentakt Amazon nie und schreibt nichts. Der Reiter Test zeigt, welche Zeiten heute gelaufen sind, und meldet, wenn der Minutentakt nicht eingerichtet ist.
+- **Neu – Abgleich aus Loxone:** `?aktion=geraete_holen&token=<Aktionstoken>` (nur mit dem Aktionstoken) gleicht die Geräteliste ab und antwortet `GERAETE_HOLEN;OK=1;GERAETE=<Zahl>;ONLINE=<Zahl>`; höchstens alle 5 Minuten, ein früherer Aufruf bekommt 429 `GRUND=GEBREMST;WARTE=<Sekunden>`. Über MQTT dasselbe mit `alexang/befehl/geraete_holen` und dem Wert `1` (Haken „Befehle über MQTT annehmen“; der Befehl greift nicht ein, der zweite Haken ist nicht nötig). Der Reiter **Einbindung in Loxone** zeigt die vollständige Adresse zum Abschreiben.
+- Der Knopf „Geräteliste neu holen“ im Reiter Geräte zählt im Reiter Test mit und bleibt ungebremst.
+- **Geändert – leere oder fremde Geräteliste:** Meldet Amazon kein einziges Gerät oder keines der bekannten (gespeicherte Liste; ohne sie die Namenszuordnung, die ein Update übersteht), ersetzt die Antwort die gespeicherte Liste nicht mehr und führt nicht alle Geräte als verschwunden (`GRUND=AMAZON_LEER` bzw. `AMAZON_FREMD`). Das gilt für den Takt, die festen Zeiten, den Neuabgleich, `aktion=geraete_holen` und den Knopf. Protokoll und Reiter Test melden es einmal; ist die neue Liste richtig (etwa nach dem Tausch aller Echos), lässt sie sich im Reiter Geräte mit einem eigenen Haken bewusst übernehmen.
+- Die Vorlage „Alexa NG Aktionen“ hat den Befehl „Alexa Geräteliste abgleichen“ (Aktionstoken), die MQTT-Vorlage „Alexa NG Geräteliste abgleichen (MQTT)“.
+- Die erledigten festen Abgleichzeiten stehen neben dem Datenordner (`data/plugins/<ordner>.abgleichzeiten.json`), den ein Update nicht abräumt; eine Zeit läuft so auch nach einem Update in den 15 Minuten danach nicht doppelt. Die Deinstallation entfernt die Datei.
+- **Geändert – Laufzeitdaten überstehen ein Update:** Bis 1.0.23 räumte jedes Update den Datenordner ab; danach fehlten unter anderem die Geräteliste, die Amazon-Sitzung, der Stand des Takts, die Bremse und die Absenderübersicht, bis der Takt sie neu aufbaute (am Gerät gesehen: Update um 04:29, Geräteliste um 04:35 ohne Vorgänger neu geholt). Jetzt sichert `preupgrade.sh` den ganzen Datenordner über den gemeinsamen Baustein `upgrade_daten.sh`, und `postinstall.sh` spielt ihn zurück, ohne eine Datei der neuen Installation zu überschreiben. Nicht mitgenommen werden die Sperrdateien, der Ordner der Befehlsbrücke, die Optionsdateien mit dem Broker-Kennwort sowie Merker und Ordner des Hue-Containers, den das Update ohnehin entfernt; alles davon legt das Plugin selbst neu an. Eine Erstinstallation läuft wie bisher; eine liegengebliebene Sicherung eines abgebrochenen Updates wird nicht eingespielt und gemeldet, die Deinstallation räumt sie ab. Nachgestellt in WSL (fünf Fälle, Erwartung vorher festgeschrieben); am Gerät nicht gemessen.
+- Gemessen auf dem Arbeitsrechner mit einer Amazon-Attrappe unter PHP 7.4 und 8.4 (Eichung in beide Richtungen, Belege unter `Pruefung-Alexa-NG-1.0.24/`); am Gerät nicht gemessen.
 
 ## Neu in 1.0.23
 
@@ -520,6 +534,9 @@ Befehle gehen unter einer Sperre nacheinander hinaus, mit mindestens 1 s
 Abstand; wer länger als 8 s auf die Sperre warten müsste, bekommt
 `503 GRUND=BESCHAEFTIGT`. Ein Takt alle fünf Minuten prüft alle 30 Minuten die
 Anmeldung, holt alle 6 Stunden die Geräteliste und sendet das Lebenszeichen.
+Gilt ein Ziel laut Liste als offline, gleicht das Plugin die Liste vor der
+Ablehnung einmal neu ab (seit 1.0.24, höchstens alle 5 Minuten); dazu kommen
+auf Wunsch feste Abgleichzeiten (Minutentakt) und `aktion=geraete_holen`.
 
 ## Einrichten
 
@@ -652,6 +669,7 @@ Mit Token (`T` = Sprech- **oder** Aktionstoken, `A` = nur Aktionstoken):
 | `?aktion=lautstaerke&token=T&geraet=…&wert=0-100` | T | Lautstärke setzen |
 | `?aktion=routine&token=A&name=…[&geraet=…]` | A | freigegebene Routine; mit Sprechtoken 403 |
 | `?aktion=geraete&json=1&token=A` | A | Geräteliste als JSON mit Seriennummer und Typ (Fehlersuche) |
+| `?aktion=geraete_holen&token=A` | A | Geräteliste neu abgleichen (seit 1.0.24); `GERAETE_HOLEN;OK=1;GERAETE=3;ONLINE=3`; höchstens alle 5 Minuten, sonst 429 `GRUND=GEBREMST;WARTE=<s>` |
 | `?aktion=sperre&token=A&wert=1` bzw. `wert=0` | A | Sperre aus Loxone setzen bzw. aufheben; `SPERRE;OK=1;GESPERRT=1;UNVERAENDERT=0`; ab Werk 409 `GRUND=SPERRE_AUS` |
 | `?aktion=musik_probe&token=A&geraet=…&nr=1-50` | A | Musik-Probe mit dem Sender Nummer `nr` aus der Senderliste; `MUSIK;OK=1;GERAET=kueche;ANBIETER=tunein;NR=1;SUCHE=EIGEN;UNVERAENDERT=0`; ab Werk 409 `GRUND=MUSIK_AUS` |
 | `?aktion=musik_probe&token=A&geraet=…&sender=…[&anbieter=tunein\|amazon]` | A | dasselbe mit einem Sendernamen (Zusatz), Anbieter ab Werk `tunein` |
@@ -1047,6 +1065,7 @@ Bremsen des Plugins gelten weiter). Die Brücke abonniert:
 | `alexang/befehl/textbefehl` | Name eines freigegebenen Textbefehls, nie ein Satz (nur mit beiden eigenen Haken und Freigabe; Standardgerät) |
 | `alexang/befehl/<name>/textbefehl` | wie `alexang/befehl/textbefehl`, an diesen Echo statt an das Standardgerät (seit 1.0.21; nicht `alle`) |
 | `alexang/befehl/sperre` | `1` sperren, `0` öffnen (nur mit Haken „Sperre aus Loxone annehmen“) |
+| `alexang/befehl/geraete_holen` | `1` – Geräteliste neu abgleichen (seit 1.0.24; höchstens alle 5 Minuten, sonst Quittung `GEBREMST`) |
 | `alexang/befehl/radio/<zone>` | Sendernummer; `0` oder `stopp` hält an; `<zone>` ist `1`–`24` oder `alle` (nur mit Haken „Radio je Zone erlauben“) |
 | `alexang/befehl/radio/<zone>/laut` | 0–100 |
 

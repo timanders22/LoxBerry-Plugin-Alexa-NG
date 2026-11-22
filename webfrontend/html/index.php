@@ -12,6 +12,7 @@
  *   ?aktion=routine&token=A&name=..[&geraet=..]               nur Aktionstoken
  *   ?aktion=textbefehl&token=A&name=<freigegeben>[&geraet=..]  nur Aktionstoken, ab Werk aus (1.0.20, Entwurf 1.2-d)
  *   ?aktion=sperre&token=A&wert=0|1                           nur Aktionstoken, ab Werk aus (K1)
+ *   ?aktion=geraete_holen&token=A                             nur Aktionstoken: Geraeteliste neu abgleichen, hoechstens alle 5 min (1.0.24)
  *   ?aktion=musik_probe&token=A&geraet=..&nr=1-50             nur Aktionstoken, ab Werk aus (Stufe 3)
  *   ?aktion=musik_probe&token=A&geraet=..&sender=..[&anbieter=tunein|amazon]
  *   ?aktion=musik_stopp&token=A&geraet=..
@@ -68,7 +69,8 @@ try {
     $ax_kopf = array('status' => 'ALEXANG', 'geraete' => 'GERAET', 'selftest' => 'SELFTEST', 'sprechen' => 'SPRECHEN',
                      'ankuendigen' => 'ANKUENDIGEN', 'lautstaerke' => 'LAUTSTAERKE', 'routine' => 'ROUTINE',
                      'sperre' => 'SPERRE', 'musik_probe' => 'MUSIK', 'musik_stopp' => 'MUSIK', 'textbefehl' => 'TEXTBEFEHL',
-                     'radio' => 'RADIO', 'radio_stopp' => 'RADIO', 'radio_laut' => 'RADIO');
+                     'radio' => 'RADIO', 'radio_stopp' => 'RADIO', 'radio_laut' => 'RADIO',
+                     'geraete_holen' => 'GERAETE_HOLEN');   // 1.0.24
     if (!isset($ax_kopf[$ax_aktion])) {
         // 1.0.6, Fremdbefund F8 und eigener Fund E3: eine unbekannte Aktion zaehlt als Fehlversuch und unterliegt der
         // Sperre nach AX_FEHLVERSUCHE; die Protokollzeile ist gebremst (900 s je Absender, wirkt seit F9).
@@ -168,13 +170,20 @@ try {
         ax_log('WARN', 'Endpunkt: routine von ' . $ax_wer . ' mit dem Sprechtoken abgewiesen.');
         ax_ende_roh(403, 'ROUTINE;OK=0;ERR=TOKEN;GRUND=SPRECHTOKEN_STARTET_KEINE_ROUTINE');
     }
-    if (in_array($ax_aktion, array('sperre', 'musik_probe', 'musik_stopp', 'radio', 'radio_stopp', 'radio_laut', 'textbefehl'), true) && !$ax_ist_akt) {
+    if (in_array($ax_aktion, array('sperre', 'musik_probe', 'musik_stopp', 'radio', 'radio_stopp', 'radio_laut', 'textbefehl', 'geraete_holen'), true) && !$ax_ist_akt) {
         ax_log('WARN', 'Endpunkt: ' . $ax_aktion . ' von ' . $ax_wer . ' mit dem Sprechtoken abgewiesen.');
         ax_ende_roh(403, ax_zeile($K, array('OK' => 0, 'ERR' => 'TOKEN', 'GRUND' => 'NUR_AKTIONSTOKEN')));
     }
     if ($ax_aktion === 'sperre') {
         list($ax_h, $ax_f) = ax_loxsperre_setzen(isset($ax_par['wert']) ? $ax_par['wert'] : null, 'http',
                                                  isset($ax_par['absender']) ? $ax_par['absender'] : '');
+        ax_ende_roh($ax_h, ax_zeile($K, $ax_f));
+    }
+    if ($ax_aktion === 'geraete_holen') {
+        // 1.0.24: Geraeteliste neu abgleichen (Aktionstoken; gebremst, 429 GRUND=GEBREMST). Bricht Loxone die Verbindung
+        // ab, laeuft der Abgleich zu Ende und wird protokolliert.
+        ignore_user_abort(true);
+        list($ax_h, $ax_f) = ax_abgleich_ausloesen('http', $ax_par);
         ax_ende_roh($ax_h, ax_zeile($K, $ax_f));
     }
     if (in_array($ax_aktion, array('radio', 'radio_stopp', 'radio_laut'), true)) {

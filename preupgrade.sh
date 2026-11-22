@@ -17,6 +17,10 @@
 #      Dateien 0600) sichern und mit cmp nachsehen. Die Zweitschriften
 #      neben dem Konfigordner bleiben ohnehin liegen.
 
+# [upgrade_daten] Argumente des Installers festhalten - unten sichert der gemeinsame Baustein
+# [upgrade_daten] upgrade_daten.sh (neben diesem Skript) den ganzen Datenordner.
+UPGD_ORDNER="$3"; UPGD_WURZEL="$5"
+
 PFOLDER="${3:-alexang}"
 case "$PFOLDER" in
     ''|.|..|*/*) echo "<FAIL> Unbrauchbarer Ordnername '$PFOLDER'."; exit 2 ;;
@@ -201,6 +205,21 @@ if [ "$AX_FEHL" != 0 ]; then
     echo "<FAIL> Nicht alles liess sich beiseitelegen - die Aktualisierung wird abgebrochen, damit der Purge die Originale"
     echo "<FAIL> nicht loescht. Die bisherige Fassung bleibt installiert."
     rm -f "$MARKE" 2>/dev/null
+    exit 2
+fi
+# 1.0.24 (Regeln/06, Baustein 1.1.0): bewusst NICHT ueber das Update getragen - befehle (Befehlsbruecke, einheitlich
+# ausgenommen; die Bruecke legt den Ordner beim Start neu an, befehlsbruecke.php mkdir), mosquitto (Optionsdateien mit
+# dem Broker-Kennwort; ax_mqtt_vorspann() und postinstall.sh legen sie neu an), hue, hue_docker.json, hue_vorgang.json
+# (Container und Vorgang der Hue-Probe entfernt bzw. beendet dieses Skript oben - ihr Merker waere danach falsch; der
+# Takt legt den Container neu an, wenn er eingeschaltet ist). Sperren *.lock laesst der Baustein ohnehin aus.
+UPGD_OHNE="befehle mosquitto hue hue_docker.json hue_vorgang.json"
+# [upgrade_daten] Gemeinsamer Baustein (Werkzeuge/gemeinsam/upgrade_daten.sh): den ganzen Datenordner
+# [upgrade_daten] neben den Ordner sichern; misslingt das, bricht die Aktualisierung mit Rueckgabe 2 ab.
+if [ -f "$(dirname "$0")/upgrade_daten.sh" ] && . "$(dirname "$0")/upgrade_daten.sh"; then
+    upgrade_daten_sichern "$UPGD_ORDNER" "$UPGD_WURZEL" || exit 2
+else
+    echo "<FAIL> Der Baustein upgrade_daten.sh fehlt neben $(basename "$0") - die Aktualisierung wird abgebrochen,"
+    echo "<FAIL> die bisherige Fassung bleibt installiert."
     exit 2
 fi
 exit 0

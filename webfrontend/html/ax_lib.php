@@ -67,6 +67,10 @@ define('AX_HUE_NAME_MAX', 32);       // Fassung 2: Zeichen je Lampenname
 define('AX_HUE_ECHOS_MAX', 20);
 define('AX_TEXTBEFEHLE_MAX', 20);        // 1.0.20 (1.2-d): Eintraege der Freigabeliste fuer Textbefehle
 define('AX_TEXTBEFEHL_ZEICHEN_MAX', 200); // 1.0.20: Zeichen je Satz
+define('AX_NEUABGLEICH_ABSTAND_S', 300); // 1.0.24: Neuabgleich der Geraeteliste hoechstens alle 5 min (offline, Loxone, MQTT)
+define('AX_NEUABGLEICH_ZEIT_S', 5);      // 1.0.24: Zeitgrenze der Abfrage beim Neuabgleich vor einer Ansage
+define('AX_ABGLEICH_ZEITEN_MAX', 12);    // 1.0.24: hoechstens 12 feste Abgleichzeiten
+define('AX_ABGLEICH_NACHHOLEN_S', 900);  // 1.0.24: eine feste Abgleichzeit wird bis 15 min danach nachgeholt
 
 /* ==================================================================
  * Pfade
@@ -147,6 +151,8 @@ function ax_paths()
             'backup_amz'  => $home . '/config/plugins/' . $plugin . '.backup.amazon.json',
             'datadir'     => $ddir,
             'namen'       => $home . '/data/plugins/' . $plugin . '.namen.json',
+            // 1.0.24: erledigte feste Abgleichzeiten - neben dem Datenordner, den ein Update abraeumt (Regeln/06)
+            'abgleichzeiten' => $home . '/data/plugins/' . $plugin . '.abgleichzeiten.json',
             'marke'       => $home . '/data/plugins/' . $plugin . '.upgrade_laeuft',
             'logdir'      => $home . '/log/plugins/' . $plugin,
             'log'         => $home . '/log/plugins/' . $plugin . '/alexang.log',
@@ -167,6 +173,7 @@ function ax_paths()
         'backup_amz'  => $a . '/alexang.backup.amazon.json',
         'datadir'     => $a . '/data',
         'namen'       => $a . '/alexang.namen.json',
+        'abgleichzeiten' => $a . '/alexang.abgleichzeiten.json',
         'marke'       => $a . '/alexang.upgrade_laeuft',
         'logdir'      => $a . '/log',
         'log'         => $a . '/log/alexang.log',
@@ -287,6 +294,13 @@ function ax_vorgaben()
         'textbefehle_frei' => array(),
         // Ansagetexte protokollieren (gekuerzt), ab Werk aus (E8).
         'texte_protokollieren' => 0,
+        // 1.0.24 (Befund am Geraet 22.11.2026): ist ein Zielgeraet laut gespeicherter Geraeteliste offline und wuerde
+        // der Befehl nur deshalb abgelehnt, gleicht das Plugin die Liste einmal neu ab und entscheidet dann (hoechstens
+        // alle AX_NEUABGLEICH_ABSTAND_S s). Fehlerbehebung, ab Werk an; der Haken schaltet sie ab (dann wie bis 1.0.23).
+        'neuabgleich_offline_ein' => 1,
+        // 1.0.24 (Auftrag des Hausherrn 22.11.2026): feste Uhrzeiten HH:MM, zu denen der Minutentakt die Geraeteliste
+        // abgleicht (einmal je Zeit und Tag). Ab Werk leer.
+        'abgleich_zeiten' => array(),
         // Sperre aus Loxone (K1, Entscheidung 29): Loxone setzt sie per HTTP
         // (Aktionstoken) oder MQTT; gesperrt werden nur Ansagen und
         // Ankuendigungen, dringend=1 geht durch. Ab Werk aus.
@@ -532,6 +546,7 @@ function ax_wert_pruefen($schluessel, $wert, &$grund = '')
         case 'hue_sperre_ein':
         case 'hue_suchen_ein':
         case 'textbefehl_ein':
+        case 'neuabgleich_offline_ein':     // 1.0.24
             return $schalter($wert);
         case 'bremse_fenster_s': return $zahl($wert, 0, 3600);
         case 'mindestabstand_s': return $zahl($wert, 0, 600);
@@ -642,6 +657,20 @@ function ax_wert_pruefen($schluessel, $wert, &$grund = '')
                 }
                 $namen[$z['name']] = 1;
                 $aus[] = array('name' => $z['name'], 'text' => $z['text']);
+            }
+            return $aus;
+        case 'abgleich_zeiten':
+            /* 1.0.24: Liste von Uhrzeiten genau in der Form HH:MM (00:00 bis 23:59), keine doppelt, hoechstens
+             * AX_ABGLEICH_ZEITEN_MAX. Abgewiesen wird, nie zurechtgebogen (auch 6:47 statt 06:47 nicht). */
+            if (!is_array($wert)) { $grund = 'KEINE_LISTE'; return null; }
+            if (count($wert) > AX_ABGLEICH_ZEITEN_MAX) { $grund = 'ABGLEICHZEITEN_ZAHL|' . AX_ABGLEICH_ZEITEN_MAX; return null; }
+            $aus = array();
+            foreach (array_values($wert) as $z) {
+                if (!is_string($z) || !preg_match('/^([01][0-9]|2[0-3]):[0-5][0-9]\z/', $z)) {
+                    $grund = 'ABGLEICHZEIT|' . (is_string($z) ? str_replace('|', '/', ax_utf8_schneiden($z, 20)) : '?'); return null;
+                }
+                if (in_array($z, $aus, true)) { $grund = 'ABGLEICHZEIT_DOPPELT|' . $z; return null; }
+                $aus[] = $z;
             }
             return $aus;
         case 'ruhe_von':
@@ -1722,20 +1751,21 @@ function ax_sitzung_sichern($erzwingen = false)
  * eine Pause und eine ehrliche Antwort, kein stiller zweiter Versuch).
  * Rueckgabe: array(ok, grund, antwort).
  */
-function ax_alexa($methode, $pfad, $rumpf = null, $bei_429_nochmal = true)
+function ax_alexa($methode, $pfad, $rumpf = null, $bei_429_nochmal = true, $zeit = AX_HTTP_ZEIT_S)
 {
+    // 1.0.24: $zeit = Zeitgrenze je Anfrage in Sekunden (ax_http); ab Werk wie bisher AX_HTTP_ZEIT_S.
     list($ok, $grund, $s) = ax_sitzung_sichern(false);
     if (!$ok) { return array(false, $grund, null); }
     $json = ($rumpf !== null);
-    $r = ax_http($methode, ax_amazon_url('alexa', $pfad), ax_alexa_kopf($s, $json), $rumpf);
+    $r = ax_http($methode, ax_amazon_url('alexa', $pfad), ax_alexa_kopf($s, $json), $rumpf, $zeit);
     if ($r['code'] === 401 || $r['code'] === 403) {
         list($ok, $grund, $s) = ax_sitzung_sichern(true);
         if (!$ok) { return array(false, $grund, $r); }
-        $r = ax_http($methode, ax_amazon_url('alexa', $pfad), ax_alexa_kopf($s, $json), $rumpf);
+        $r = ax_http($methode, ax_amazon_url('alexa', $pfad), ax_alexa_kopf($s, $json), $rumpf, $zeit);
     }
     if ($r['code'] === 429 && $bei_429_nochmal) {
         sleep(2);
-        $r = ax_http($methode, ax_amazon_url('alexa', $pfad), ax_alexa_kopf($s, $json), $rumpf);
+        $r = ax_http($methode, ax_amazon_url('alexa', $pfad), ax_alexa_kopf($s, $json), $rumpf, $zeit);
     }
     ax_uhr_merken($r);   // 1.0.20: Abweichung der Systemuhr gegen Amazon (Reiter Test)
     if ($r['code'] >= 200 && $r['code'] < 300) {
@@ -1969,19 +1999,60 @@ function ax_namen_lesen()
  * Lautstaerken (allDeviceVolumes, ARC:1021) in geraete.json ablegen.
  * Bestehende Normalnamen werden nie umbenannt; ein zweiter gleicher Name
  * bekommt _2, _3 ... Rueckgabe: array(ok, grund, liste).
+ * 1.0.24: $schnell > 0 (Neuabgleich vor einer Ansage): Zeitgrenze der Abfrage in Sekunden, keine Wiederholung nach
+ * 429, keine Abfrage der Lautstaerken - sie bleiben die der gespeicherten Liste. Ein misslungener Abruf schreibt wie
+ * bisher nichts: die gespeicherte Liste bleibt.
+ * 1.0.24 (Nachzug 22.11.2026): meldet Amazon kein einziges Geraet oder keines der bekannten (gespeicherte Liste,
+ * ohne sie die Namenszuordnung neben dem Datenordner), faellt der Abruf geschlossen aus: AMAZON_LEER bzw.
+ * AMAZON_FREMD, die Liste bleibt, gemeldet einmal je Lage (ax_geraete_abgewiesen_merken()). Gilt fuer Takt,
+ * Knopf, feste Zeit, Neuabgleich und aktion=geraete_holen. $ersetzen: nur der Knopf mit dem Haken "Liste
+ * trotzdem uebernehmen" - bewusst, nie still.
  */
-function ax_geraete_holen()
+function ax_geraete_holen($schnell = 0, $ersetzen = false)
 {
     $p = ax_paths();
-    list($ok, $grund, $r) = ax_alexa('GET', '/api/devices-v2/device?cached=false');
+    $schnell = (int) $schnell;
+    list($ok, $grund, $r) = ($schnell > 0)
+        ? ax_alexa('GET', '/api/devices-v2/device?cached=false', null, false, $schnell)
+        : ax_alexa('GET', '/api/devices-v2/device?cached=false');
     if (!$ok) { return array(false, $grund, null); }
     $j = json_decode($r['rumpf'], true);
     if (!is_array($j) || !isset($j['devices']) || !is_array($j['devices'])) {
         ax_log_wenn_neu('devices_form', 'WARN', 'Amazon: devices-v2 ohne Feld devices - Schnittstelle geaendert?', 3600);
         return array(false, 'AMAZON_UNERWARTET', null);
     }
+    $bekannt = array();
+    $alt_b = ax_geraete();
+    if ($alt_b) {
+        foreach ($alt_b['liste'] as $g) { if (is_array($g) && isset($g['serial']) && is_string($g['serial'])) { $bekannt[$g['serial']] = 1; } }
+    } else {
+        foreach (ax_namen_lesen() as $s => $n) { $bekannt[(string) $s] = 1; }
+    }
+    $gemeldet = array();
+    foreach ($j['devices'] as $d) {
+        if (is_array($d) && isset($d['serialNumber']) && is_string($d['serialNumber'])) { $gemeldet[$d['serialNumber']] = 1; }
+    }
+    if ($bekannt && !array_intersect_key($bekannt, $gemeldet)) {
+        $gl = $j['devices'] ? 'AMAZON_FREMD' : 'AMAZON_LEER';
+        if (!$ersetzen) {
+            ax_geraete_abgewiesen_merken($gl, count($j['devices']), count($bekannt));
+            return array(false, $gl, null);
+        }
+        ax_log('WARN', 'Geraete: Amazon meldet ' . count($j['devices']) . ' Geraet(e), keines der ' . count($bekannt)
+            . ' bekannten - auf Wunsch von Hand trotzdem uebernommen.');
+    }
     $laut = array();
-    list($ok2, , $r2) = ax_alexa('GET', '/api/devices/deviceType/dsn/audio/v1/allDeviceVolumes');
+    if ($schnell > 0) {
+        $ok2 = false;
+        $alt_l = ax_geraete();
+        if ($alt_l) {
+            foreach ($alt_l['liste'] as $g) {
+                if (is_array($g) && isset($g['serial'], $g['laut']) && is_string($g['serial'])) { $laut[$g['serial']] = (int) $g['laut']; }
+            }
+        }
+    } else {
+        list($ok2, , $r2) = ax_alexa('GET', '/api/devices/deviceType/dsn/audio/v1/allDeviceVolumes');
+    }
     if ($ok2) {
         $jv = json_decode($r2['rumpf'], true);
         if (is_array($jv) && isset($jv['volumes']) && is_array($jv['volumes'])) {
@@ -2078,7 +2149,46 @@ function ax_geraete_holen()
     }
     ax_log_wenn_neu('geraete_' . md5(json_encode(array_map(function ($g) { return $g['normal']; }, $liste))),
         'INFO', 'Geraete: ' . $gesamt . ' im Konto, ' . count($liste) . ' sprechfaehig.', 86400);
+    ax_geraete_abgewiesen_merken('', 0, 0);
     return array(true, '', $st);
+}
+
+/**
+ * 1.0.24 (Nachzug): Merker einer abgewiesenen Geraeteliste (Laufzeitdatei geraete_abgewiesen.json im Datenordner).
+ * $grund AMAZON_LEER|AMAZON_FREMD legt ihn an und meldet einmal (WARN) - solange er liegt, kein weiteres Mal;
+ * $grund '' (gelungener Abruf) raeumt ihn ab und meldet das einmal (INFO).
+ */
+function ax_geraete_abgewiesen_merken($grund, $amazon, $bekannt)
+{
+    $p = ax_paths();
+    $f = $p['datadir'] . '/geraete_abgewiesen.json';
+    $alt = ax_geraete_abgewiesen();
+    if ($grund === '') {
+        if ($alt) {
+            @unlink($f);
+            ax_log('INFO', 'Geraete: Amazon meldet wieder bekannte Geraete - die Geraeteliste ist erneuert.');
+        }
+        return;
+    }
+    $neu = array('t' => $alt ? $alt['t'] : time(), 'zuletzt' => time(), 'grund' => $grund, 'amazon' => (int) $amazon,
+                 'bekannt' => (int) $bekannt, 'zahl' => ($alt ? $alt['zahl'] : 0) + 1);
+    ax_write_json($f, $neu, 0644);
+    if (!$alt) {
+        ax_log('WARN', 'Geraete: Amazon meldet ' . (int) $amazon . ' Geraet(e), keines der ' . (int) $bekannt
+            . ' bekannten (' . $grund . ') - die gespeicherte Geraeteliste bleibt. Wiederholt sich das, im Reiter Geraete'
+            . ' die Liste bewusst uebernehmen.');
+    }
+}
+
+/** Der Merker der abgewiesenen Geraeteliste oder null. */
+function ax_geraete_abgewiesen()
+{
+    $p = ax_paths();
+    $d = ax_json_lesen($p['datadir'] . '/geraete_abgewiesen.json');
+    if (!is_array($d) || !isset($d['t'], $d['grund']) || !in_array($d['grund'], array('AMAZON_LEER', 'AMAZON_FREMD'), true)) { return null; }
+    return array('t' => (int) $d['t'], 'zuletzt' => isset($d['zuletzt']) ? (int) $d['zuletzt'] : (int) $d['t'], 'grund' => $d['grund'],
+                 'amazon' => isset($d['amazon']) ? (int) $d['amazon'] : 0, 'bekannt' => isset($d['bekannt']) ? (int) $d['bekannt'] : 0,
+                 'zahl' => isset($d['zahl']) ? (int) $d['zahl'] : 1);
 }
 
 /** Die zwischengespeicherte Geraeteliste; null, wenn es keine gibt. */
@@ -2102,6 +2212,252 @@ function ax_geraete()
     }
     $d['verschwunden'] = $weg;
     return $d;
+}
+
+/* ==================================================================
+ * 1.0.24: Neuabgleich der Geraeteliste
+ * Befund am Geraet 22.11.2026: ein Echo war beim Abgleich des Takts ohne Strom und stand danach auf offline; Stunden
+ * spaeter lehnte der Endpunkt eine Ansage mit GRUND=GERAETE_OFFLINE ab, obwohl der Echo laengst wieder lief - der
+ * Takt gleicht nur alle AX_GERAETE_S (6 h) ab. Nach einem Abgleich von Hand ging dieselbe Ansage durch.
+ * ================================================================== */
+
+/** Die Ausloeser eines Neuabgleichs, wie sie im Zustand, im Protokoll und im Reiter Test stehen. */
+function ax_abgleich_ausloeser()
+{
+    return array('offline', 'loxone', 'mqtt', 'zeit', 'oberflaeche');
+}
+
+/** Zahl der sprechfaehigen Echos (ohne Amazon-Gruppen), die laut Liste online sind; -1 ohne Liste. */
+function ax_abgleich_online($st)
+{
+    if (!is_array($st) || !isset($st['liste']) || !is_array($st['liste'])) { return -1; }
+    $on = 0;
+    foreach ($st['liste'] as $g) {
+        if (is_array($g) && (!isset($g['familie']) || $g['familie'] !== 'WHA') && !empty($g['online'])) { $on++; }
+    }
+    return $on;
+}
+
+/**
+ * Der Zustand der Neuabgleiche (Laufzeitdatei abgleich.json im Datenordner, 0644 wie geraete.json): letzter Versuch,
+ * letzte Bremsung, Zaehler je Ausloeser und die festen Abgleichzeiten, die schon gelaufen sind ("JJJJ-MM-TT HH:MM").
+ * Fehlt die Datei oder ist sie kaputt, gilt ein leerer Zustand. Ein Update raeumt den Datenordner ab (Regeln/06);
+ * die erledigten festen Zeiten liegen deshalb in einer eigenen Datei daneben (Pfad 'abgleichzeiten').
+ */
+function ax_abgleich_lesen()
+{
+    $p = ax_paths();
+    $d = ax_json_lesen($p['datadir'] . '/abgleich.json');
+    if (!is_array($d)) { $d = array(); }
+    $aus = array('letzter' => null, 'gebremst' => null, 'zahl' => array(), 'zahl_gebremst' => 0, 'zeiten' => array());
+    $text = function ($x, $muster, $max) { return is_string($x) ? substr((string) preg_replace($muster, '', $x), 0, $max) : ''; };
+    if (isset($d['letzter']) && is_array($d['letzter']) && isset($d['letzter']['t']) && is_int($d['letzter']['t'])) {
+        $l = $d['letzter'];
+        $aus['letzter'] = array('t' => $l['t'],
+            'ausloeser' => (isset($l['ausloeser']) && in_array($l['ausloeser'], ax_abgleich_ausloeser(), true)) ? $l['ausloeser'] : '',
+            'ergebnis' => (isset($l['ergebnis']) && in_array($l['ergebnis'], array('OK', 'FEHL', 'LAEUFT'), true)) ? $l['ergebnis'] : 'LAEUFT',
+            'grund' => $text(isset($l['grund']) ? $l['grund'] : '', '/[^A-Z0-9_]/', 40),
+            'dauer_ms' => isset($l['dauer_ms']) ? (int) $l['dauer_ms'] : 0,
+            'vorher' => isset($l['vorher']) ? (int) $l['vorher'] : -1,
+            'nachher' => isset($l['nachher']) ? (int) $l['nachher'] : -1,
+            'anlass' => $text(isset($l['anlass']) ? $l['anlass'] : '', '/[^a-z_]/', 20));
+    }
+    if (isset($d['gebremst']) && is_array($d['gebremst']) && isset($d['gebremst']['t']) && is_int($d['gebremst']['t'])) {
+        $b = $d['gebremst'];
+        $aus['gebremst'] = array('t' => $b['t'],
+            'ausloeser' => (isset($b['ausloeser']) && in_array($b['ausloeser'], ax_abgleich_ausloeser(), true)) ? $b['ausloeser'] : '',
+            'warte' => isset($b['warte']) ? (int) $b['warte'] : 0);
+    }
+    if (isset($d['zahl']) && is_array($d['zahl'])) {
+        foreach (ax_abgleich_ausloeser() as $a) {
+            if (isset($d['zahl'][$a]) && is_int($d['zahl'][$a]) && $d['zahl'][$a] >= 0) { $aus['zahl'][$a] = $d['zahl'][$a]; }
+        }
+    }
+    if (isset($d['zahl_gebremst']) && is_int($d['zahl_gebremst']) && $d['zahl_gebremst'] >= 0) { $aus['zahl_gebremst'] = $d['zahl_gebremst']; }
+    // 1.0.24 (Nachzug): die erledigten festen Zeiten stehen neben dem Datenordner (<ordner>.abgleichzeiten.json) - ein
+    // Update raeumt data/plugins/<ordner>/ ab, und sonst liefe eine Zeit in den 15 min nach ihr ein zweites Mal.
+    $zq = ax_json_lesen($p['abgleichzeiten']);
+    if (is_array($zq) && isset($zq['zeiten']) && is_array($zq['zeiten'])) {
+        foreach ($zq['zeiten'] as $k => $t) {
+            if (preg_match('/^[0-9]{4}-[0-9]{2}-[0-9]{2} ([01][0-9]|2[0-3]):[0-5][0-9]\z/', (string) $k) && is_int($t)) {
+                $aus['zeiten'][(string) $k] = $t;
+            }
+        }
+    }
+    return $aus;
+}
+
+/** Den Zustand schreiben; von den erledigten festen Zeiten bleiben die letzten 60 (12 Zeiten x 5 Tage). */
+function ax_abgleich_schreiben(array $z)
+{
+    $p = ax_paths();
+    $zeiten = $z['zeiten'];
+    if (count($zeiten) > 60) { ksort($zeiten); $zeiten = array_slice($zeiten, -60, null, true); }
+    unset($z['zeiten']);
+    $ok = ax_write_json($p['datadir'] . '/abgleich.json', $z, 0644);
+    if ($zeiten || is_file($p['abgleichzeiten'])) {
+        $ok = ax_write_json($p['abgleichzeiten'], array('zeiten' => $zeiten), 0644) && $ok;
+    }
+    return $ok;
+}
+
+/**
+ * Die Geraeteliste einmal neu abgleichen. Der Aufrufer haelt die Amazon-Sperre (ax_sperre(), amazon.lock): so laufen
+ * nie zwei Abgleiche gleichzeitig, auch nicht neben dem Takt, der dieselbe Sperre nimmt. $bremse: hoechstens alle
+ * AX_NEUABGLEICH_ABSTAND_S Sekunden, gezaehlt ab dem letzten Versuch oder dem Stand der gespeicherten Liste (was
+ * spaeter liegt); feste Zeiten und der Knopf der Oberflaeche bremsen nicht. Ein Versuch in der Zukunft (Uhr
+ * zurueckgestellt) gilt als eben geschehen. $schnell > 0: Zeitgrenze der Abfrage (ax_geraete_holen()). Ein
+ * misslungener Abruf ersetzt die gespeicherte Liste nie. $anlass: Aktion fuer das Protokoll (a-z, _).
+ * Rueckgabe array(ergebnis OK|FEHL|GEBREMST, grund, liste, warte_s) - liste ist die neue oder die gespeicherte.
+ */
+function ax_abgleich_ausfuehren($ausloeser, $bremse = true, $schnell = 0, $anlass = '', $ersetzen = false)
+{
+    if (!in_array($ausloeser, ax_abgleich_ausloeser(), true)) { return array('FEHL', 'AUSLOESER', ax_geraete(), 0); }
+    $z = ax_abgleich_lesen();
+    $jetzt = time();
+    $st_alt = ax_geraete();
+    $anlass = substr((string) preg_replace('/[^a-z_]/', '', (string) $anlass), 0, 20);
+    $wer = ($anlass !== '') ? $ausloeser . ' vor ' . $anlass : $ausloeser;
+    if ($bremse) {
+        $zuletzt = 0;
+        if ($z['letzter']) {
+            if ($z['letzter']['t'] > $jetzt) { $z['letzter']['t'] = $jetzt; }
+            $zuletzt = $z['letzter']['t'];
+        }
+        if ($st_alt && (int) $st_alt['stand'] <= $jetzt && (int) $st_alt['stand'] > $zuletzt) { $zuletzt = (int) $st_alt['stand']; }
+        $warte = ($zuletzt > 0) ? AX_NEUABGLEICH_ABSTAND_S - ($jetzt - $zuletzt) : 0;
+        if ($warte > 0) {
+            $z['gebremst'] = array('t' => $jetzt, 'ausloeser' => $ausloeser, 'warte' => $warte);
+            $z['zahl_gebremst']++;
+            ax_abgleich_schreiben($z);
+            ax_log_wenn_neu('abgleich_gebremst_' . $ausloeser, 'INFO', 'Geraete: Neuabgleich (' . $wer . ') gebremst - der letzte Abgleich liegt '
+                . ($jetzt - $zuletzt) . ' s zurueck, der naechste ist in ' . $warte . ' s moeglich.', AX_NEUABGLEICH_ABSTAND_S);
+            return array('GEBREMST', 'GEBREMST', $st_alt, $warte);
+        }
+    }
+    $vorher = ax_abgleich_online($st_alt);
+    $z['letzter'] = array('t' => $jetzt, 'ausloeser' => $ausloeser, 'ergebnis' => 'LAEUFT', 'grund' => '', 'dauer_ms' => 0,
+                          'vorher' => $vorher, 'nachher' => -1, 'anlass' => $anlass);
+    ax_abgleich_schreiben($z);   // vor der Anfrage: auch ein Abbruch mittendrin zaehlt fuer die Bremse
+    $t0 = microtime(true);
+    list($ok, $g, $st) = ax_geraete_holen((int) $schnell, (bool) $ersetzen);
+    $ms = (int) round((microtime(true) - $t0) * 1000);
+    $nachher = $ok ? ax_abgleich_online($st) : $vorher;
+    $z['letzter']['ergebnis'] = $ok ? 'OK' : 'FEHL';
+    $z['letzter']['grund'] = $ok ? '' : substr((string) preg_replace('/[^A-Z0-9_]/', '', (string) $g), 0, 40);
+    $z['letzter']['dauer_ms'] = $ms;
+    $z['letzter']['nachher'] = $nachher;
+    $z['zahl'][$ausloeser] = (isset($z['zahl'][$ausloeser]) ? $z['zahl'][$ausloeser] : 0) + 1;
+    ax_abgleich_schreiben($z);
+    if ($ok) {
+        ax_log('INFO', 'Geraete: Neuabgleich (' . $wer . ') gelungen - ' . $nachher . ' Echo(s) online, vorher ' . $vorher . ', ' . $ms . ' ms.');
+        return array('OK', '', $st, 0);
+    }
+    ax_log('WARN', 'Geraete: Neuabgleich (' . $wer . ') misslungen (' . $g . ', ' . $ms . ' ms) - die gespeicherte Geraeteliste bleibt.');
+    return array('FEHL', (string) $g, $st_alt, 0);
+}
+
+/**
+ * Welche festen Abgleichzeiten sind jetzt faellig? Eine Zeit HH:MM ist faellig, wenn sie heute erreicht und hoechstens
+ * AX_ABGLEICH_NACHHOLEN_S Sekunden vorbei ist und "JJJJ-MM-TT HH:MM" noch nicht unter den erledigten steht - einmal je
+ * Zeit und Tag, auch nach einem Neustart (der Zustand liegt im Datenordner). Rueckgabe die Schluessel, frueheste zuerst.
+ */
+function ax_abgleich_faellig(array $zeiten, array $erledigt, $jetzt)
+{
+    $jetzt = (int) $jetzt;
+    $aus = array();
+    $tag = date('Y-m-d', $jetzt);
+    foreach ($zeiten as $hm) {
+        if (!is_string($hm) || !preg_match('/^([01][0-9]|2[0-3]):([0-5][0-9])\z/', $hm, $m)) { continue; }
+        $soll = mktime((int) $m[1], (int) $m[2], 0, (int) date('n', $jetzt), (int) date('j', $jetzt), (int) date('Y', $jetzt));
+        if ($soll === false || $jetzt < $soll || $jetzt - $soll > AX_ABGLEICH_NACHHOLEN_S) { continue; }
+        $k = $tag . ' ' . $hm;
+        if (!isset($erledigt[$k])) { $aus[sprintf('%012d', $soll) . '|' . $k] = $k; }
+    }
+    ksort($aus);
+    return array_values($aus);
+}
+
+/**
+ * Der Minutentakt (bin/ax_minute.php aus cron/cron.01min): feste Abgleichzeiten. Ohne Zeiten endet er sofort, fragt
+ * Amazon nie und schreibt nichts. Mehrere faellige Zeiten auf einmal ergeben EINEN Abgleich; jede wird unter der
+ * Amazon-Sperre als erledigt gemerkt, bevor Amazon gefragt wird - ein Abgleich je Zeit und Tag, auch wenn er
+ * misslingt (dann WARN im Protokoll, kein Nachholen). Ist die Sperre belegt, versucht es die naechste Minute erneut.
+ * Rueckgabe array(rc, kennung): rc 0 = nichts zu tun oder erledigt, 1 = Abgleich misslungen.
+ */
+function ax_abgleich_minute($jetzt = null)
+{
+    $jetzt = ($jetzt === null) ? time() : (int) $jetzt;
+    $cfg = ax_config();
+    if (!$cfg['abgleich_zeiten']) { return array(0, 'KEINE_ZEITEN'); }
+    $z = ax_abgleich_lesen();
+    if (!ax_abgleich_faellig($cfg['abgleich_zeiten'], $z['zeiten'], $jetzt)) { return array(0, 'NICHT_FAELLIG'); }
+    $sp = ax_sperre();
+    if (!$sp) { return array(0, 'BESCHAEFTIGT'); }
+    // unter der Sperre neu lesen: ein zweiter Lauf, der gleichzeitig begann, hat die Zeit vielleicht schon erledigt
+    $z = ax_abgleich_lesen();
+    $f = ax_abgleich_faellig($cfg['abgleich_zeiten'], $z['zeiten'], $jetzt);
+    if (!$f) { ax_sperre_frei($sp); return array(0, 'NICHT_FAELLIG'); }
+    foreach ($f as $k) { $z['zeiten'][$k] = $jetzt; }
+    if (!ax_abgleich_schreiben($z)) {
+        ax_sperre_frei($sp);
+        ax_log_wenn_neu('abgleich_zeit_schreiben', 'WARN', 'Geraete: feste Abgleichzeit ' . implode(', ', $f)
+            . ' nicht ausgefuehrt - abgleich.json liess sich nicht schreiben (sonst liefe sie jede Minute).', 3600);
+        return array(1, 'SCHREIBEN');
+    }
+    $grund = '';
+    if (empty($cfg['aktiv'])) { $grund = 'PLUGIN_AUS'; }
+    elseif (!ax_amazon()) { $grund = 'ANMELDUNG'; }
+    elseif (!function_exists('curl_init')) { $grund = 'CURL_FEHLT'; }
+    else {
+        $bef = ax_anmeldung_befund();
+        if ($bef['befund'] === 'ABGELAUFEN') { $grund = 'ANMELDUNG_ABGELAUFEN'; }
+    }
+    if ($grund !== '') {
+        ax_sperre_frei($sp);
+        ax_log('WARN', 'Geraete: feste Abgleichzeit ' . implode(', ', $f) . ' ausgelassen - ' . $grund . '.');
+        return array(0, 'AUSGELASSEN|' . $grund);
+    }
+    list($e, $g) = ax_abgleich_ausfuehren('zeit', false, 0, '');
+    ax_sperre_frei($sp);
+    return ($e === 'OK') ? array(0, 'OK|' . implode(',', $f)) : array(1, 'FEHL|' . $g);
+}
+
+/**
+ * Anstoss von aussen (Auftrag des Hausherrn 22.11.2026): HTTP aktion=geraete_holen (nur mit dem Aktionstoken,
+ * webfrontend/html/index.php) und MQTT <praefix>/befehl/geraete_holen (Befehlsbruecke, Wert 1). Gebremst wie der
+ * Neuabgleich bei offline (hoechstens alle AX_NEUABGLEICH_ABSTAND_S s, sonst 429 GRUND=GEBREMST mit WARTE).
+ * Eine Protokollzeile je Aufruf, die Absenderuebersicht zaehlt mit. Rueckgabe array(http, felder).
+ */
+function ax_abgleich_ausloesen($quelle, array $par = array())
+{
+    $t0 = microtime(true);
+    $quelle = ($quelle === 'mqtt') ? 'mqtt' : 'http';
+    $ende = function ($http, array $f) use ($quelle, $t0, $par) {
+        $wer = ($quelle === 'http' && isset($_SERVER['REMOTE_ADDR'])) ? preg_replace('/[^0-9a-fA-F:.]/', '', (string) $_SERVER['REMOTE_ADDR']) : $quelle;
+        $grund = isset($f['GRUND']) ? $f['GRUND'] : '-';
+        ax_log((!empty($f['OK']) || $grund === 'GEBREMST') ? 'INFO' : 'WARN', 'GERAETE_HOLEN von ' . $wer . ': HTTP ' . $http . ', OK='
+            . (int) $f['OK'] . ', GRUND=' . $grund . ', ' . (int) round((microtime(true) - $t0) * 1000) . ' ms');
+        ax_absender_merken('geraete_holen', $quelle, isset($par['absender']) ? (string) $par['absender'] : '', $f);
+        return array($http, $f);
+    };
+    $f = array('OK' => 0);
+    if (isset($par['absender']) && !ax_absender_ok($par['absender'])) { $f['GRUND'] = 'ABSENDER'; return $ende(400, $f); }
+    $cfg = ax_config();
+    if (empty($cfg['aktiv'])) { $f['GRUND'] = 'PLUGIN_AUS'; return $ende(409, $f); }
+    if (!ax_amazon()) { $f['GRUND'] = 'ANMELDUNG'; return $ende(503, $f); }
+    $bef = ax_anmeldung_befund();
+    if ($bef['befund'] === 'ABGELAUFEN') { $f['GRUND'] = 'ANMELDUNG_ABGELAUFEN'; return $ende(503, $f); }
+    if (!function_exists('curl_init')) { $f['GRUND'] = 'CURL_FEHLT'; return $ende(503, $f); }
+    $sp = ax_sperre();
+    if (!$sp) { $f['GRUND'] = 'BESCHAEFTIGT'; return $ende(503, $f); }
+    list($e, $g, $st, $warte) = ax_abgleich_ausfuehren($quelle === 'mqtt' ? 'mqtt' : 'loxone', true, 0, '');
+    ax_sperre_frei($sp);
+    if ($e === 'GEBREMST') { return $ende(429, array('OK' => 0, 'GRUND' => 'GEBREMST', 'WARTE' => (int) $warte)); }
+    if ($e !== 'OK') { $f['GRUND'] = ($g !== '') ? $g : 'FEHLER'; return $ende(503, $f); }
+    $n = 0;
+    foreach ($st['liste'] as $x) { if ($x['familie'] !== 'WHA') { $n++; } }
+    return $ende(200, array('OK' => 1, 'GERAETE' => $n, 'ONLINE' => ax_abgleich_online($st)));
 }
 
 /**
@@ -3301,23 +3657,44 @@ function ax_radio_ausfuehren($aktion, array $par, $quelle)
     // ---- Plan: je Zone die Ziele und ob derselbe Sollwert schon gilt (X-7) ----
     $stand = ax_radio_lesen();
     $jetzt = time();
-    $plan = array();
-    $bedarf = 0;
-    foreach ($zonen as $z) {
-        list($h, $g, $ger, $off) = ax_radio_ziel($z['ziel'], $aktion, $cfg, $st);
-        $e = isset($stand[$z['zone']]) ? $stand[$z['zone']] : null;
-        $gleich = false;
-        if ($h === 200 && $e) {
-            if ($aktion === 'radio_laut') {
-                $gleich = $e['ziel_l'] === $z['ziel'] && $e['laut'] === $wert && $jetzt >= $e['t_laut'] && $jetzt - $e['t_laut'] < AX_RADIO_GLEICH_S;
-            } else {
-                $frisch = $e['ziel_s'] === $z['ziel'] && $jetzt >= $e['t_sender'] && $jetzt - $e['t_sender'] < AX_RADIO_GLEICH_S;
-                $gleich = $frisch && (($aktion === 'radio') ? ($e['zustand'] === 1 && $e['sender'] === $nr) : ($e['zustand'] === 0));
+    // 1.0.24: der Plan ist eine Funktion der Geraeteliste - nach einem Neuabgleich wird er neu aufgestellt.
+    $planen = function ($st) use ($zonen, $aktion, $cfg, $stand, $jetzt, $wert, $nr) {
+        $plan = array();
+        $bedarf = 0;
+        foreach ($zonen as $z) {
+            list($h, $g, $ger, $off) = ax_radio_ziel($z['ziel'], $aktion, $cfg, $st);
+            $e = isset($stand[$z['zone']]) ? $stand[$z['zone']] : null;
+            $gleich = false;
+            if ($h === 200 && $e) {
+                if ($aktion === 'radio_laut') {
+                    $gleich = $e['ziel_l'] === $z['ziel'] && $e['laut'] === $wert && $jetzt >= $e['t_laut'] && $jetzt - $e['t_laut'] < AX_RADIO_GLEICH_S;
+                } else {
+                    $frisch = $e['ziel_s'] === $z['ziel'] && $jetzt >= $e['t_sender'] && $jetzt - $e['t_sender'] < AX_RADIO_GLEICH_S;
+                    $gleich = $frisch && (($aktion === 'radio') ? ($e['zustand'] === 1 && $e['sender'] === $nr) : ($e['zustand'] === 0));
+                }
             }
+            $n = ($h !== 200 || $gleich) ? 0 : (($aktion === 'radio_laut') ? 1 : count($ger));
+            $bedarf += $n;
+            $plan[] = array('zone' => $z['zone'], 'ziel' => $z['ziel'], 'h' => $h, 'g' => $g, 'geraete' => $ger, 'offline' => $off, 'gleich' => $gleich);
         }
-        $n = ($h !== 200 || $gleich) ? 0 : (($aktion === 'radio_laut') ? 1 : count($ger));
-        $bedarf += $n;
-        $plan[] = array('zone' => $z['zone'], 'ziel' => $z['ziel'], 'h' => $h, 'g' => $g, 'geraete' => $ger, 'offline' => $off, 'gleich' => $gleich);
+        return array($plan, $bedarf);
+    };
+    list($plan, $bedarf) = $planen($st);
+    /* 1.0.24 (Befund am Geraet 22.11.2026): ist eine Zone nur deshalb nicht sendbar, weil ihre Ziele laut gespeicherter
+     * Liste offline sind, die Liste einmal neu abgleichen (eigene Amazon-Sperre, gebremst, Zeitgrenze) und den Plan
+     * neu aufstellen. Ohne Sperre, gebremst oder misslungen bleibt der Plan wie bis 1.0.23. */
+    $ax_offen = false;
+    foreach ($plan as $pz) {
+        // Nachzug 22.11.2026: auch eine sendbare Zone, in der ein Ziel laut Liste offline ist
+        if ($pz['g'] === 'GERAETE_OFFLINE' || ($pz['h'] === 200 && (int) $pz['offline'] > 0)) { $ax_offen = true; }
+    }
+    if ($ax_offen && !empty($cfg['neuabgleich_offline_ein'])) {
+        $sp = ax_sperre();
+        if ($sp) {
+            list($na, , $na_st) = ax_abgleich_ausfuehren('offline', true, AX_NEUABGLEICH_ZEIT_S, $aktion);
+            ax_sperre_frei($sp);
+            if ($na === 'OK' && is_array($na_st)) { $st = $na_st; list($plan, $bedarf) = $planen($st); }
+        }
     }
     // Die Musik-Stundengrenze gilt fuer alle Zonen zusammen und fuer den ganzen
     // Befehl: reicht sie nicht, geht nichts hinaus - nie nur ein Teil der Zonen.
@@ -3618,12 +3995,26 @@ function ax_befehl_ausfuehren($aktion, array $par, $quelle)
         list($ok, $g, $st) = ax_geraete_holen();
         if (!$ok) { ax_sperre_frei($sp); $f['GRUND'] = $g; return $ende(503, $f); }
     }
-    if ($musik) {
-        list($h, $g, $mziel, $unbek) = ax_musik_ziel($geraet_param, $cfg, $st);
-        $ziele = $mziel ? array($mziel) : array();
-        $offline = ($h === 503) ? 1 : 0;
-    } else {
+    $aufloesen = function ($st) use ($musik, $geraet_param, $cfg) {
+        if ($musik) {
+            list($h, $g, $mziel, $unbek) = ax_musik_ziel($geraet_param, $cfg, $st);
+            return array($h, $g, $mziel ? array($mziel) : array(), ($h === 503) ? 1 : 0, $unbek);
+        }
         list($h, $g, $ziele, $offline, , $unbek) = ax_geraete_aufloesen($geraet_param, $cfg, $st);
+        return array($h, $g, $ziele, $offline, $unbek);
+    };
+    list($h, $g, $ziele, $offline, $unbek) = $aufloesen($st);
+    /* 1.0.24 (Befund am Geraet 22.11.2026): wuerde der Befehl nur abgelehnt, weil kein Zielgeraet laut gespeicherter
+     * Liste online ist, die Liste einmal neu abgleichen (unter der Amazon-Sperre, die hier schon gehalten wird; gebremst,
+     * Zeitgrenze AX_NEUABGLEICH_ZEIT_S) und dann neu entscheiden. Misslingt der Abgleich oder ist er gebremst, bleibt es
+     * bei der Ablehnung wie bis 1.0.23. Nachzug 22.11.2026: auch, wenn nur ein Teil der Ziele laut Liste offline ist
+     * (sonst liesse eine Gruppe einen eben wieder eingeschalteten Echo still aus) - gleiche Bremse, gleicher Haken. */
+    if ((($h === 503 && $g === 'GERAETE_OFFLINE') || ($h === 200 && (int) $offline > 0)) && !empty($cfg['neuabgleich_offline_ein'])) {
+        list($na, , $na_st) = ax_abgleich_ausfuehren('offline', true, AX_NEUABGLEICH_ZEIT_S, $aktion);
+        if ($na === 'OK' && is_array($na_st)) {
+            $st = $na_st;
+            list($h, $g, $ziele, $offline, $unbek) = $aufloesen($st);
+        }
     }
     if ($h !== 200) {
         ax_sperre_frei($sp);
@@ -6183,6 +6574,9 @@ function ax_vorlage_aktionen($host, array $cfg)
     $cmds = array();
     $cmds[] = array('title' => 'Alexa Ansagen sperren', 'comment' => ax_t('LOX.VA_C_SPERRE'), 'analog' => false,
                     'on' => $pfad . '&aktion=sperre&wert=1', 'off' => $pfad . '&aktion=sperre&wert=0');
+    // 1.0.24: Geraeteliste neu abgleichen (Impuls genuegt; gebremst, hoechstens alle 5 min)
+    $cmds[] = array('title' => 'Alexa Geräteliste abgleichen', 'comment' => ax_t('LOX.VA_C_GERAETE_HOLEN'), 'analog' => false,
+                    'on' => $pfad . '&aktion=geraete_holen');
     if (isset($cfg['routinen_frei']) && is_array($cfg['routinen_frei'])) {
         foreach ($cfg['routinen_frei'] as $r) {
             if (!is_string($r) || $r === '') { continue; }
@@ -7059,6 +7453,8 @@ function ax_vorlage_mqtt($host, array $cfg)
     }
     $cmds[] = array('title' => 'Alexa NG Ansagen sperren (MQTT)', 'comment' => ax_t('LOX.VA_C_SPERRE'), 'analog' => false,
                     'on' => 'publish ' . $b . 'sperre 1', 'off' => 'publish ' . $b . 'sperre 0');
+    $cmds[] = array('title' => 'Alexa NG Geräteliste abgleichen (MQTT)', 'comment' => ax_t('LOX.VA_C_GERAETE_HOLEN'), 'analog' => false,
+                    'on' => 'publish ' . $b . 'geraete_holen 1');   // 1.0.24
     foreach ($cfg['routinen_frei'] as $r) {
         if (!is_string($r) || $r === '') { continue; }
         $cmds[] = array('title' => 'Alexa NG Routine ' . $r . ' (MQTT)', 'comment' => sprintf(ax_t('LOX.VA_C_ROUTINE'), $r), 'analog' => false,

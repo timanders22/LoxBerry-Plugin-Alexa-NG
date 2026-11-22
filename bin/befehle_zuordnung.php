@@ -107,6 +107,13 @@ $ax_bb_radio_tun = function ($w, $t) {
 $ax_bb_radio_laut = function ($w, $t) {
     return ax_befehl_bruecke(ax_radio_ausfuehren('radio_laut', array('zone' => (string) $t['zone'], 'wert' => (string) $w), 'mqtt'));
 };
+/* 1.0.24 (Auftrag des Hausherrn 22.11.2026): Geraeteliste neu abgleichen, Wert 1. Greift nicht ein (fragt Amazon nur ab,
+ * steuert keinen Echo) - es genuegt der erste Haken. Dieselbe Funktion wie aktion=geraete_holen. */
+$ax_bb_geraete_holen = 'Das Plugin bremst selbst: hoechstens alle 5 Minuten ein Abgleich, ein frueherer bekommt die Quittung '
+    . 'GEBREMST (AX_NEUABGLEICH_ABSTAND_S).';
+$ax_bb_geraete_holen_tun = function ($w, $t) {
+    return ax_befehl_bruecke(ax_abgleich_ausloesen('mqtt'));
+};
 $ax_bb_sender = array('stopp');
 for ($ax_bb_i = 0; $ax_bb_i <= 50; $ax_bb_i++) { $ax_bb_sender[] = (string) $ax_bb_i; }
 return array(
@@ -114,7 +121,8 @@ return array(
     'linie'   => 'alexang',
     'plugin'  => 'Alexa NG',
     'geladen' => function_exists('ax_config') && function_exists('ax_befehl_ausfuehren') && function_exists('ax_radio_ausfuehren')
-                 && function_exists('ax_loxsperre_setzen') && function_exists('ax_befehl_bruecke') && function_exists('ax_befehle_einstellungen'),
+                 && function_exists('ax_loxsperre_setzen') && function_exists('ax_befehl_bruecke') && function_exists('ax_befehle_einstellungen')
+                 && function_exists('ax_abgleich_ausloesen'),
     'zweiter_haken' => 'befehle_mqtt_steuern',
     'teile' => array('geraet' => '[a-z0-9_]{1,40}', 'gruppe' => '[a-z0-9_]{1,40}', 'zone' => '[1-9]|1[0-9]|2[0-4]|alle'),
     'ausser' => array('geraet' => array('gruppe')),
@@ -155,5 +163,8 @@ return array(
         'radio/{zone}/laut' => array('art' => 'ganz', 'min' => 0, 'max' => 100, 'eingreifend' => true, 'sperre_s' => 0,
                                      'begruendung' => $ax_bb_laut, 'titel' => 'Alexa NG Radio Lautstärke (MQTT)',
                                      'kachel' => 'BEFEHL.K_RADIO_LAUT', 'quittung' => 'ausgefuehrt', 'tun' => $ax_bb_radio_laut),
+        'geraete_holen' => array('art' => 'puls', 'eingreifend' => false, 'sperre_s' => 0, 'begruendung' => $ax_bb_geraete_holen,
+                                 'titel' => 'Alexa NG Geräteliste abgleichen (MQTT)', 'kachel' => 'BEFEHL.K_GERAETE_HOLEN',
+                                 'quittung' => 'ausgefuehrt', 'tun' => $ax_bb_geraete_holen_tun),
     ),
 );

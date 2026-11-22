@@ -83,7 +83,8 @@ function ax_ui_felder($formular)
                      'radio_ein', 'radio_zonen', 'hue_ein', 'hue_port', 'hue_art', 'hue_ip', 'hue_schnittstelle',
                      'hue_probe_lampe', 'hue_l_id', 'hue_l_name', 'hue_l_art', 'hue_l_kuerzel', 'hue_l_frei', 'hue_echos',
                      'hue_l_aktiv', 'hue_sperre_ein', 'hue_suchen_ein', 'textbefehl_ein', 'textbefehle_frei',   // 1.0.20
-                     'haus_ruhe_ein');   // 1.0.22
+                     'haus_ruhe_ein',    // 1.0.22
+                     'neuabgleich_offline_ein', 'abgleich_zeiten');   // 1.0.24
     }
     if ($formular === 'mqtt') { return array('mqtt_ein', 'mqtt_praefix', 'befehle_mqtt_ein', 'befehle_mqtt_steuern', 'befehle_routine_ein',
                                              'befehle_textbefehl_ein'); }   // 1.0.21
@@ -348,7 +349,8 @@ if ($ax_post && isset($_POST['save'])) {
         $ax_neu[$k] = $gut;
     };
     foreach (array('aktiv', 'ruhe_ein', 'ankuendigen_ein', 'texte_protokollieren', 'sperre_ein', 'musik_ein', 'radio_ein', 'hue_ein',
-                   'hue_sperre_ein', 'hue_suchen_ein', 'textbefehl_ein', 'haus_ruhe_ein') as $ax_k) {   // haus_ruhe_ein 1.0.22
+                   'hue_sperre_ein', 'hue_suchen_ein', 'textbefehl_ein', 'haus_ruhe_ein',   // haus_ruhe_ein 1.0.22
+                   'neuabgleich_offline_ein') as $ax_k) {   // 1.0.24
         $ax_neu[$ax_k] = empty($_POST[$ax_k]) ? 0 : 1;
     }
     foreach (array('standardgeraet', 'bremse_fenster_s', 'mindestabstand_s', 'stundengrenze', 'ruhe_von', 'ruhe_bis',
@@ -424,6 +426,11 @@ if ($ax_post && isset($_POST['save'])) {
         }
     }
     $ax_feld('gruppen', $ax_gruppen);
+    // 1.0.24: feste Abgleichzeiten, getrennt durch Komma, Semikolon oder Leerraum; jede genau HH:MM, keine doppelt -
+    // eine ungueltige wird beanstandet, nie umgeschrieben (ax_wert_pruefen).
+    $ax_az = array();
+    foreach (preg_split('/[\s,;]+/', ax_ui_post('abgleich_zeiten')) as $ax_x) { if ($ax_x !== '') { $ax_az[] = $ax_x; } }
+    $ax_feld('abgleich_zeiten', $ax_az);
     $ax_rl = array();
     foreach (preg_split('/\r?\n/', isset($_POST['routinen_frei']) && is_string($_POST['routinen_frei']) ? $_POST['routinen_frei'] : '') as $ax_r) {
         if (trim($ax_r) !== '') { $ax_rl[] = trim($ax_r); }
@@ -657,7 +664,10 @@ if ($ax_post && isset($_POST['geraete_holen'])) {
     if (!ax_amazon()) { ax_ui_umleiten($ax_datadir, 'tab-geraete', array('fehler' => ax_grund_text('ANMELDUNG'))); }
     $ax_sp = ax_sperre();
     if (!$ax_sp) { ax_ui_umleiten($ax_datadir, 'tab-geraete', array('fehler' => ax_grund_text('BESCHAEFTIGT'))); }
-    list($ax_ok, $ax_g, $ax_st) = ax_geraete_holen();
+    // 1.0.24: ueber den Zustand der Neuabgleiche (Reiter Test), ungebremst wie bisher
+    // 1.0.24 (Nachzug): Haken "Liste trotzdem uebernehmen" nur, wenn Amazon zuletzt keine bekannten Geraete meldete
+    list($ax_ae, $ax_g, $ax_st) = ax_abgleich_ausfuehren('oberflaeche', false, 0, '', !empty($_POST['geraete_ersetzen']));
+    $ax_ok = ($ax_ae === 'OK');
     ax_sperre_frei($ax_sp);
     ax_ui_umleiten($ax_datadir, 'tab-geraete', $ax_ok ? array('meldung' => sprintf(ax_t('GER.GEHOLT'), (int) $ax_st['konto_gesamt'], count($ax_st['liste'])))
         : array('fehler' => sprintf(ax_t('GER.HOLEN_FEHL'), ax_grund_text($ax_g))));
@@ -1371,6 +1381,14 @@ if ($ax_sg === '' && $ax_cfg['standardgeraet'] === '' && !ax_ui_aktiv('standardg
 </div>
 <div class="sm-small"><?= ax_e(ax_t('EINST.RUHE_HILFE')) ?></div>
 
+<?php /* 1.0.24: Neuabgleich der Geraeteliste bei offline (Fehlerbehebung, ab Werk an) und feste Abgleichzeiten (ab Werk leer). */ ?>
+<h2 id="abgleich"><?= ax_e(ax_t('EINST.H_ABGLEICH')) ?></h2>
+<label class="sm-haken"><input data-role="none" type="checkbox" name="neuabgleich_offline_ein" value="1"<?= ax_ui_h('neuabgleich_offline_ein', !empty($ax_cfg['neuabgleich_offline_ein'])) ? ' checked' : '' ?><?= ax_ui_m('neuabgleich_offline_ein') ?>> <?= ax_e(ax_t('EINST.L_NEUABGLEICH')) ?></label>
+<div class="sm-small"><?= ax_e(ax_t('EINST.NEUABGLEICH_HILFE')) ?></div>
+<label for="abgleich_zeiten"><?= ax_e(ax_t('EINST.L_ABGLEICH_ZEITEN')) ?></label>
+<input data-role="none" type="text" id="abgleich_zeiten" name="abgleich_zeiten" placeholder="06:47" value="<?= ax_e(ax_ui_w('abgleich_zeiten', implode(', ', $ax_cfg['abgleich_zeiten']))) ?>"<?= ax_ui_m('abgleich_zeiten') ?>>
+<div class="sm-small"><?= ax_e(ax_t('EINST.ABGLEICH_ZEITEN_HILFE')) ?></div>
+
 <h2><?= ax_e(ax_t('EINST.H_FREIGABEN')) ?></h2>
 <label class="sm-haken"><input data-role="none" type="checkbox" name="ankuendigen_ein" value="1"<?= ax_ui_h('ankuendigen_ein', !empty($ax_cfg['ankuendigen_ein'])) ? ' checked' : '' ?><?= ax_ui_m('ankuendigen_ein') ?>> <?= ax_e(ax_t('EINST.L_ANKUENDIGEN')) ?></label>
 <div class="sm-warnung"><?= ax_e(ax_t('EINST.ANKUENDIGEN_HILFE')) ?></div>
@@ -1679,6 +1697,10 @@ $ax_hl_n = min($ax_hl_n, AX_HUE_LAMPEN_MAX + 3);
 <form action="index.php" method="post">
 <input data-role="none" type="hidden" name="activetab" value="tab-geraete">
 <input data-role="none" type="hidden" name="formtoken" value="<?= ax_e(ax_formtoken($ax_cfg)) ?>">
+<?php $ax_abw = ax_geraete_abgewiesen(); if ($ax_abw) { /* 1.0.24 (Nachzug): abgewiesene Liste - bewusst uebernehmen */ ?>
+<div class="sm-warnung"><?= ax_e(sprintf(ax_t('GER.ABGEWIESEN'), $ax_zeit($ax_abw['t']), (int) $ax_abw['amazon'], (int) $ax_abw['bekannt'], (int) $ax_abw['zahl'])) ?></div>
+<label class="sm-haken"><input data-role="none" type="checkbox" name="geraete_ersetzen" value="1"> <?= ax_e(ax_t('GER.L_ERSETZEN')) ?></label>
+<?php } ?>
 <div class="sm-knopfreihe">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="geraete_holen" value="1"><?= ax_e(ax_t('GER.K_HOLEN')) ?></button>
 </div>
@@ -2074,6 +2096,18 @@ $ax_bs_seiten = array(
 <div class="sm-warnung"><?= ax_e(ax_t('LOX.VR_VERTRAULICH')) ?></div>
 <div class="sm-warnung"><?= ax_e(ax_t('LOX.VA_VERTRAULICH')) ?></div>
 </details>
+<?php /* 1.0.24: Geraeteliste aus Loxone neu abgleichen - vollstaendige Adresse mit Aktionstoken und das MQTT-Thema. */ ?>
+<h2 id="geraete_holen"><?= ax_e(ax_t('LOX.H_ABGLEICH')) ?></h2>
+<div class="sm-small"><?= ax_e(ax_t('LOX.ABGLEICH_TEXT')) ?></div>
+<div class="sm-step"><?= ax_e(ax_t('LOX.ABGLEICH_HTTP')) ?><br>
+<span class="sm-mono"><?= ax_e($ax_basis . '?aktion=geraete_holen&token=' . $ax_aktion) ?></span><br>
+<?= ax_e(ax_t('LOX.ABGLEICH_VA')) ?><br>
+<span class="sm-mono"><?= ax_e(preg_replace('#/plugins/.*$#', '', $ax_basis)) ?></span><br>
+<span class="sm-mono"><?= ax_e('/plugins/' . $ax_p['plugin'] . '/?token=' . $ax_aktion . '&aktion=geraete_holen') ?></span></div>
+<div class="sm-step"><?= ax_e(ax_t('LOX.ABGLEICH_MQTT')) ?><br>
+<span class="sm-mono"><?= ax_e($ax_cfg['mqtt_praefix'] . '/befehl/geraete_holen') ?></span> <?= ax_e(ax_t('LOX.ABGLEICH_MQTT_WERT')) ?>
+<?php if (empty($ax_cfg['befehle_mqtt_ein'])) { ?><div class="sm-hinweis"><?= ax_e(ax_t('LOX.ABGLEICH_MQTT_AUS')) ?></div><?php } ?></div>
+<div class="sm-warnung"><?= ax_e(ax_t('LOX.ABGLEICH_VERTRAULICH')) ?></div>
 <h2><?= ax_e(ax_t('LOX.H_PLUGINS')) ?></h2>
 <div class="sm-small"><?= ax_e(ax_t('LOX.PLUGINS_TEXT')) ?></div>
 <div class="sm-pre"><?= ax_e('http://{ip}/plugins/' . $ax_p['plugin'] . '/?aktion=sprechen&token=' . $ax_sprech . '&geraet={zones}&text={text}') ?></div>
@@ -2115,6 +2149,43 @@ else {
     foreach ($ax_st['verschwunden'] as $ax_g) { $ax_vw[] = $ax_g['normal'] . ' (' . $ax_zeit($ax_g['seit']) . ')'; }
     $ax_zeile($ax_vw ? 2 : 1, ax_t('TEST.F_VERSCHWUNDEN'), $ax_vw ? sprintf(ax_t('TEST.A_VERSCHWUNDEN'), implode(', ', $ax_vw)) : ax_t('TEST.A_VERSCHWUNDEN_KEINE'));
 }
+/* 1.0.24: Neuabgleich bei offline und feste Abgleichzeiten - gelesen aus dem Zustand abgleich.json (Wirkung, nicht
+ * Einstellung allein), dazu ob der Minutentakt eingerichtet ist. */
+$ax_ab = ax_abgleich_lesen();
+$ax_ab_name = function ($a) { return in_array($a, ax_abgleich_ausloeser(), true) ? ax_t('TEST.AUSL_' . strtoupper($a)) : '–'; };
+$ax_ab_zahl = array();
+foreach (ax_abgleich_ausloeser() as $ax_a) { $ax_ab_zahl[] = $ax_ab_name($ax_a) . ' ' . (isset($ax_ab['zahl'][$ax_a]) ? (int) $ax_ab['zahl'][$ax_a] : 0); }
+$ax_ab_zahl = sprintf(ax_t('TEST.A_ABGLEICH_ZAHL'), implode(', ', $ax_ab_zahl), (int) $ax_ab['zahl_gebremst']);
+if (empty($ax_cfg['neuabgleich_offline_ein'])) {
+    $ax_zeile(3, ax_t('TEST.F_NEUABGLEICH'), ax_t('TEST.A_NEUABGLEICH_AUS') . ' ' . $ax_ab_zahl);
+} elseif (!$ax_ab['letzter']) {
+    $ax_zeile(1, ax_t('TEST.F_NEUABGLEICH'), ax_t('TEST.A_NEUABGLEICH_NIE'));
+} else {
+    $ax_l = $ax_ab['letzter'];
+    $ax_erg = ($ax_l['ergebnis'] === 'OK') ? ax_t('TEST.E_OK') : (($ax_l['ergebnis'] === 'FEHL')
+        ? sprintf(ax_t('TEST.E_FEHL'), ax_grund_text($ax_l['grund'])) : ax_t('TEST.E_LAEUFT'));
+    $ax_zeile($ax_l['ergebnis'] === 'OK' ? 1 : 2, ax_t('TEST.F_NEUABGLEICH'), sprintf(ax_t('TEST.A_NEUABGLEICH'), $ax_zeit($ax_l['t']),
+        $ax_ab_name($ax_l['ausloeser']), $ax_erg, (int) $ax_l['vorher'], (int) $ax_l['nachher'], (int) $ax_l['dauer_ms']) . ' ' . $ax_ab_zahl);
+}
+if (!$ax_cfg['abgleich_zeiten']) {
+    $ax_zeile(3, ax_t('TEST.F_ABGLEICHZEITEN'), ax_t('TEST.A_ABGLEICHZEITEN_KEINE'));
+} else {
+    $ax_heute = array();
+    foreach ($ax_cfg['abgleich_zeiten'] as $ax_hm) {
+        $ax_k = date('Y-m-d') . ' ' . $ax_hm;
+        if (isset($ax_ab['zeiten'][$ax_k])) { $ax_heute[] = $ax_hm . ' (' . date('H:i:s', (int) $ax_ab['zeiten'][$ax_k]) . ')'; }
+    }
+    $ax_c1 = ($ax_p['lbhome'] !== '') ? (glob($ax_p['lbhome'] . '/system/cron/cron.01min/' . $ax_p['plugin']) ?: array()) : array();
+    if ($ax_p['lbhome'] !== '' && !$ax_c1) {
+        $ax_zeile(0, ax_t('TEST.F_ABGLEICHZEITEN'), sprintf(ax_t('TEST.A_ABGLEICHZEITEN_OHNE_CRON'), implode(', ', $ax_cfg['abgleich_zeiten'])));
+    } else {
+        $ax_zeile(1, ax_t('TEST.F_ABGLEICHZEITEN'), sprintf(ax_t('TEST.A_ABGLEICHZEITEN'), implode(', ', $ax_cfg['abgleich_zeiten']),
+            $ax_heute ? implode(', ', $ax_heute) : ax_t('TEST.A_ABGLEICHZEITEN_HEUTE_KEINE')));
+    }
+}
+$ax_abw = ax_geraete_abgewiesen();   // 1.0.24 (Nachzug)
+$ax_zeile($ax_abw ? 0 : 1, ax_t('TEST.F_GERAETE_ABGEWIESEN'), $ax_abw ? sprintf(ax_t('TEST.A_GERAETE_ABGEWIESEN'), $ax_zeit($ax_abw['t']),
+    (int) $ax_abw['amazon'], (int) $ax_abw['bekannt'], (int) $ax_abw['zahl'], $ax_zeit($ax_abw['zuletzt'])) : ax_t('TEST.A_GERAETE_ABGEWIESEN_NEIN'));
 $ax_zeile(is_array($ax_letzte) ? ((int) $ax_letzte['ergebnis'] ? 1 : 2) : -1, ax_t('TEST.F_LETZTE'), is_array($ax_letzte)
     ? sprintf(ax_t('TEST.A_LETZTE'), $ax_zeit($ax_letzte['zeit']), (string) $ax_letzte['aktion'], (string) $ax_letzte['geraet'], (int) $ax_letzte['ergebnis'], ax_grund_text((string) $ax_letzte['grund']))
     : ax_t('TEST.A_LETZTE_KEINE'));
