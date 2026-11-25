@@ -562,6 +562,11 @@ if ($ax_post && isset($_POST['save'])) {
 
 /* ---------------- Token neu wuerfeln (je eins, mit Warnung) ---------------- */
 /* 1.0.8: Sprachansagen, eigenes Formular, eigene Datei. Die Testansage spricht immer. */
+/* 1.0.26: Testmeldung an SignalBot (Knopf unter den Sprachansagen) - wie die Testansage darunter. */
+if ($ax_post && isset($_POST['meld_test'])) {
+    list($ax_at, $ax_ag) = ax_meld_test();
+    ax_ui_umleiten($ax_datadir, 'tab-settings', $ax_at ? array('meldung' => ax_t('SIGNALMELDUNG.T_OK')) : array('fehler' => $ax_ag));
+}
 if ($ax_post && isset($_POST['ansage_test'])) {
     list($ax_at, $ax_ag) = ax_ansage_test();
     ax_ui_umleiten($ax_datadir, 'tab-settings', $ax_at ? array('meldung' => ax_t('ANSAGEPLUGIN.M_TEST_OK')) : array('fehler' => ax_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $ax_ag));
@@ -758,6 +763,13 @@ if ($ax_post && isset($_POST['save_mqtt'])) {
     if ($ax_pr === null) {
         $ax_hw[] = sprintf(ax_t('MELDUNG.FELD_ABGEWIESEN'), ax_t('FELD.MQTT_PRAEFIX'), ax_grund_text($ax_g));
         ax_ui_bean('mqtt_praefix');
+    } elseif (hb_bereich($ax_pr) !== '' && $ax_pr !== (string) ax_config()['mqtt_praefix']) {   // nur NEUE Eingaben: ein schon gespeichertes Praefix sperrt das Speichern
+        // des Reiters nicht (Regeln/07; Bauart Einspeisebremse 0.9.25)
+        /* 1.0.26 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): kein Praefix auf einem
+         * gemeinsamen Bereich unter haus/ - nur hier und beim Zurueckspielen, nicht in der Pruefung beim Lesen der
+         * Konfiguration: ein schon gespeichertes bleibt in Betrieb, der Reiter Test meldet es. */
+        $ax_hw[] = sprintf(ax_t('HAUSBEREICH.FEHLER'), $ax_pr, hb_bereich($ax_pr));
+        ax_ui_bean('mqtt_praefix');
     } else {
         $ax_neu['mqtt_praefix'] = $ax_pr;
     }
@@ -804,7 +816,8 @@ if ($ax_post && isset($_POST['ax_zurueck'])) {
             $neu['ansage_aus_datei'] = 1;
             return $neu;
         };
-        $ax_b['speichern'] = function ($neu) { return ax_config_speichern($neu); };
+        // 1.0.26: die Werte einer Sicherung sind ausdruecklich - kein "Dateiwert behalten" (Regeln/05)
+        $ax_b['speichern'] = function ($neu) { return ax_config_speichern($neu, false); };
         $ax_b['zweitschrift'] = function () { $q = ax_paths(); return array($q['config'], $q['backup']); };
         $ax_b['nachziehen'] = function ($neu, $vorher, $r) use ($ax_datadir) {
             $h = array();
@@ -1000,6 +1013,30 @@ if ($ax_post && isset($_POST['hue_suchen'])) {
     list($ax_sok, $ax_sg, $ax_sh) = ax_hue_alexa_suchen($ax_cfg);
     ax_ui_umleiten($ax_datadir, 'tab-test', $ax_sok ? array('meldung' => sprintf(ax_t('TEST.HUE_SUCHEN_OK'), (int) $ax_sh))
         : array('fehler' => sprintf(ax_t('TEST.HUE_SUCHEN_FEHL'), ax_grund_text($ax_sg), (int) $ax_sh)));
+}
+
+/* 1.0.26: Lade-Beanstandungen - angezeigte Werte uebernehmen, nur mit Haken (Entscheidung des Hausherrn 24.11.2026,
+ * "Haken im gelben Kasten"); ohne ihn bleibt die Datei byte-gleich. Geschrieben ohne "Dateiwert behalten". Die Seite
+ * maskiert die Meldungen bei der Ausgabe (ax_e()). */
+if ($ax_post && sicherung_lade_eingang($_POST) !== '') {
+    $ax_lb = ax_lade_b(false);
+    if (sicherung_lade_eingang($_POST) !== 'ja') {
+        ax_ui_umleiten($ax_datadir, $ax_tab, array('fehler' => sicherung_t('K_LADE_HAKEN_FEHLT', $ax_lb)));
+    }
+    $ax_ld = ax_lade_roh();
+    $ax_lv = ax_config();
+    $ax_un = array();
+    if ($ax_ld !== null) {
+        list($ax_lneu, $ax_un) = sicherung_lade_uebernehmen_stand($ax_ld, $ax_lv, sicherung_lade_beanstandungen($ax_lb, $ax_ld, $ax_lv));
+        if ($ax_un && !ax_config_speichern($ax_lneu, false)) {
+            ax_ui_umleiten($ax_datadir, $ax_tab, array('fehler' => sicherung_t('K_SCHREIBFEHLER', $ax_lb)));
+        }
+    }
+    if ($ax_un) {
+        ax_log('INFO', 'Lade-Beanstandungen: angezeigte Werte uebernommen: ' . implode(', ', array_map('sicherung_name', $ax_un)));
+        ax_ui_umleiten($ax_datadir, $ax_tab, array('meldung' => sprintf(sicherung_t('K_LADE_UEBERNOMMEN', $ax_lb), implode(', ', $ax_un))));
+    }
+    ax_ui_umleiten($ax_datadir, $ax_tab, array());
 }
 
 /* Ein POST, den kein Handler kannte: trotzdem umleiten. */
@@ -1204,6 +1241,12 @@ if (class_exists('LBWeb', false)) {
 <?php if ($ax_meldung !== '') { ?><div class="sm-alert sm-ok"><?= ax_e($ax_meldung) ?></div><?php } ?>
 <?php if ($ax_fehler !== '') { ?><div class="sm-alert sm-err"><b><?= ax_e(ax_t('SEITE.FEHLER')) ?></b> <?= ax_e($ax_fehler) ?></div><?php } ?>
 <?php if ($ax_hinweise) { ?><div class="sm-alert sm-warn"><?php foreach ($ax_hinweise as $ax_h) { if (is_string($ax_h)) { echo ax_e($ax_h) . '<br>'; } } ?></div><?php } ?>
+<?php /* 1.0.26: Lade-Beanstandungen (Regeln/05) - gelber Kasten; einmal je Aenderung ins Protokoll. */
+$ax_lade = ax_lade_beanstandungen();
+ax_lade_melden($ax_lade); ?>
+<?= sicherung_lade_kasten(ax_lade_b(true), isset($ax_lade) ? $ax_lade : ax_lade_beanstandungen(),
+        '<input data-role="none" type="hidden" name="formtoken" value="' . ax_e(ax_formtoken($ax_cfg)) . '">'
+        . '<input data-role="none" type="hidden" name="activetab" value="' . ax_e($ax_tab) . '">') ?>
 <?php if (ax_attrappe_aktiv()) { ?><div class="sm-warnung"><?= ax_e(ax_t('SEITE.ATTRAPPE')) ?></div><?php } ?>
 <?php
 // K2: Hinweisbalken ueber allen Reitern - abgelaufene Anmeldung, stehender Takt.
@@ -2300,11 +2343,20 @@ list($ax_s, $ax_a) = ax_pruef_themen();
 $ax_zeile($ax_s, ax_t('TEST.F_THEMEN'), $ax_a);
 list($ax_s, $ax_a) = ax_pruef_vorlagen($ax_cfg);
 $ax_zeile($ax_s, ax_t('TEST.F_VORLAGEN'), $ax_a);
+// 1.0.26: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)?
+$ax_hb = ax_pruef_praefix_haus($ax_cfg);
+$ax_zeile($ax_hb[0], ax_t('HAUSBEREICH.F_TEST'), $ax_hb[1]);
 if (empty($ax_cfg['mqtt_ein'])) { $ax_zeile(3, ax_t('TEST.F_MQTT'), ax_t('TEST.A_MQTT_AUS')); }
 else { $ax_zeile(ax_has_mosquitto() ? 1 : 0, ax_t('TEST.F_MQTT'), ax_has_mosquitto() ? ax_t('TEST.A_MQTT_OK') : ax_t('TEST.A_MQTT_KEIN')); }
 $ax_zeile(!$ax_gw['gefunden'] ? -1 : ($ax_gw['autostart'] ? 1 : 2), ax_t('TEST.F_GATEWAY'), !$ax_gw['gefunden'] ? ax_t('TEST.A_GATEWAY_NICHT')
     : sprintf(ax_t('TEST.A_GATEWAY'), $ax_gw['autostart'] ? ax_t('ALLG.EIN') : ax_t('ALLG.AUS'), (int) $ax_gw['fassung']));
 $ax_zeile(function_exists('curl_init') ? 1 : 0, ax_t('TEST.F_CURL'), function_exists('curl_init') ? ax_t('TEST.A_CURL_OK') : ax_t('TEST.A_CURL_FEHLT'));
+/* 1.0.26: Lade-Beanstandungen (Regeln/05, Sicherungsmodul 1.3.0) - rot, solange ein gespeicherter Wert beim Laden nicht
+ * so gilt, wie er gespeichert ist. */
+$ax_lb = ax_lade_b(false);
+$ax_ladea = ax_lade_beanstandungen(null, false);
+$ax_zeile($ax_ladea ? 0 : 1, sicherung_t('K_LADE_FRAGE', $ax_lb),
+    $ax_ladea ? implode(' ', sicherung_lade_saetze($ax_lb, $ax_ladea)) : sicherung_t('K_LADE_KEINE', $ax_lb));
 $ax_zahl = array(1 => 0, 0 => 0, -1 => 0, 2 => 0, 3 => 0);
 foreach ($ax_pr as $ax_z) { $ax_zahl[$ax_z[0]]++; }
 $ax_klasse = $ax_zahl[0] ? 'sm-alert sm-err' : (($ax_zahl[-1] || $ax_zahl[2]) ? 'sm-alert sm-warn' : 'sm-alert sm-ok');

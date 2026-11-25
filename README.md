@@ -1,6 +1,6 @@
 # LoxBerry-Plugin: Alexa NG
 
-Version 1.0.25
+Version 1.0.26
 
 Lässt **Amazon-Echo-Geräte** sprechen, was Loxone oder ein anderes Plugin
 sagen will: Ansagen an ein Gerät, an eine Gruppe oder an alle, Lautstärke
@@ -15,6 +15,12 @@ Hue-Probe auf eigener Netzadresse (ab Werk aus).
 > Routinen, Musik-Probe, Radio je Zone an einem Echo und die Hue-Nachbildung
 > mit den Lampen für Alexa – siehe „Am Echo gemessen“ unter „Fassung 1.0.0“.
 > Was noch aussteht, steht unter „Noch am Gerät zu messen“.
+
+## Neu in 1.0.26
+
+- **Themen-Präfix auf einem gemeinsamen Bereich (Entscheidung des Hausherrn 23.11.2026 „Nur gemeinsame Bereiche“):** Ein MQTT-Präfix, das einer der gemeinsamen Bereiche unter `haus/` ist oder darin beginnt (`haus/<bereich>` bzw. `haus/<bereich>/…` für abfahrt, abfuhr, alarm, ansage, anwesenheit, energie, fahrzeug, kalender, klima, pv, raumklima, sonne, speicher, strompreis, szene, tag, tuer, usv, wetter), weisen Speichern im Reiter *MQTT* und das Zurückspielen einer Sicherung jetzt mit Namen ab: Dort liefern die Plugins einander Zustände ohne eigenes Präfix. `haus` allein und andere Präfixe unter `haus/` (etwa `haus/fenster`) bleiben erlaubt; Groß und Klein zählen wie bei MQTT. Ist ein solches Präfix schon gespeichert, ändert sich am Betrieb nichts – das Plugin sendet weiter darunter, nennt es einmal im Protokoll, und der Reiter *Test* zeigt die Zeile „Liegt das Themen-Präfix außerhalb der gemeinsamen Bereiche unter haus/?“ rot. Liste und Texte kommen aus dem gemeinsamen Modul `haus_bereiche.php`.
+- **Gespeicherte Einstellungen, die beim Laden nicht gelten (Entscheidung des Hausherrn 23./24.11.2026, Regeln/05 „Lade-Beanstandungen“):** Ungültige Werte der Konfigurationsdatei wurden schon bisher abgewiesen und gemeldet. Ein gelber Kasten über den Reitern nennt jetzt jedes Feld mit gespeichertem und verwendetem Wert, die Selbstprüfung im Reiter *Test* zeigt die Zeile „Gelten die gespeicherten Einstellungen beim Laden so, wie sie gespeichert sind?“ rot, und das Protokoll nennt die Namen einmal je Änderung. Ein vorhandenes Aktions- oder Sprechtoken bleibt jetzt, wie es ist (gemeldet, wenn seine Form nicht stimmt). Speichern behält bei einem genannten Feld, das Sie nicht ändern, den gespeicherten Wert, und die angezeigten Werte übernimmt nur der Knopf „Angezeigte Werte übernehmen“ mit gesetztem Haken. Token und Zugangsdaten erscheinen in keiner Meldung mit ihrem Wert, das Protokoll nennt keinen Wert. Gemeinsames Sicherungsmodul 1.3.0.
+- **Statusmeldungen an SignalBot (Auftrag des Hausherrn 23.11.2026):** Im Reiter *Einstellungen* steht unter den Sprachansagen der neue Block „Meldungen an SignalBot“, ab Werk aus. Eingeschaltet schickt das Plugin dieselben Anlässe, die es ansagen kann – je Anlass eigener Haken, auch ohne eingerichtete Ansage – als Nachricht über MQTT an das Plugin SignalBot (Thema `haus/meldung/<ordner>`, nie retained; SignalBot ab 0.9.44 mit „Meldungen unter haus/meldung annehmen“ und diesem Ordner unter „Meldungen anderer Plugins annehmen von“). Dieselbe Meldung frühestens wieder nach der eingestellten Sperre (Vorgabe 60 Minuten), „wieder da“ nur nach einer gemeldeten Störung, höchstens 10 Nachrichten je Stunde, darüber eine Sammelzeile; die Nachtruhe stellt SignalBot. Ein Text, der wie ein Zugangsdatum aussieht, geht nicht hinaus. Der Knopf „Testmeldung senden“ prüft den Weg mit Quittung, die Zeile darunter nennt die letzte. Gemeinsames Modul `meldung.php`, Texte im Abschnitt `[SIGNALMELDUNG]`.
 
 ## Neu in 1.0.25
 

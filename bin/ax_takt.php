@@ -107,7 +107,7 @@ $ax_sp = @fopen($ax_p['datadir'] . '/takt.lock', 'ce');
 if ($ax_sp === false) { $ax_sp = @fopen($ax_p['datadir'] . '/takt.lock', 'c'); }
 if ($ax_sp === false || !flock($ax_sp, LOCK_EX | LOCK_NB)) { exit(0); }   // ein Takt laeuft schon
 
-ax_config_heilen(false);
+ax_dienst_pflege();     // 1.0.26: heilen und Lade-Beanstandungen einmal melden (Regeln/05)
 ax_amazon_heilen();
 $ax_cfg = ax_config();
 $ax_t = ax_takt_lesen();

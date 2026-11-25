@@ -1,10 +1,12 @@
 <?php
 require_once __DIR__ . '/sprachausgabe.php';     // Stamm, fuer die Vorgaben der Sprachansagen schon beim ersten Lesen der Konfiguration
+require_once __DIR__ . '/meldung.php';     // Statusmeldungen an SignalBot (seit 1.0.26)
 /* 1.0.16: Das gemeinsame Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des Hausherrn
  * 12.11.2026): Einstellungen sichern und zurueckspielen nach denselben Regeln wie in den anderen Linien. Es legt beim
  * Laden nur Funktionen an und antwortet bei direktem Aufruf mit 403. Die Beschreibung dieser Linie steht in
  * ax_sicherung_beschreibung(). */
 require_once __DIR__ . '/sicherung.php';
+require_once __DIR__ . '/haus_bereiche.php';     // gemeinsame Bereiche unter haus/ (seit 1.0.26, Regeln/07)
 require_once __DIR__ . '/uhrabgleich.php';   // gemeinsames Uhrmodul (Frage 95), Abschrift von Werkzeuge/gemeinsam/uhrabgleich.php
 /**
  * Alexa NG - gemeinsame Bibliothek (Oberflaeche, Endpunkt, Takt, Befehlsabo)
@@ -476,6 +478,12 @@ function ax_config()
         if (!array_key_exists($k, $cfg)) { continue; }
         $grund = '';
         $gut = ax_wert_pruefen($k, $cfg[$k], $grund);
+        if ($gut === null && ($k === 'aktionstoken' || $k === 'sprechtoken') && is_string($cfg[$k]) && $cfg[$k] !== '') {
+            /* 1.0.26 (Lade-Beanstandungen, Regeln/05, Entscheidung des Hausherrn 24.11.2026 Punkt 2): ein formwidriges
+             * Token gilt bis zur Berichtigung weiter und wird gemeldet (ax_lade_beanstandungen(), nie mit Wert) - nie
+             * ersetzt. Bis hier galt dann '' und jeder Aufruf mit diesem Token wurde abgewiesen. */
+            continue;
+        }
         if ($gut === null) {
             $abgewiesen[$k] = $grund;
             unset($cfg[$k]);
@@ -788,14 +796,91 @@ function ax_config_erstbefund($neu = null)
     return $b !== null ? $b : array('zustand' => '', 'schritte' => array(), 'datei' => '', 'fehlend' => array());
 }
 
+/* ==================================================================
+ * Lade-Beanstandungen (1.0.26; Regeln/05, Sicherungsmodul 1.3.0)
+ *
+ * Ergaenzt die eigene Meldung abgewiesener Werte (ax_config_lage(), ax_config_heilen(), SICH.X3_WARNUNG) um die
+ * einheitliche Form aller Linien: gelber Kasten, eigene Zeile im Reiter Test, "Dateiwert behalten" beim Speichern,
+ * Knopf "Angezeigte Werte uebernehmen", eine Protokollzeile je Aenderung. Nie zurueckgeschrieben.
+ * ================================================================== */
+
+/** Die rohen Werte von alexang.json (ohne jede Normierung), null = keine lesbare Datei. Schreibt nichts. */
+function ax_lade_roh()
+{
+    list($d, $zustand) = ax_config_roh();
+    return ($zustand === 'ok' && is_array($d)) ? $d : null;
+}
+
+/** Die Beschreibung fuer die Lade-Beanstandungen. Geprueft wird wie in ax_config() (ax_wert_pruefen()) - ohne die
+ *  Querpruefungen und die haus/-Sperre des Zurueckspielens, die ax_config() nicht anwendet. Geheim: sprechtoken und die
+ *  Sprechtoken im Block tts (aktionstoken und der Teil amazon immer). $maskiert = true fuer den gelben Kasten (gibt die
+ *  Saetze unmittelbar aus), false fuer Reiter Test und Meldungen (die Seite maskiert bei der Ausgabe). */
+function ax_lade_b($maskiert = true)
+{
+    $b = ax_sicherung_beschreibung();
+    foreach (array_keys($b['schluessel']) as $ax_k) { unset($b['schluessel'][$ax_k]['pruefen']); }
+    unset($b['quer']);
+    $b['pruefen'] = function ($k, $w) use ($maskiert) {
+        $g = '';
+        if (ax_wert_pruefen($k, $w, $g) !== null) { return ''; }
+        $t = ax_grund_text($g);
+        return $maskiert ? ax_e($t) : $t;
+    };
+    $b['geheim'] = array_merge(array('sprechtoken'), array_map(function ($n) { return 'tts.' . $n; }, ansage_geheim()));
+    $b['e'] = $maskiert ? 'ax_e' : function ($s) { return (string) $s; };
+    return $b;
+}
+
+/** Die Lade-Beanstandungen: rohe Dateiwerte gegen den verwendeten Stand ($cfg, sonst ax_config()). */
+function ax_lade_beanstandungen($cfg = null, $maskiert = true)
+{
+    $d = ax_lade_roh();
+    if ($d === null) { return array(); }
+    return sicherung_lade_beanstandungen(ax_lade_b($maskiert), $d, is_array($cfg) ? $cfg : ax_config());
+}
+
+/** Vor dem Schreiben: jedes beanstandete Feld, das $cfg nicht geaendert hat, bekommt seinen Dateiwert zurueck. */
+function ax_lade_behalten(array $cfg)
+{
+    $d = ax_lade_roh();
+    if ($d === null) { return $cfg; }
+    $v = ax_config();
+    list($cfg, ) = sicherung_lade_behalten($cfg, $d, $v, sicherung_lade_beanstandungen(ax_lade_b(false), $d, $v));
+    return $cfg;
+}
+
+/** Takt (bin/ax_takt.php, jede Minute): heilen wie bisher (ohne Token anzulegen), dann die Lade-Beanstandungen einmal
+ *  melden. Rueckgabe wie ax_config_heilen(). */
+function ax_dienst_pflege()
+{
+    $r = ax_config_heilen(false);
+    ax_lade_melden(ax_lade_beanstandungen());     // Kennung D
+    return $r;
+}
+
+/** Einmal je Aenderung ins Protokoll (nur Namen und Gruende, nie Werte). */
+function ax_lade_melden(array $beanst)
+{
+    $d = ax_paths()['datadir'];
+    if ($d === '' || (!is_dir($d) && !@mkdir($d, 0775, true))) { return; }
+    if (sicherung_lade_melden_faellig($beanst, $d . '/lade_beanstandungen.merk')) {
+        ax_log('WARN', sicherung_lade_protokollzeile($beanst));
+    }
+}
+
 /**
  * Konfiguration speichern: Datei 0600 unteilbar, danach die Zweitschrift -
  * aber nur, wenn der neue Stand Inhalt traegt (sonst ueberschriebe ein
  * Fehlstand die Rueckfallkopie).
  */
-function ax_config_speichern(array $cfg)
+function ax_config_speichern(array $cfg, $lade_behalten = true)
 {
     $p = ax_paths();
+    /* 1.0.26 (Lade-Beanstandungen, Regeln/05, Entscheidung des Hausherrn "Dateiwert behalten"): ein beim Laden
+     * beanstandetes Feld, das der neue Stand nicht geaendert hat, behaelt seinen gespeicherten Wert - jeder Speicherweg
+     * liest ax_config(), aendert einen Teil und schreibt hier ganz zurueck. Nicht beim Zurueckspielen und nicht beim
+     * Knopf "Angezeigte Werte uebernehmen" ($lade_behalten = false). */
+    if ($lade_behalten) { $cfg = ax_lade_behalten($cfg); }
     $js = json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($js === false) { return false; }
     if (!ax_write_atomic($p['config'], $js . "\n", 0600)) { return false; }
@@ -1081,19 +1166,20 @@ function ax_ansage_ohne_selbst(array $t)
 /** Die Schluessel der Sprachansagen in der Hauptkonfiguration. */
 function ax_ansage_schluessel()
 {
-    return array('tts', 'ansage_regeln', 'ansage_haken', 'ansage_token_herkunft', 'ansage_aus_datei');
+    return array('tts', 'ansage_regeln', 'ansage_haken', 'meldung', 'ansage_token_herkunft', 'ansage_aus_datei');
 }
 
 /** Die Vorgaben: nie gesetzt = ab Werk EIN. Ein gespeicherter Block bleibt, auch 'aus'. */
 function ax_ansage_vorgaben()
 {
-    return array('tts' => ax_ansage_ohne_selbst(ansage_werk_block()), 'ansage_regeln' => ansage_regeln_vorgaben(), 'ansage_haken' => array('abgelaufen' => 1), 'ansage_token_herkunft' => array(), 'ansage_aus_datei' => 0);
+    return array('tts' => ax_ansage_ohne_selbst(ansage_werk_block()), 'ansage_regeln' => ansage_regeln_vorgaben(), 'ansage_haken' => array('abgelaufen' => 1), 'meldung' => meld_vorgaben(ax_meld_haken_vorgabe(), ax_meld_haken_vorgabe()), 'ansage_token_herkunft' => array(), 'ansage_aus_datei' => 0);
 }
 
 /** Wertpruefung fuer die Sprachansagen: null = nicht meine Schluessel, sonst tauglich ja/nein. */
 function ax_ansage_wert($k, $w)
 {
     if (!in_array((string) $k, ax_ansage_schluessel(), true)) { return null; }
+    if ((string) $k === 'meldung') { return !meld_block_pruefen($w, ax_ansage_anlaesse()); }     // 1.0.26
     $g = '';
     switch ((string) $k) {
         case 'tts':
@@ -1181,7 +1267,16 @@ function ax_ansage_anlaesse()
 }
 
 /** Ist der Haken dieses Anlasses gesetzt? Fehlt er, gilt die Vorgabe der Linie. */
+/** 1.0.26: Will die Ansage ODER die Meldung an SignalBot diesen Anlass? So legt die Erkennung ihn fuer beide Wege hin;
+ * ax_ansage_senden() trennt sie wieder (ax_meld_nur_ansage()). */
 function ax_ansage_anlass_an($a, $cfg = null)
+{
+    if ($cfg === null) { $cfg = ax_ansage_cfg(); }
+    return ax_ansage_anlass_sprache($a, $cfg) || meld_anlass_an(ax_meld_block($cfg), (string) $a);
+}
+
+/** Ist der Haken dieses Anlasses fuer die ANSAGE gesetzt? (bis 1.0.26 hiess das ax_ansage_anlass_an()) */
+function ax_ansage_anlass_sprache($a, $cfg = null)
 {
     if ($cfg === null) { $cfg = ax_ansage_cfg(); }
     $h = (isset($cfg['ansage_haken']) && is_array($cfg['ansage_haken'])) ? $cfg['ansage_haken'] : array();
@@ -1214,12 +1309,14 @@ function ax_ansage_post(array $post)
     $h = array();
     $neu = ansage_formular_lesen($post, ax_tts($cfg), $m, $b, array('modi' => ax_ansage_modi(), 'ziele' => true, 'token_vor_ort' => true, 'aus_gewinnt' => true), $k, $h);
     list($r, $hk) = ansage_regeln_formular($post, ax_ansage_regeln($cfg), ax_ansage_anlaesse(), $m, $b, $k);
+    // 1.0.26: der Block 'Meldungen an SignalBot' (eine Beanstandung haelt das ganze Formular an, wie die Regeln)
+    $meld = meld_formular_lesen($post, array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, ax_ansage_anlaesse(), $m, $b, ax_meld_k(), ax_meld_haken_vorgabe());
     if ($m) {
         $t = array();
         foreach ($m as $x) { $t[] = $x['text']; }
         $e = array('_bean' => array_values($b));
         foreach ($post as $n => $w) {
-            if (strncmp((string) $n, 'tts_', 4) === 0 || strncmp((string) $n, 'ansage_', 7) === 0) {
+            if (strncmp((string) $n, 'tts_', 4) === 0 || strncmp((string) $n, 'ansage_', 7) === 0 || strncmp((string) $n, 'meld_', 5) === 0) {
                 if ((string) $n !== 'tts_alexa_token' && (string) $n !== 'tts_google_token') { $e[$n] = $w; }
             }
         }
@@ -1231,6 +1328,7 @@ function ax_ansage_post(array $post)
     $cfg['ansage_token_herkunft'] = ansage_token_herkunft_formular($post, isset($cfg['ansage_token_herkunft']) ? $cfg['ansage_token_herkunft'] : array());
     $cfg['ansage_regeln'] = $r;
     $cfg['ansage_haken'] = $hk;
+    $cfg['meldung'] = $meld;
     $t = array();
     foreach ($h as $x) { $t[] = $x['text']; }
     return array(ax_ansage_cfg_schreiben($cfg), array(), $t);
@@ -1254,8 +1352,14 @@ function ax_ansage_form_html($felder)
     $o[] = '<form action="index.php" method="post" autocomplete="off">' . $felder;
     $o[] = ansage_formular_html(ax_tts($cfg), $h + array('modi' => ax_ansage_modi(), 'ziele' => true, 'ziele_post' => isset($ein['tts_ziel_art']) ? $ein : null), $k);
     $o[] = ansage_regeln_html(ax_ansage_regeln($cfg), isset($cfg['ansage_haken']) && is_array($cfg['ansage_haken']) ? $cfg['ansage_haken'] : array('abgelaufen' => 1), ax_ansage_anlaesse(), $h + array('token_vor_ort' => true), $k);
+    // 1.0.26: Statusmeldungen an SignalBot (gemeinsames Modul meldung.php), im selben Formular
+    $o[] = '<h3>' . $e(ax_t('SIGNALMELDUNG.TITEL')) . '</h3>';
+    $o[] = meld_formular_html(ax_meld_block($cfg), ax_ansage_anlaesse(), $h, ax_meld_k());
+    list(, $meld_lage) = meld_pruefzeile(ax_meld_block($cfg), ax_meld_bean($cfg), ax_meld_k());
+    $o[] = '<div class="sm-hilfe">' . $e(ax_t('SIGNALMELDUNG.F_TEST') . ' ' . $meld_lage) . '</div>';
     $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_speichern" value="1">' . $e(ax_t('ANSAGEPLUGIN.K_SPEICHERN')) . '</button>';
     $o[] = '<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="ansage_test" value="1">' . $e(ax_t('ANSAGEPLUGIN.K_TEST')) . '</button></div>';
+    $o[] = '<div class="sm-knopfreihe"><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="meld_test" value="1">' . $e(ax_t('SIGNALMELDUNG.K_TEST')) . '</button></div>';     // 1.0.26
     $o[] = '</form>';
     $o[] = ax_ansage_lage_html($cfg);
     return implode("\n", $o) . "\n";
@@ -1425,6 +1529,8 @@ function ax_ansage_senden($jetzt = null)
         $conf = ax_ansage_cfg();
         ax_ansage_token_pflegen($conf);
         $conf = ax_ansage_cfg();
+        ax_meld_senden($frisch, $conf);     // 1.0.26: dieselben Anlaesse an SignalBot (eigene Haken)
+        $frisch = ax_meld_nur_ansage($frisch, $conf);     // die Ansage nur mit ihrem eigenen Haken
         $a = ansage_regel_sprechen($frisch, ax_tts($conf), ax_ansage_regeln($conf), ax_ansage_k());
         $erg = $a['regel'] !== '' ? $a['regel'] : 'gesprochen';
         if ($a['r'] !== null) {
@@ -4416,6 +4522,7 @@ function ax_mqtt_senden(array $paare, ?array $cfg = null)
 {
     if ($cfg === null) { $cfg = ax_config(); }
     if (empty($cfg['mqtt_ein']) || !$paare || !ax_has_mosquitto()) { return array(0, 0); }
+    ax_praefix_haus_melden($cfg);   // 1.0.26: Praefix im gemeinsamen Bereich? melden, nicht anhalten
     $vor = ax_mqtt_vorspann();
     if ($vor === '') { return array(0, count($paare)); }
     $b = ax_broker();
@@ -6659,6 +6766,7 @@ function ax_sicherung_beschreibung($mit_amazon = false)
                          }),
         'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())),
         'ansage_haken' => sicherung_block(array('abgelaufen')),
+        'meldung'      => meld_sicherung_knoten(ax_ansage_anlaesse(), ax_meld_k()),     // 1.0.26
         'gruppen' => sicherung_liste(array('name', 'geraete'), 'name'),
         'hue_lampen' => sicherung_liste(array('id', 'name', 'art', 'kuerzel', 'frei', 'aktiv'), 'id'),
         'textbefehle_frei' => sicherung_liste(array('name', 'text'), 'name'),
@@ -6697,7 +6805,14 @@ function ax_sicherung_beschreibung($mit_amazon = false)
         }),
         'pruefen' => function ($k, $w) {
             $g = '';
-            return ax_wert_pruefen($k, $w, $g) === null ? sprintf(ax_t('SICH.WERT'), $k, ax_grund_text($g)) : '';
+            if (ax_wert_pruefen($k, $w, $g) === null) {
+                return sprintf(ax_t('SICH.WERT'), $k, ax_grund_text($g));
+            }
+            /* 1.0.26: kein Praefix auf einem gemeinsamen Bereich unter haus/ (Regeln/07) - wie im Formular. */
+            if ($k === 'mqtt_praefix' && hb_bereich($w) !== '') {
+                return sprintf(ax_t('SICH.WERT'), $k, sprintf(ax_t('HAUSBEREICH.SICH_W'), hb_bereich($w)));
+            }
+            return '';
         },
         'vorbehandeln' => 'ax_sicherung_vorbehandeln',
         'quer' => 'ax_sicherung_quer',
@@ -7708,4 +7823,112 @@ function ax_hue_vorgang_beenden($grenze = AX_HUE_VORGANG_ENDE_S)
     ax_nur_lesen($alt);
     ax_log('INFO', 'Hue-Probe (eigene Netzadresse): laufender Vorgang (PID ' . implode(', ', $pids) . ') samt Prozessgruppe beendet, bevor aufgeraeumt wird.');
     return array(true, 'BEENDET', $pids);
+}
+
+/**
+ * 1.0.26 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): Zeile im Reiter Test -
+ * faellt das gespeicherte Themen-Praefix auf einen gemeinsamen Bereich unter haus/? Speichern und Zurueckspielen
+ * weisen ein solches Praefix ab; ein schon gespeichertes bleibt in Betrieb und ist hier rot, grau bei ausgeschaltetem MQTT.
+ * Liste und Pruefung aus dem gemeinsamen Modul haus_bereiche.php. Rueckgabe array(stand, html).
+ */
+function ax_pruef_praefix_haus($cfg)
+{
+    $p = (isset($cfg['mqtt_praefix']) && (string) $cfg['mqtt_praefix'] !== '' ? (string) $cfg['mqtt_praefix'] : 'alexang');
+    $b = hb_bereich($p);
+    if ($b !== '') {
+        if (!(!empty($cfg['mqtt_ein']))) {
+            return array(-1, sprintf(ax_t('HAUSBEREICH.A_AUS'), strval($p), strval($b)));
+        }
+        return array(0, sprintf(ax_t('HAUSBEREICH.A_NEIN'), strval($p), strval($b)));
+    }
+    return array(1, sprintf(ax_t('HAUSBEREICH.A_JA'), strval($p)));
+}
+
+/**
+ * 1.0.26: einmal je Aenderung eine Protokollzeile, solange das Praefix auf einen gemeinsamen Bereich faellt; der
+ * Versand bleibt, wie er ist. Gemerkt in praefix_haus_gemeldet.txt im Datenordner. Rueckgabe der Bereich oder ''.
+ */
+function ax_praefix_haus_melden($cfg, $merk = null)
+{
+    $p = (isset($cfg['mqtt_praefix']) && (string) $cfg['mqtt_praefix'] !== '' ? (string) $cfg['mqtt_praefix'] : 'alexang');
+    if ($merk === null) {
+        $merk = ax_paths()['datadir'] . '/praefix_haus_gemeldet.txt';
+    }
+    $b = hb_melden_faellig($p, $merk);
+    if ($b !== '') {
+        ax_log('WARN', hb_logtext($p, $b));
+    }
+    return $b;
+}
+
+if (!function_exists('ax_meld_block')) {
+
+/* ---------------- Statusmeldungen an SignalBot (1.0.26, gemeinsames Modul meldung.php) ----------------
+ *
+ * Auftrag des Hausherrn 23.11.2026, Entscheidungen 23.11.2026 ("haus/meldung (Empfehlung)", "Wie empfohlen"): dieselben
+ * Anlaesse wie die Ansage, eigener Haken je Anlass, ab Werk aus; Sperre, Bremse und Versand im Modul. Die Erkennung legt
+ * einen Anlass hin, wenn Ansage ODER Meldung ihn will (ax_ansage_anlass_an()); der Sender trennt die Wege wieder.
+ */
+
+/** Die ab-Werk-Haken der Ansage dieser Linie: so stehen auch die Haken der Meldung, solange der Block nie gespeichert ist. */
+function ax_meld_haken_vorgabe()
+{
+    return array('abgelaufen' => 1);
+}
+
+/** Der wirksame Block 'meldung' fuer den Betrieb (ungueltig gespeichert gilt als aus und wird im Formular genannt). */
+function ax_meld_block($cfg = null)
+{
+    if ($cfg === null) { $cfg = ax_ansage_cfg(); }
+    list($b) = meld_block(array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, ax_ansage_anlaesse(), ax_meld_haken_vorgabe());
+    return $b;
+}
+
+/** Die Beanstandungen eines gespeicherten Blocks (leer = gueltig). */
+function ax_meld_bean($cfg = null)
+{
+    if ($cfg === null) { $cfg = ax_ansage_cfg(); }
+    list(, $f) = meld_block(array_key_exists('meldung', $cfg) ? $cfg['meldung'] : null, ax_ansage_anlaesse(), ax_meld_haken_vorgabe());
+    return $f;
+}
+
+/** Der Kontext des Moduls: Datenordner (data/plugins/<ordner>, daraus der Absender) und Texte - wie bei der Ansage. */
+function ax_meld_k()
+{
+    return ax_ansage_k();
+}
+
+/** Fuer die Ansage nur Eintraege, deren Ansage-Haken gesetzt ist; ein Eintrag ohne bekannten Anlass bleibt wie bisher. */
+function ax_meld_nur_ansage(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = ax_ansage_cfg(); }
+    $anl = ax_ansage_anlaesse();
+    $aus = array();
+    foreach ($l as $e) {
+        if (is_array($e) && array_key_exists(meld_anlass_von($e), $anl) && !ax_ansage_anlass_sprache(meld_anlass_von($e), $cfg)) { continue; }
+        $aus[] = $e;
+    }
+    return $aus;
+}
+
+/** Die Eintraege an SignalBot melden. Protokoll: eine Zeile, wenn gesendet oder gescheitert (nie der Text). */
+function ax_meld_senden(array $l, $cfg = null)
+{
+    if ($cfg === null) { $cfg = ax_ansage_cfg(); }
+    $b = ax_meld_block($cfg);
+    if (empty($b['ein']) || !$l) { return null; }
+    $a = meld_regel_senden($l, $b, ax_meld_k());
+    if ($a['regel'] === '' || in_array($a['regel'], array('BREMSE', 'STAND', 'ORDNER'), true)) {
+        ax_ansage_log(meld_regel_kurz($a));
+    }
+    return $a;
+}
+
+/** Der Knopf "Testmeldung senden": array(angenommen, Satz). Geht an Haken, Sperre und Bremse vorbei. */
+function ax_meld_test()
+{
+    $r = meld_testmeldung(ax_meld_k());
+    ax_ansage_log('Testmeldung an SignalBot: ' . ($r[0] ? 'angenommen' : 'nicht angenommen'));
+    return $r;
+}
 }
